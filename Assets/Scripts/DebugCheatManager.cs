@@ -28,7 +28,7 @@ public class DebugCheatManager : MonoBehaviour
     private void Awake()
     {
         if (battleManager == null)
-            battleManager = FindFirstObjectByType<BattleManager>();
+            battleManager = FindAnyObjectByType<BattleManager>();
     }
 
     private void Update()

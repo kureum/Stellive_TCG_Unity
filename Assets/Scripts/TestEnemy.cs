@@ -8,6 +8,9 @@ public class TestEnemy : MonoBehaviour
     [Header("Settings")]
     public float actionDelay = 0.5f;
 
+    [Header("Enemy Summon")]
+    public bool enemySummonEnabled = true;
+
     private bool isWaiting;
     private float timer;
 
@@ -80,7 +83,8 @@ public class TestEnemy : MonoBehaviour
         isWaiting = false;
         timer = 0f;
 
-        bool didAction = battleManager.TestEnemyTrySummonBacksideCharacter();
+        bool didAction = enemySummonEnabled &&
+            battleManager.TestEnemyTrySummonBacksideCharacter();
 
         if (didAction)
             return;

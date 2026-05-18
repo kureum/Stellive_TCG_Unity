@@ -43,6 +43,8 @@ public class BattleFieldSlot : MonoBehaviour,
     [Header("Runtime States")]
     public bool isCharacterFaceDown = false;
     public bool characterMovedThisTurn { get; private set; }
+    public BattleSlotOwner characterOwner { get; private set; }
+    public BattleSlotOwner contentOwner { get; private set; }
     public int faceDownSummonedTurn = -1;
 
     private Action<BattleFieldSlot> onSetupButtonClick;
@@ -207,7 +209,7 @@ public class BattleFieldSlot : MonoBehaviour,
         setupButton.interactable = value;
     }
 
-    public void SetMoveHighlightVisible(bool value)
+    public void SetMoveHighlightVisible(bool value, bool isCollaborationTarget = false)
     {
         if (rootRaycastImage == null)
             EnsureDropRaycastTarget();
@@ -217,7 +219,9 @@ public class BattleFieldSlot : MonoBehaviour,
 
         if (value)
         {
-            rootRaycastImage.color = new Color(0.2f, 1f, 0.35f, 0.35f);
+            rootRaycastImage.color = isCollaborationTarget
+                ? new Color(1f, 0.2f, 0.2f, 0.4f)
+                : new Color(0.2f, 1f, 0.35f, 0.35f);
         }
         else
         {
@@ -237,19 +241,35 @@ public class BattleFieldSlot : MonoBehaviour,
         RefreshVisualState();
     }
 
-    public void SetCharacterCard(BaseCardData card, Sprite sprite, bool faceDown = false)
+    public void SetCharacterCard(
+        BaseCardData card,
+        Sprite sprite,
+        bool faceDown = false,
+        BattleSlotOwner cardOwner = BattleSlotOwner.My)
     {
         characterCard = card;
+        characterOwner = cardOwner;
         isCharacterFaceDown = faceDown;
         characterMovedThisTurn = false;
 
         if (!faceDown)
-        faceDownSummonedTurn = -1;
+            faceDownSummonedTurn = -1;
 
         if (characterCardImage != null)
         {
             characterCardImage.sprite = sprite;
+            characterCardImage.enabled = sprite != null;
             characterCardImage.preserveAspect = true;
+
+            // 중요:
+            // 카드 회전은 슬롯 owner가 아니라 cardOwner 기준입니다.
+            characterCardImage.rectTransform.localRotation = Quaternion.identity;
+        }
+
+        if (characterCardButton != null)
+        {
+            characterCardButton.gameObject.SetActive(card != null);
+            characterCardButton.interactable = card != null;
         }
 
         RefreshVisualState();
@@ -281,6 +301,7 @@ public class BattleFieldSlot : MonoBehaviour,
     public void ClearCharacterCard()
     {
         characterCard = null;
+        characterOwner = BattleSlotOwner.My;
         isCharacterFaceDown = false;
         faceDownSummonedTurn = -1;
         characterMovedThisTurn = false;
@@ -289,15 +310,24 @@ public class BattleFieldSlot : MonoBehaviour,
         {
             characterCardImage.sprite = null;
             characterCardImage.enabled = false;
+            characterCardImage.rectTransform.localRotation = Quaternion.identity;
         }
 
         if (characterCardButton != null)
-            characterCardButton.gameObject.SetActive(false);
+        {
+            RectTransform rect = characterCardButton.GetComponent<RectTransform>();
+
+            if (rect != null)
+                rect.localEulerAngles = Vector3.zero;
+        }
+
+        RefreshVisualState();
     }
 
     public void ClearContentCard()
     {
         contentCard = null;
+        contentOwner = BattleSlotOwner.My;
 
         if (contentCardImage != null)
             contentCardImage.sprite = null;
@@ -310,6 +340,8 @@ public class BattleFieldSlot : MonoBehaviour,
         broadcastCard = null;
         characterCard = null;
         contentCard = null;
+        characterOwner = BattleSlotOwner.My;
+        contentOwner = BattleSlotOwner.My;
         faceDownSummonedTurn = -1;
 
         isCharacterFaceDown = false;
@@ -343,26 +375,43 @@ public class BattleFieldSlot : MonoBehaviour,
 
     private void RefreshCardRotation()
     {
-        bool isEnemySlot = owner == BattleSlotOwner.Enemy;
-
+        // 캐릭터 카드는 슬롯 소유자가 아니라 카드 소유자 기준으로 회전합니다.
         if (characterCardButton != null)
         {
             RectTransform rect = characterCardButton.GetComponent<RectTransform>();
+
             if (rect != null)
-                rect.localEulerAngles = isEnemySlot ? new Vector3(0f, 0f, 180f) : Vector3.zero;
+            {
+                bool isEnemyCharacter =
+                    characterCard != null &&
+                    characterOwner == BattleSlotOwner.Enemy;
+
+                rect.localEulerAngles =
+                    isEnemyCharacter ? new Vector3(0f, 0f, 180f) : Vector3.zero;
+            }
         }
 
+        // 콘텐츠 카드도 나중에 상대 필드로 넘어갈 수 있으므로 contentOwner 기준으로 회전합니다.
         if (contentCardButton != null)
         {
             RectTransform rect = contentCardButton.GetComponent<RectTransform>();
+
             if (rect != null)
-                rect.localEulerAngles = isEnemySlot ? new Vector3(0f, 0f, 180f) : Vector3.zero;
+            {
+                bool isEnemyContent =
+                    contentCard != null &&
+                    contentOwner == BattleSlotOwner.Enemy;
+
+                rect.localEulerAngles =
+                    isEnemyContent ? new Vector3(0f, 0f, 180f) : Vector3.zero;
+            }
         }
 
-        // 방송 카드는 플랫폼 역할이므로 회전하지 않습니다.
+        // 방송 카드는 플랫폼 자체이므로 슬롯 기준으로도 회전하지 않습니다.
         if (broadcastCardButton != null)
         {
             RectTransform rect = broadcastCardButton.GetComponent<RectTransform>();
+
             if (rect != null)
                 rect.localEulerAngles = Vector3.zero;
         }

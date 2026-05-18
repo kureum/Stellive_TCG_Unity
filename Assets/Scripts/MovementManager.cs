@@ -102,6 +102,12 @@ public class MovementManager : MonoBehaviour
         }
 
         string failReason;
+        if (CanStartCollaborationAtSlot(draggingFromSlot, toSlot, out failReason))
+        {
+            OpenCollaborationQuestion(draggingFromSlot, toSlot, draggingCard);
+            return true;
+        }
+
         if (!CanMoveToSlot(draggingFromSlot, toSlot, out failReason))
         {
             string cardName = draggingCard != null ? draggingCard.name : "캐릭터";
@@ -166,6 +172,61 @@ public class MovementManager : MonoBehaviour
         );
     }
 
+    private void OpenCollaborationQuestion(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        BaseCardData card)
+    {
+        if (battleManager == null)
+            return;
+
+        QuestionPanel questionPanel = battleManager.BattleQuestionPanel;
+
+        if (questionPanel == null)
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal("QuestionPanel이 연결되어 있지 않습니다.");
+            return;
+        }
+
+        if (questionPanel.IsOpen())
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal("이미 다른 선택창이 열려 있습니다.");
+            return;
+        }
+
+        pendingMoveFromSlot = fromSlot;
+        pendingMoveToSlot = toSlot;
+        pendingMoveCard = card;
+
+        isDraggingMoveCard = false;
+        draggingFromSlot = null;
+        draggingCard = null;
+
+        ClearMoveHighlights();
+
+        questionPanel.ShowYesNoQuestion(
+            "합방을 하시겠습니까?",
+            CancelPendingCollaboration,
+            CancelPendingCollaboration,
+            CancelPendingCollaboration
+        );
+
+        battleManager.SetSystemMessageFromExternal("합방은 아직 구현되지 않았습니다.");
+    }
+
+    private void CancelPendingCollaboration()
+    {
+        string cardName = pendingMoveCard != null ? pendingMoveCard.name : "캐릭터";
+
+        ClearAllMoveState();
+
+        battleManager.SetSystemMessageFromExternal(
+            $"{cardName} 합방을 취소했습니다."
+        );
+    }
+
     private void ConfirmPendingMove()
     {
         if (pendingMoveFromSlot == null ||
@@ -207,16 +268,27 @@ public class MovementManager : MonoBehaviour
         Sprite currentSprite = fromSlot.GetCurrentCharacterSprite();
         bool wasFaceDown = fromSlot.isCharacterFaceDown;
 
-        toSlot.SetCharacterCard(card, currentSprite, wasFaceDown);
+        BattleSlotOwner movingCardOwner = fromSlot.characterOwner;
+
+        toSlot.SetCharacterCard(card, currentSprite, wasFaceDown, movingCardOwner);
         toSlot.SetCharacterMovedThisTurn(true);
 
         fromSlot.ClearCharacterCard();
 
+        string fromOwnerName = fromSlot.owner == BattleSlotOwner.My ? "내 필드" : "상대 필드";
+        string toOwnerName = toSlot.owner == BattleSlotOwner.My ? "내 필드" : "상대 필드";
+
         string message =
             $"{card.name} 카드를 이동했습니다.\n" +
-            $"이동 전: ({fromSlot.x}, {fromSlot.y})\n" +
-            $"이동 후: ({toSlot.x}, {toSlot.y})\n" +
+            $"이동 전: {fromOwnerName} ({fromSlot.x}, {fromSlot.y})\n" +
+            $"이동 후: {toOwnerName} ({toSlot.x}, {toSlot.y})\n" +
             "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+        if (toSlot.owner == BattleSlotOwner.Enemy)
+        {
+            message += "\n상대의 빈 방송 플랫폼에 진입했습니다.\n" +
+                    "합방 처리는 다음 단계에서 구현합니다.";
+        }
 
         ClearAllMoveState();
 
@@ -259,7 +331,7 @@ public class MovementManager : MonoBehaviour
             return false;
         }
 
-        if (fromSlot.owner != BattleSlotOwner.My)
+        if (fromSlot.characterOwner != BattleSlotOwner.My)
         {
             failReason = "현재는 내 캐릭터만 이동할 수 있습니다.";
             return false;
@@ -317,9 +389,9 @@ public class MovementManager : MonoBehaviour
             return false;
         }
 
-        if (toSlot.owner != BattleSlotOwner.My)
+        if (fromSlot.characterOwner != BattleSlotOwner.My)
         {
-            failReason = "이번 단계에서는 내 필드 안에서만 이동할 수 있습니다.";
+            failReason = "현재는 내 캐릭터만 이동할 수 있습니다.";
             return false;
         }
 
@@ -331,46 +403,147 @@ public class MovementManager : MonoBehaviour
 
         if (toSlot.HasCharacter)
         {
-            failReason = "이미 캐릭터가 있는 슬롯으로는 이동할 수 없습니다.";
+            if (toSlot.characterOwner == BattleSlotOwner.Enemy)
+                failReason = "상대 캐릭터가 있는 슬롯 진입은 다음 합방 단계에서 구현합니다.";
+            else
+                failReason = "이미 아군 캐릭터가 있는 슬롯으로는 이동할 수 없습니다.";
+
             return false;
         }
+
+        return CanReachMoveTarget(fromSlot, toSlot, out failReason);
+    }
+
+    private bool CanStartCollaborationAtSlot(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (fromSlot == null || toSlot == null)
+        {
+            failReason = "합방 출발 슬롯 또는 대상 슬롯이 없습니다.";
+            return false;
+        }
+
+        if (fromSlot == toSlot)
+        {
+            failReason = "같은 슬롯에서는 합방할 수 없습니다.";
+            return false;
+        }
+
+        if (fromSlot.characterOwner != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 캐릭터만 합방을 시도할 수 있습니다.";
+            return false;
+        }
+
+        if (!toSlot.HasBroadcast)
+        {
+            failReason = "방송 카드가 설치된 슬롯에서만 합방할 수 있습니다.";
+            return false;
+        }
+
+        if (!toSlot.HasCharacter ||
+            toSlot.characterOwner != BattleSlotOwner.Enemy)
+        {
+            failReason = "상대 캐릭터가 있는 슬롯에서만 합방할 수 있습니다.";
+            return false;
+        }
+
+        return CanReachMoveTarget(fromSlot, toSlot, out failReason);
+    }
+
+    private bool CanReachMoveTarget(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        failReason = "";
 
         int distance =
             Mathf.Abs(fromSlot.x - toSlot.x) +
             Mathf.Abs(fromSlot.y - toSlot.y);
 
-        if (distance != 1)
+        // 같은 방송 플랫폼 안에서의 이동
+        // 예: 내 필드 안 이동, 상대 필드 안 이동
+        if (fromSlot.owner == toSlot.owner)
         {
-            failReason = "상하좌우로 인접한 슬롯으로만 이동할 수 있습니다.";
-            return false;
+            if (distance != 1)
+            {
+                failReason = "같은 방송 플랫폼 안에서는 상하좌우로 인접한 슬롯으로만 이동할 수 있습니다.";
+                return false;
+            }
+
+            return true;
         }
 
-        return true;
+        // 내 방송 플랫폼 ↔ 상대 방송 플랫폼 사이 이동
+        if (IsAdjacentAcrossFields(fromSlot, toSlot))
+            return true;
+
+        failReason = "상대 방송 플랫폼으로는 맞닿은 전방 슬롯으로만 이동할 수 있습니다.";
+        return false;
+    }
+
+    private bool IsAdjacentAcrossFields(BattleFieldSlot fromSlot, BattleFieldSlot toSlot)
+    {
+        if (fromSlot == null || toSlot == null)
+            return false;
+
+        if (fromSlot.owner == toSlot.owner)
+            return false;
+
+        int mirroredX = 4 - fromSlot.x;
+
+        // 2x3 필드 기준:
+        // 각자 자기 관점의 전방 줄이 y=2라고 가정
+        bool isFrontRowConnected =
+            fromSlot.y == 2 &&
+            toSlot.y == 2;
+
+        return toSlot.x == mirroredX && isFrontRowConnected;
     }
 
     private void HighlightMovableSlots(BattleFieldSlot fromSlot)
+    {
+        ClearMoveHighlights();
+
+        if (battleManager == null || fromSlot == null)
+            return;
+
+        HighlightMovableSlotsForSide(fromSlot, BattlePlayerSide.My);
+        HighlightMovableSlotsForSide(fromSlot, BattlePlayerSide.Enemy);
+    }
+
+    private void HighlightMovableSlotsForSide(
+        BattleFieldSlot fromSlot,
+        BattlePlayerSide side)
+    {
+        IReadOnlyList<BattleFieldSlot> slots =
+            battleManager.GetSlotsForMovement(side);
+
+        foreach (BattleFieldSlot slot in slots)
         {
-            ClearMoveHighlights();
+            if (slot == null)
+                continue;
 
-            if (battleManager == null || fromSlot == null)
-                return;
-
-            IReadOnlyList<BattleFieldSlot> slots =
-                battleManager.GetSlotsForMovement(BattlePlayerSide.My);
-
-            foreach (BattleFieldSlot slot in slots)
+            string failReason;
+            if (CanMoveToSlot(fromSlot, slot, out failReason))
             {
-                if (slot == null)
-                    continue;
-
-                string failReason;
-                if (!CanMoveToSlot(fromSlot, slot, out failReason))
-                    continue;
-
                 slot.SetMoveHighlightVisible(true);
+                highlightedSlots.Add(slot);
+                continue;
+            }
+
+            if (CanStartCollaborationAtSlot(fromSlot, slot, out failReason))
+            {
+                slot.SetMoveHighlightVisible(true, true);
                 highlightedSlots.Add(slot);
             }
         }
+    }
 
         private void ClearMoveHighlights()
         {
@@ -396,6 +569,10 @@ public class MovementManager : MonoBehaviour
             pendingMoveCard = null;
         }
 
+        public void CancelMoveStateFromExternal()
+        {
+            ClearAllMoveState();
+        }
         public void ResetAllCharacterMoveFlagsForNewTurn()
     {
         ResetCharacterMoveFlags(BattlePlayerSide.My);
@@ -421,4 +598,5 @@ public class MovementManager : MonoBehaviour
             slot.SetCharacterMovedThisTurn(false);
         }
     }
+
 }

@@ -41,6 +41,9 @@ public class BattleManager : MonoBehaviour
 
     [Header("Enemy Zones")]
     public Transform enemyIdolSlot;
+    public Transform enemyDeckSlot;
+    public Transform enemyBroadcastDeckSlot;
+    public Transform enemyRestSlot;
 
     [Header("Field Slots")]
     public Transform[] myFieldSlots;
@@ -434,7 +437,10 @@ public class BattleManager : MonoBehaviour
                 OnClickBroadcastCardOnField,
                 OnClickCharacterCardOnField,
                 OnClickContentCardOnField,
-                OnDropHandCardOnFieldSlot
+                OnDropHandCardOnFieldSlot,
+                OnBeginDragFieldCharacter,
+                OnDragFieldCharacter,
+                OnEndDragFieldCharacter
             );
 
             slot.ClearAllCards();
@@ -1073,6 +1079,9 @@ public class BattleManager : MonoBehaviour
         ClearPendingSummonChoice();
         ClearPendingFlipChoice();
 
+        if (movementManager != null)
+            movementManager.CancelMoveStateFromExternal();
+
         if (questionPanel != null && questionPanel.IsOpen())
             questionPanel.Hide();
     }
@@ -1171,8 +1180,8 @@ public class BattleManager : MonoBehaviour
         DrawCards(myPlayer, 1);
         DrawCards(enemyPlayer, 1);
 
-        int myGainedViewers = GainPrepViewers(myPlayer, myBattleSlots);
-        int enemyGainedViewers = GainPrepViewers(enemyPlayer, enemyBattleSlots);
+        int myGainedViewers = GainPrepViewers(BattleSlotOwner.My);
+        int enemyGainedViewers = GainPrepViewers(BattleSlotOwner.Enemy);
 
         RefreshAllUI();
 
@@ -1257,7 +1266,7 @@ public class BattleManager : MonoBehaviour
         if (targetSlot == null)
             return false;
 
-        targetSlot.SetCharacterCard(characterCard, cardBackSprite, true);
+        targetSlot.SetCharacterCard(characterCard, cardBackSprite, true, BattleSlotOwner.Enemy);
         targetSlot.faceDownSummonedTurn = turnCount;
         enemyPlayer.hand.Remove(characterCard);
 
@@ -1350,7 +1359,7 @@ public class BattleManager : MonoBehaviour
         if (slot == null || card == null)
             return;
 
-        if (slot.owner == BattleSlotOwner.My)
+        if (slot.characterOwner == BattleSlotOwner.My)
         {
             SelectCard(card);
 
@@ -1364,7 +1373,7 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (slot.owner == BattleSlotOwner.Enemy)
+        if (slot.characterOwner == BattleSlotOwner.Enemy)
         {
             if (slot.isCharacterFaceDown)
             {
@@ -1384,6 +1393,12 @@ public class BattleManager : MonoBehaviour
 
         if (!slot.isCharacterFaceDown)
             return;
+
+        if (slot.characterOwner != BattleSlotOwner.My)
+        {
+            SetSystemMessage("내 캐릭터만 뒤집기 출연할 수 있습니다.");
+            return;
+        }
 
         string turnFailReason;
         if (!CanFlipSummonByTurn(slot, out turnFailReason))
@@ -1475,7 +1490,7 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (targetSlot.owner != BattleSlotOwner.My)
+        if (targetSlot.characterOwner != BattleSlotOwner.My)
         {
             ClearPendingFlipChoice();
             SetSystemMessage("내 캐릭터만 플립 출연할 수 있습니다.");
@@ -1524,7 +1539,7 @@ public class BattleManager : MonoBehaviour
 
         myPlayer.viewers -= cost;
 
-        targetSlot.SetCharacterCard(characterCard, sprite, false);
+        targetSlot.SetCharacterCard(characterCard, sprite, false, targetSlot.characterOwner);
 
         ClearPendingFlipChoice();
 
@@ -1914,7 +1929,7 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        targetSlot.SetCharacterCard(characterCard, cardBackSprite, true);
+        targetSlot.SetCharacterCard(characterCard, cardBackSprite, true, BattleSlotOwner.My);
         targetSlot.faceDownSummonedTurn = turnCount;
         myPlayer.hand.Remove(characterCard);
 
@@ -1995,7 +2010,7 @@ public class BattleManager : MonoBehaviour
 
         myPlayer.viewers -= cost;
 
-        targetSlot.SetCharacterCard(characterCard, sprite, false);
+        targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.My);
         myPlayer.hand.Remove(characterCard);
 
         ClearPendingSummonChoice();
@@ -2127,6 +2142,9 @@ public class BattleManager : MonoBehaviour
         SetZoneCardVisual(myDeckSlot, null, true);
         SetZoneCardVisual(myBroadcastDeckSlot, null, true);
         SetZoneCardVisual(myRestSlot, null, true);
+        SetZoneCardVisual(enemyDeckSlot, null, true, null, true);
+        SetZoneCardVisual(enemyBroadcastDeckSlot, null, true, null, true);
+        SetZoneCardVisual(enemyRestSlot, null, true, null, true);
 
         SetZoneLabel(myIdolSlot, myPlayer.idolCard != null ? myPlayer.idolCard.name : "아이돌 없음");
         SetZoneLabel(enemyIdolSlot, enemyPlayer.idolCard != null ? enemyPlayer.idolCard.name : "상대 아이돌 없음");
@@ -2134,6 +2152,9 @@ public class BattleManager : MonoBehaviour
         SetZoneLabel(myDeckSlot, $"메인 덱\n{myPlayer.mainDeck.Count}장");
         SetZoneLabel(myBroadcastDeckSlot, $"방송 덱\n{myPlayer.broadcastDeck.Count}장");
         SetZoneLabel(myRestSlot, $"휴식존\n{myPlayer.restZone.Count}장");
+        SetZoneLabel(enemyDeckSlot, $"상대 메인 덱\n{enemyPlayer.mainDeck.Count}장");
+        SetZoneLabel(enemyBroadcastDeckSlot, $"상대 방송 덱\n{enemyPlayer.broadcastDeck.Count}장");
+        SetZoneLabel(enemyRestSlot, $"상대 휴식존\n{enemyPlayer.restZone.Count}장");
     }
 
     private void RefreshHandUI()
@@ -2447,7 +2468,7 @@ public class BattleManager : MonoBehaviour
             return dragPreviewCanvas;
         }
 
-        dragPreviewCanvas = FindFirstObjectByType<Canvas>();
+        dragPreviewCanvas = FindAnyObjectByType<Canvas>();
 
         return dragPreviewCanvas;
     }
@@ -2706,25 +2727,37 @@ public class BattleManager : MonoBehaviour
         ResolveMyActionPass();
     }
 
-    private int GainPrepViewers(BattlePlayerRuntime player, List<BattleFieldSlot> slots)
+    private int GainPrepViewers(BattleSlotOwner characterOwner)
     {
-        if (player == null || slots == null)
+        BattlePlayerRuntime player = GetPlayerRuntime(characterOwner);
+
+        if (player == null)
             return 0;
 
-        int gainedViewers = CalculatePrepViewerGain(player, slots);
+        int gainedViewers = CalculatePrepViewerGain(characterOwner);
 
         player.viewers += gainedViewers;
 
         return gainedViewers;
     }
 
-    private int CalculatePrepViewerGain(BattlePlayerRuntime player, List<BattleFieldSlot> slots)
+    private int CalculatePrepViewerGain(BattleSlotOwner characterOwner)
     {
-        if (player == null || slots == null)
-            return 0;
-
         int totalGain = 0;
-        int baseGain = GetIdolBaseViewersPerPrep(player);
+
+        AddPrepViewerGainFromSlots(myBattleSlots, characterOwner, ref totalGain);
+        AddPrepViewerGainFromSlots(enemyBattleSlots, characterOwner, ref totalGain);
+
+        return Mathf.Max(0, totalGain);
+    }
+
+    private void AddPrepViewerGainFromSlots(
+        List<BattleFieldSlot> slots,
+        BattleSlotOwner characterOwner,
+        ref int totalGain)
+    {
+        if (slots == null)
+            return;
 
         foreach (BattleFieldSlot slot in slots)
         {
@@ -2737,13 +2770,21 @@ public class BattleManager : MonoBehaviour
             if (!slot.HasCharacter)
                 continue;
 
+            if (slot.characterOwner != characterOwner)
+                continue;
+
+            BattlePlayerRuntime fieldOwner = GetPlayerRuntime(slot.owner);
+            int baseGain = GetIdolBaseViewersPerPrep(fieldOwner);
             int slotGain = baseGain;
             slotGain += GetBroadcastViewersModifier(slot.broadcastCard);
 
             totalGain += slotGain;
         }
+    }
 
-        return Mathf.Max(0, totalGain);
+    private BattlePlayerRuntime GetPlayerRuntime(BattleSlotOwner owner)
+    {
+        return owner == BattleSlotOwner.My ? myPlayer : enemyPlayer;
     }
 
     private int GetIdolBaseViewersPerPrep(BattlePlayerRuntime player)
