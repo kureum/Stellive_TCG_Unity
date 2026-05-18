@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://stellive.example/schema/cards.schema.json",
+  "title": "Stellive TCG Cards",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string", "description": "Editor schema hint" },
+    "idols": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/IdolCard" },
+      "description": "List of Idol cards"
+    },
+    "broadcasts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/BroadcastCard" },
+      "description": "List of Broadcast cards"
+    },
+    "characters": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CharacterCard" },
+      "description": "List of Character cards"
+    },
+    "contents": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ContentCard" },
+      "description": "List of Content cards"
+    }
+  },
+  "required": ["idols", "broadcasts", "characters", "contents"],
+  "$defs": {
+    "Kind": {
+      "type": "string",
+      "enum": ["Idol", "Broadcast", "Character", "Content"]
+    },
+    "Charm": {
+      "type": "string",
+      "enum": ["Lovely", "Tricky", "Pure", "Cool", "Free"]
+    },
+    "EffectTag": {
+      "type": "string",
+      "enum": ["OnAppear", "Content", "PreCollab", "Collab", "OnCollab", "PostCollab", "Rest", "Passive", "Active"],
+      "description": "Known effect timings. Prefer PreCollab/OnCollab/PostCollab over Collab. Custom strings are also allowed by setting 'timing' as string elsewhere."
+    },
+    "Effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "timing": {
+          "oneOf": [
+            { "$ref": "#/$defs/EffectTag" },
+            { "type": "string", "not": { "$ref": "#/$defs/EffectTag" } }
+          ]
+        },
+        "description": { "type": "string" },
+        "ref": { "type": "string", "description": "Engine effect key to resolve at runtime" },
+        "params": { "type": "object", "additionalProperties": true }
+      },
+      "required": ["id", "timing", "description"]
+    },
+    "BaseCard": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "description": "Unique across all cards (art variants share the same id)" },
+        "name": { "type": "string" },
+        "kind": { "$ref": "#/$defs/Kind" },
+        "charm": { "type": "array", "items": { "$ref": "#/$defs/Charm" }, "uniqueItems": true },
+        "hashtags": { "type": "array", "items": { "type": "string" } },
+        "image": { "type": "string", "description": "Default image path/URL" },
+        "artVariants": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Map rarity->image path" },
+        "rarity": {
+          "type": "string",
+          "enum": ["N", "R", "SR", "UR"],
+          "description": "Selected rarity for display; does not affect rules"
+        }
+      },
+      "required": ["id", "name", "kind"]
+    },
+    "IdolCard": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCard" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "Idol" },
+            "maxBroadcastSlots": { "type": "integer", "minimum": 0, "maximum": 6 },
+            "baseViewersPerPrep": { "type": "integer", "minimum": 0 },
+            "activeCost": { "type": "integer", "minimum": 0 },
+            "passive": { "type": "array", "items": { "$ref": "#/$defs/Effect" } },
+            "active": { "type": "array", "items": { "$ref": "#/$defs/Effect" } }
+          },
+          "required": ["kind", "maxBroadcastSlots", "baseViewersPerPrep"]
+        }
+      ]
+    },
+    "BroadcastCard": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCard" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "Broadcast" },
+            "viewersModifier": { "type": "integer" },
+            "effects": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/Effect" },
+              "description": "At most one entry with timing=Active is expected; activeCost applies to that effect."
+            }
+          },
+          "required": ["kind"]
+        }
+      ]
+    },
+    "CharacterCard": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCard" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "Character" },
+            "tension": { "type": "integer", "minimum": 0 },
+            "hpMax": { "type": "integer", "minimum": 1 },
+            "appearCost": { "type": "integer", "minimum": 0 },
+            "activeCost": { "type": "integer", "minimum": 0 },
+            "effects": { "type": "array", "items": { "$ref": "#/$defs/Effect" } }
+          },
+          "required": ["kind", "tension", "hpMax"]
+        }
+      ]
+    },
+    "ContentCard": {
+      "allOf": [
+        { "$ref": "#/$defs/BaseCard" },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "Content" },
+            "contentType": {
+              "type": "string",
+              "enum": ["Instant", "Lasting", "Collab"]
+            },
+            "cost": { "type": "integer", "minimum": 0 },
+            "effects": { "type": "array", "items": { "$ref": "#/$defs/Effect" }, "minItems": 1 }
+          },
+          "required": ["kind", "effects"]
+        }
+      ]
+    }
+  }
+}
