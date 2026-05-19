@@ -46,7 +46,8 @@ public class BattleFieldSlot : MonoBehaviour,
     public BattleSlotOwner characterOwner { get; private set; }
     public BattleSlotOwner contentOwner { get; private set; }
     public int faceDownSummonedTurn = -1;
-
+    public int currentCharacterTension { get; private set; }
+    public int currentCharacterHp { get; private set; }
     private Action<BattleFieldSlot> onSetupButtonClick;
     private Action<BattleFieldSlot, BaseCardData> onBroadcastCardClick;
     private Action<BattleFieldSlot, BaseCardData> onCharacterCardClick;
@@ -247,6 +248,12 @@ public class BattleFieldSlot : MonoBehaviour,
         bool faceDown = false,
         BattleSlotOwner cardOwner = BattleSlotOwner.My)
     {
+        BaseCardData previousCard = characterCard;
+        int previousHp = currentCharacterHp;
+        int previousTension = currentCharacterTension;
+
+        bool isSameCharacter = previousCard != null && previousCard == card;
+
         characterCard = card;
         characterOwner = cardOwner;
         isCharacterFaceDown = faceDown;
@@ -255,13 +262,27 @@ public class BattleFieldSlot : MonoBehaviour,
         if (!faceDown)
             faceDownSummonedTurn = -1;
 
+        if (card == null)
+        {
+            currentCharacterHp = 0;
+            currentCharacterTension = 0;
+        }
+        else if (isSameCharacter && previousHp > 0)
+        {
+            currentCharacterHp = previousHp;
+            currentCharacterTension = previousTension;
+        }
+        else
+        {
+            InitializeCharacterBattleStats(card);
+        }
+
         if (characterCardImage != null)
         {
             characterCardImage.sprite = sprite;
             characterCardImage.enabled = sprite != null;
             characterCardImage.preserveAspect = true;
 
-            // 중요:
             // 카드 회전은 슬롯 owner가 아니라 cardOwner 기준입니다.
             characterCardImage.rectTransform.localRotation = Quaternion.identity;
         }
@@ -273,6 +294,33 @@ public class BattleFieldSlot : MonoBehaviour,
         }
 
         RefreshVisualState();
+    }
+
+    private void InitializeCharacterBattleStats(BaseCardData card)
+    {
+        CharacterCardData character = card as CharacterCardData;
+
+        if (character == null)
+        {
+            currentCharacterHp = 0;
+            currentCharacterTension = 0;
+            return;
+        }
+
+        currentCharacterHp = Mathf.Max(0, character.hpMax);
+        currentCharacterTension = Mathf.Max(0, character.tension);
+    }
+
+    public void SetCharacterBattleStats(int hp, int tension)
+    {
+        currentCharacterHp = Mathf.Max(0, hp);
+        currentCharacterTension = Mathf.Max(0, tension);
+    }
+
+    public void ApplyCharacterDamage(int damage)
+    {
+        int safeDamage = Mathf.Max(0, damage);
+        currentCharacterHp = Mathf.Max(0, currentCharacterHp - safeDamage);
     }
 
     public void SetContentCard(BaseCardData card, Sprite sprite)
@@ -305,6 +353,8 @@ public class BattleFieldSlot : MonoBehaviour,
         isCharacterFaceDown = false;
         faceDownSummonedTurn = -1;
         characterMovedThisTurn = false;
+        currentCharacterHp = 0;
+        currentCharacterTension = 0;
 
         if (characterCardImage != null)
         {

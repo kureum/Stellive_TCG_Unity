@@ -1054,6 +1054,22 @@ public class BattleManager : MonoBehaviour
         ResolveMyActionUsed(actionMessage);
     }
 
+    public void AddCharacterToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        if (card == null)
+            return;
+
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.restZone == null)
+            return;
+
+        targetPlayer.restZone.Add(card);
+    }
+
     private bool CanUseMyAction(out string failReason)
     {
         failReason = "";
@@ -1277,6 +1293,121 @@ public class BattleManager : MonoBehaviour
         ResolveEnemyActionUsed(
             $"상대가 ({targetSlot.x}, {targetSlot.y}) 슬롯에\n" +
             $"{characterCard.name} 카드를 뒷면으로 출연시켰습니다."
+        );
+
+        return true;
+    }
+
+    public bool TestEnemyTryFlipSummonCharacter()
+    {
+        if (currentPhase != BattlePhase.MainGame)
+            return false;
+
+        if (currentActionSide != BattlePlayerSide.Enemy)
+            return false;
+
+        if (enemyPlayer == null)
+            return false;
+
+        BattleFieldSlot targetSlot = enemyBattleSlots.FirstOrDefault(slot =>
+        {
+            if (slot == null ||
+                slot.owner != BattleSlotOwner.Enemy ||
+                slot.characterOwner != BattleSlotOwner.Enemy ||
+                !slot.HasCharacter ||
+                !slot.isCharacterFaceDown ||
+                !CanFlipSummonByTurn(slot, out _))
+            {
+                return false;
+            }
+
+            BaseCardData card = slot.characterCard;
+            int cost = GetCharacterAppearCost(card);
+
+            return card != null &&
+                CanPayViewerCost(enemyPlayer, cost) &&
+                LoadCardSprite(card) != null;
+        });
+
+        if (targetSlot == null)
+            return false;
+
+        BaseCardData characterCard = targetSlot.characterCard;
+
+        if (characterCard == null)
+            return false;
+
+        int cost = GetCharacterAppearCost(characterCard);
+
+        if (!CanPayViewerCost(enemyPlayer, cost))
+            return false;
+
+        Sprite sprite = LoadCardSprite(characterCard);
+
+        if (sprite == null)
+            return false;
+
+        enemyPlayer.viewers -= cost;
+
+        targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.Enemy);
+
+        RefreshAllUI();
+
+        ResolveEnemyActionUsed(
+            $"Enemy flip summoned {characterCard.name} at ({targetSlot.x}, {targetSlot.y}).\n" +
+            $"Viewers -{cost}"
+        );
+
+        return true;
+    }
+
+    public bool TestEnemyTrySummonFrontCharacter()
+    {
+        if (currentPhase != BattlePhase.MainGame)
+            return false;
+
+        if (currentActionSide != BattlePlayerSide.Enemy)
+            return false;
+
+        if (enemyPlayer == null || enemyPlayer.hand == null)
+            return false;
+
+        BattleFieldSlot targetSlot = enemyBattleSlots.FirstOrDefault(slot =>
+            slot != null &&
+            slot.owner == BattleSlotOwner.Enemy &&
+            slot.HasBroadcast &&
+            !slot.HasCharacter
+        );
+
+        if (targetSlot == null)
+            return false;
+
+        BaseCardData characterCard = enemyPlayer.hand.FirstOrDefault(card =>
+            card != null &&
+            card.kind == "Character" &&
+            CanPayViewerCost(enemyPlayer, GetCharacterAppearCost(card)) &&
+            LoadCardSprite(card) != null
+        );
+
+        if (characterCard == null)
+            return false;
+
+        int cost = GetCharacterAppearCost(characterCard);
+        Sprite sprite = LoadCardSprite(characterCard);
+
+        if (sprite == null)
+            return false;
+
+        enemyPlayer.viewers -= cost;
+
+        targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.Enemy);
+        enemyPlayer.hand.Remove(characterCard);
+
+        RefreshAllUI();
+
+        ResolveEnemyActionUsed(
+            $"Enemy front summoned {characterCard.name} at ({targetSlot.x}, {targetSlot.y}).\n" +
+            $"Viewers -{cost}"
         );
 
         return true;

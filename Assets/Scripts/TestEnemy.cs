@@ -84,7 +84,9 @@ public class TestEnemy : MonoBehaviour
         timer = 0f;
 
         bool didAction = enemySummonEnabled &&
-            battleManager.TestEnemyTrySummonBacksideCharacter();
+            (battleManager.TestEnemyTryFlipSummonCharacter() ||
+                battleManager.TestEnemyTrySummonFrontCharacter() ||
+                battleManager.TestEnemyTrySummonBacksideCharacter());
 
         if (didAction)
             return;

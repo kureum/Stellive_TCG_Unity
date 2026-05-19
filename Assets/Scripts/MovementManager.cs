@@ -207,13 +207,49 @@ public class MovementManager : MonoBehaviour
         ClearMoveHighlights();
 
         questionPanel.ShowYesNoQuestion(
-            "합방을 하시겠습니까?",
-            CancelPendingCollaboration,
-            CancelPendingCollaboration,
-            CancelPendingCollaboration
-        );
+        "합방을 하시겠습니까?",
+        ConfirmPendingCollaboration,
+        CancelPendingCollaboration,
+        CancelPendingCollaboration
+    );
 
-        battleManager.SetSystemMessageFromExternal("합방은 아직 구현되지 않았습니다.");
+        battleManager.SetSystemMessageFromExternal(
+            $"{card.name} 카드가 상대 캐릭터에게 합방을 시도합니다."
+        );
+    }
+
+    private void ConfirmPendingCollaboration()
+    {
+        if (pendingMoveFromSlot == null ||
+            pendingMoveToSlot == null ||
+            pendingMoveCard == null)
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal("합방할 캐릭터 정보가 없습니다.");
+            return;
+        }
+
+        string failReason;
+        if (!CanStartCollaborationAtSlot(pendingMoveFromSlot, pendingMoveToSlot, out failReason))
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal($"합방할 수 없습니다.\n{failReason}");
+            return;
+        }
+
+        if (battleManager.collaborationManager == null)
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal("CollaborationManager가 연결되어 있지 않습니다.");
+            return;
+        }
+
+        BattleFieldSlot guestSlot = pendingMoveFromSlot;
+        BattleFieldSlot hostSlot = pendingMoveToSlot;
+
+        ClearAllMoveState();
+
+        battleManager.collaborationManager.StartCollaboration(guestSlot, hostSlot);
     }
 
     private void CancelPendingCollaboration()
@@ -269,8 +305,11 @@ public class MovementManager : MonoBehaviour
         bool wasFaceDown = fromSlot.isCharacterFaceDown;
 
         BattleSlotOwner movingCardOwner = fromSlot.characterOwner;
+        int currentHp = fromSlot.currentCharacterHp;
+        int currentTension = fromSlot.currentCharacterTension;
 
         toSlot.SetCharacterCard(card, currentSprite, wasFaceDown, movingCardOwner);
+        toSlot.SetCharacterBattleStats(currentHp, currentTension);
         toSlot.SetCharacterMovedThisTurn(true);
 
         fromSlot.ClearCharacterCard();
