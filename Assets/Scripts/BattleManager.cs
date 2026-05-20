@@ -6,6 +6,7 @@ using System.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 public enum BattlePhase
@@ -57,8 +58,21 @@ public class BattleManager : MonoBehaviour
     [Tooltip("비워두면 handCardItemPrefab을 사용합니다.")]
     public GameObject broadcastSelectCardItemPrefab;
 
+    [Header("Rest Zone UI")]
+    [Tooltip("비워두면 BroadcastSelectPanel을 임시로 재사용합니다.")]
+    public GameObject restZonePanel;
+    [Tooltip("비워두면 BroadcastSelectContent를 임시로 재사용합니다.")]
+    public Transform restZoneContent;
+    public Button restZoneCloseButton;
+    [Tooltip("비워두면 broadcastSelectCardItemPrefab 또는 handCardItemPrefab을 사용합니다.")]
+    public GameObject restZoneCardItemPrefab;
+
     [Header("Question Panel")]
     public QuestionPanel questionPanel;
+
+    [Header("Battle Result UI")]
+    public GameObject battleResultPanel;
+    public TMP_Text battleResultText;
 
     [Header("Optional Prefab")]
     [Tooltip("없어도 됩니다. 없으면 BattleManager가 임시 텍스트 카드 버튼을 생성합니다.")]
@@ -131,6 +145,10 @@ public class BattleManager : MonoBehaviour
 
     private BattlePlayerSide currentActionSide;
     private int consecutivePassCount = 0;
+    private bool isRestZonePanelOpen = false;
+    private const int VictoryViewerThreshold = 100000;
+    private bool isBattleEnded = false;
+    private bool isVictoryTiebreakerActive = false;
 
     // 뒷면 출연은 행동권과 별개의 1턴 1회 제한입니다.
     private bool myHasSummonedFaceDownThisTurn = false;
@@ -169,20 +187,145 @@ public class BattleManager : MonoBehaviour
         if (turnEndButton != null)
             turnEndButton.onClick.AddListener(OnClickTurnEndButton);
 
+        ResolvePanelCloseButtons();
+        ResolveBattleResultPanel();
+
         if (broadcastSelectCancelButton != null)
-            broadcastSelectCancelButton.onClick.AddListener(CancelBroadcastSelection);
+            broadcastSelectCancelButton.onClick.AddListener(OnClickSelectPanelCancelButton);
+
+        if (restZoneCloseButton != null)
+            restZoneCloseButton.onClick.AddListener(CloseRestZonePanel);
 
         if (questionPanel != null)
             questionPanel.Hide();
 
         CloseBroadcastSelectPanel();
+        CloseRestZonePanel();
+
+        if (battleResultPanel != null)
+            battleResultPanel.SetActive(false);
 
         StartBattleSetup();
+    }
+
+    private void ResolveBattleResultPanel()
+    {
+        if (battleResultPanel == null)
+        {
+            GameObject foundPanel = FindSceneGameObjectByName("BattleResultPanel");
+            if (foundPanel != null)
+                battleResultPanel = foundPanel;
+        }
+
+        if (battleResultPanel == null)
+            return;
+
+        if (battleResultText == null)
+            battleResultText = battleResultPanel.GetComponentInChildren<TMP_Text>(true);
+
+        Button panelButton = battleResultPanel.GetComponent<Button>();
+        if (panelButton == null)
+            panelButton = battleResultPanel.AddComponent<Button>();
+
+        Graphic panelGraphic = battleResultPanel.GetComponent<Graphic>();
+        if (panelGraphic == null)
+        {
+            Image image = battleResultPanel.AddComponent<Image>();
+            image.color = new Color(1f, 1f, 1f, 0.01f);
+            panelGraphic = image;
+        }
+
+        panelGraphic.raycastTarget = true;
+
+        panelButton.onClick.RemoveAllListeners();
+        panelButton.onClick.AddListener(() =>
+        {
+            if (!isBattleEnded)
+                return;
+
+            SceneManager.LoadScene("BattleLobbyScene");
+        });
+    }
+
+    private GameObject FindSceneGameObjectByName(string objectName)
+    {
+        if (string.IsNullOrEmpty(objectName))
+            return null;
+
+        GameObject activeObject = GameObject.Find(objectName);
+        if (activeObject != null)
+            return activeObject;
+
+        GameObject[] allObjects = Resources.FindObjectsOfTypeAll<GameObject>();
+
+        foreach (GameObject obj in allObjects)
+        {
+            if (obj == null || obj.name != objectName)
+                continue;
+
+            if (!obj.scene.IsValid())
+                continue;
+
+            return obj;
+        }
+
+        return null;
+    }
+
+    private void ResolvePanelCloseButtons()
+    {
+        if (broadcastSelectCancelButton == null && broadcastSelectPanel != null)
+            broadcastSelectCancelButton = FindCloseButtonInPanel(broadcastSelectPanel);
+
+        if (restZoneCloseButton == null)
+        {
+            if (restZonePanel != null)
+            {
+                restZoneCloseButton = FindCloseButtonInPanel(restZonePanel);
+            }
+            else if (broadcastSelectPanel != null)
+            {
+                restZoneCloseButton = broadcastSelectCancelButton;
+            }
+        }
+    }
+
+    private Button FindCloseButtonInPanel(GameObject panel)
+    {
+        if (panel == null)
+            return null;
+
+        Button[] buttons = panel.GetComponentsInChildren<Button>(true);
+
+        foreach (Button button in buttons)
+        {
+            if (button == null)
+                continue;
+
+            if (IsCloseButtonName(button.gameObject.name))
+                return button;
+        }
+
+        return null;
+    }
+
+    private bool IsCloseButtonName(string objectName)
+    {
+        if (string.IsNullOrEmpty(objectName))
+            return false;
+
+        return objectName.IndexOf("Cancel", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            objectName.IndexOf("Close", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            objectName.Contains("취소") ||
+            objectName.Contains("닫");
     }
 
     private void StartBattleSetup()
     {
         SetSystemMessage("배틀 준비를 시작합니다.");
+
+        isBattleEnded = false;
+        isVictoryTiebreakerActive = false;
 
         if (!LoadCardDatabase())
             return;
@@ -446,6 +589,8 @@ public class BattleManager : MonoBehaviour
             slot.ClearAllCards();
             slot.SetSetupButtonVisible(false);
         }
+
+        SetupRestZoneButtons();
     }
 
     private void StartBroadcastSetupPhase(string myDeckName, string enemyDeckName)
@@ -675,6 +820,34 @@ public class BattleManager : MonoBehaviour
         selectedBroadcastTargetSlot = slot;
 
         OpenBroadcastSelectPanel(currentSetupSide, slot);
+    }
+
+    private void SetupRestZoneButtons()
+    {
+        SetupRestZoneButton(myRestSlot, BattlePlayerSide.My);
+        SetupRestZoneButton(enemyRestSlot, BattlePlayerSide.Enemy);
+    }
+
+    private void SetupRestZoneButton(Transform restSlot, BattlePlayerSide side)
+    {
+        if (restSlot == null)
+            return;
+
+        Image image = restSlot.GetComponent<Image>();
+        if (image == null)
+        {
+            image = restSlot.gameObject.AddComponent<Image>();
+            image.color = new Color(1f, 1f, 1f, 0.01f);
+        }
+
+        image.raycastTarget = true;
+
+        Button button = restSlot.GetComponent<Button>();
+        if (button == null)
+            button = restSlot.gameObject.AddComponent<Button>();
+
+        button.onClick.RemoveAllListeners();
+        button.onClick.AddListener(() => OpenRestZonePanel(side));
     }
 
     private void OpenBroadcastSelectPanel(BattlePlayerSide side, BattleFieldSlot targetSlot)
@@ -934,6 +1107,17 @@ public class BattleManager : MonoBehaviour
         );
     }
 
+    private void OnClickSelectPanelCancelButton()
+    {
+        if (isRestZonePanelOpen)
+        {
+            CloseRestZonePanel();
+            return;
+        }
+
+        CancelBroadcastSelection();
+    }
+
     private void CloseBroadcastSelectPanel()
     {
         if (broadcastSelectPanel != null)
@@ -941,6 +1125,133 @@ public class BattleManager : MonoBehaviour
 
         if (broadcastSelectContent != null)
             ClearChildren(broadcastSelectContent);
+    }
+
+    private void OpenRestZonePanel(BattlePlayerSide side)
+    {
+        BattlePlayerRuntime player = GetPlayer(side);
+
+        if (player == null)
+            return;
+
+        GameObject targetPanel = GetRestZonePanel();
+        Transform targetContent = GetRestZoneContent();
+
+        if (targetPanel == null || targetContent == null)
+        {
+            SetSystemMessage("Rest Zone 패널 또는 Content가 연결되어 있지 않습니다.");
+            return;
+        }
+
+        if (targetPanel == broadcastSelectPanel)
+            CloseBroadcastSelectPanel();
+
+        ClearChildren(targetContent);
+
+        foreach (BaseCardData card in player.restZone)
+        {
+            CreateRestZoneCardItem(card, targetContent);
+        }
+
+        isRestZonePanelOpen = true;
+        targetPanel.SetActive(true);
+
+        SetSystemMessage(
+            $"{GetSideName(side)}의 휴식존을 확인합니다.\n" +
+            $"{player.restZone.Count}장"
+        );
+    }
+
+    private void CloseRestZonePanel()
+    {
+        GameObject targetPanel = GetRestZonePanel();
+        Transform targetContent = GetRestZoneContent();
+
+        if (targetPanel != null)
+            targetPanel.SetActive(false);
+
+        if (targetContent != null)
+            ClearChildren(targetContent);
+
+        isRestZonePanelOpen = false;
+    }
+
+    private GameObject GetRestZonePanel()
+    {
+        return restZonePanel != null ? restZonePanel : broadcastSelectPanel;
+    }
+
+    private Transform GetRestZoneContent()
+    {
+        return restZoneContent != null ? restZoneContent : broadcastSelectContent;
+    }
+
+    private void CreateRestZoneCardItem(BaseCardData card, Transform parent)
+    {
+        GameObject itemObject;
+
+        GameObject prefab = restZoneCardItemPrefab != null
+            ? restZoneCardItemPrefab
+            : broadcastSelectCardItemPrefab != null
+                ? broadcastSelectCardItemPrefab
+                : handCardItemPrefab;
+
+        if (prefab != null)
+        {
+            itemObject = Instantiate(prefab, parent);
+        }
+        else
+        {
+            itemObject = CreateFallbackHandCardItem(parent);
+        }
+
+        DeckCardItemUI cardItemUI = itemObject.GetComponent<DeckCardItemUI>();
+
+        if (cardItemUI != null)
+        {
+            cardItemUI.SetCard(
+                card,
+                leftClickAction: SelectCard,
+                rightClickAction: null,
+                doubleClickAction: null
+            );
+
+            cardItemUI.SetDragActions(false);
+            return;
+        }
+
+        TMP_Text text = itemObject.GetComponentInChildren<TMP_Text>();
+        if (text != null)
+            text.text = $"{GetKoreanKind(card.kind)}\n{card.name}";
+
+        Image image = null;
+
+        Transform cardImageTransform = itemObject.transform.Find("CardImage");
+        if (cardImageTransform != null)
+            image = cardImageTransform.GetComponent<Image>();
+
+        if (image == null)
+            image = itemObject.GetComponent<Image>();
+
+        if (image != null)
+        {
+            Sprite cardSprite = LoadCardSprite(card);
+
+            if (cardSprite != null)
+            {
+                image.sprite = cardSprite;
+                image.color = Color.white;
+            }
+
+            image.preserveAspect = true;
+        }
+
+        Button button = itemObject.GetComponent<Button>();
+        if (button == null)
+            button = itemObject.AddComponent<Button>();
+
+        button.onClick.RemoveAllListeners();
+        button.onClick.AddListener(() => SelectCard(card));
     }
 
     private bool IsBroadcastSetupComplete()
@@ -1024,6 +1335,11 @@ public class BattleManager : MonoBehaviour
         return GetSlots(side);
     }
 
+    public int GetCurrentTurnCountFromExternal()
+    {
+        return turnCount;
+    }
+
     public bool CanUseMyActionFromExternal(out string failReason)
     {
         return CanUseMyAction(out failReason);
@@ -1054,7 +1370,7 @@ public class BattleManager : MonoBehaviour
         ResolveMyActionUsed(actionMessage);
     }
 
-    public void AddCharacterToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
+    public void AddCardToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
         if (card == null)
             return;
@@ -1070,9 +1386,39 @@ public class BattleManager : MonoBehaviour
         targetPlayer.restZone.Add(card);
     }
 
+    public void AddCharacterToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        AddCardToRestZoneFromExternal(owner, card);
+    }
+
+    public bool MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null || targetPlayer.restZone == null)
+            return false;
+
+        if (card == null || !targetPlayer.hand.Contains(card))
+            return false;
+
+        targetPlayer.hand.Remove(card);
+        targetPlayer.restZone.Add(card);
+
+        return true;
+    }
+
     private bool CanUseMyAction(out string failReason)
     {
         failReason = "";
+
+        if (isBattleEnded)
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
 
         if (currentPhase != BattlePhase.MainGame)
         {
@@ -1100,6 +1446,8 @@ public class BattleManager : MonoBehaviour
 
         if (questionPanel != null && questionPanel.IsOpen())
             questionPanel.Hide();
+
+        CloseRestZonePanel();
     }
 
     private void ResetTurnLimitedFlags()
@@ -1114,6 +1462,10 @@ public class BattleManager : MonoBehaviour
     private void ResolveMyActionUsed(string actionMessage)
     {
         consecutivePassCount = 0;
+
+        if (TryResolveVictory(actionMessage))
+            return;
+
         currentActionSide = BattlePlayerSide.Enemy;
 
         RefreshAllUI();
@@ -1126,6 +1478,9 @@ public class BattleManager : MonoBehaviour
 
     private void ResolveMyActionPass()
     {
+        if (isBattleEnded)
+            return;
+
         ClearAllPendingBattleInteractions();
 
         consecutivePassCount++;
@@ -1149,6 +1504,10 @@ public class BattleManager : MonoBehaviour
     private void ResolveEnemyActionUsed(string actionMessage)
     {
         consecutivePassCount = 0;
+
+        if (TryResolveVictory(actionMessage))
+            return;
+
         currentActionSide = BattlePlayerSide.My;
 
         RefreshAllUI();
@@ -1161,6 +1520,9 @@ public class BattleManager : MonoBehaviour
 
     private void ResolveEnemyActionPass(string actionMessage)
     {
+        if (isBattleEnded)
+            return;
+
         consecutivePassCount++;
 
         if (consecutivePassCount >= 2)
@@ -1182,8 +1544,95 @@ public class BattleManager : MonoBehaviour
         );
     }
 
+    private bool TryResolveVictory(string previousMessage)
+    {
+        if (isBattleEnded || myPlayer == null || enemyPlayer == null)
+            return isBattleEnded;
+
+        bool myReached = myPlayer.viewers >= VictoryViewerThreshold;
+        bool enemyReached = enemyPlayer.viewers >= VictoryViewerThreshold;
+
+        if (isVictoryTiebreakerActive)
+        {
+            if (myPlayer.viewers == enemyPlayer.viewers)
+                return false;
+
+            BattlePlayerSide winner =
+                myPlayer.viewers > enemyPlayer.viewers
+                    ? BattlePlayerSide.My
+                    : BattlePlayerSide.Enemy;
+
+            ResolveVictory(winner, previousMessage, "동점 승부가 깨졌습니다.");
+            return true;
+        }
+
+        if (!myReached && !enemyReached)
+            return false;
+
+        if (myReached && enemyReached && myPlayer.viewers == enemyPlayer.viewers)
+        {
+            isVictoryTiebreakerActive = true;
+
+            return false;
+        }
+
+        BattlePlayerSide resolvedWinner =
+            myReached && (!enemyReached || myPlayer.viewers > enemyPlayer.viewers)
+                ? BattlePlayerSide.My
+                : BattlePlayerSide.Enemy;
+
+        ResolveVictory(resolvedWinner, previousMessage, $"{VictoryViewerThreshold} 시청자를 달성했습니다.");
+        return true;
+    }
+
+    private void ResolveVictory(
+        BattlePlayerSide winner,
+        string previousMessage,
+        string reason)
+    {
+        isBattleEnded = true;
+        currentPhase = BattlePhase.None;
+        consecutivePassCount = 0;
+
+        ClearAllPendingBattleInteractions();
+
+        if (turnEndButton != null)
+            turnEndButton.interactable = false;
+
+        RefreshAllUI();
+
+        string winnerName = GetSideName(winner);
+
+        string resultMessage =
+            $"{previousMessage}\n\n" +
+            $"{reason}\n" +
+            $"{winnerName} 승리!\n" +
+            $"내 시청자: {myPlayer.viewers}\n" +
+            $"상대 시청자: {enemyPlayer.viewers}";
+
+        SetSystemMessage(resultMessage);
+        ShowBattleResultPanel(winner == BattlePlayerSide.My ? "승리하였습니다" : "패배하였습니다");
+    }
+
+    private void ShowBattleResultPanel(string resultMessage)
+    {
+        ResolveBattleResultPanel();
+
+        if (battleResultPanel == null)
+            return;
+
+        if (battleResultText != null)
+            battleResultText.text = resultMessage;
+
+        battleResultPanel.SetActive(true);
+        battleResultPanel.transform.SetAsLastSibling();
+    }
+
     private void EndCurrentTurnAndStartNextTurn(string reasonMessage)
     {
+        if (isBattleEnded)
+            return;
+
         ClearAllPendingBattleInteractions();
 
         turnCount++;
@@ -1201,14 +1650,18 @@ public class BattleManager : MonoBehaviour
 
         RefreshAllUI();
 
-        SetSystemMessage(
+        string turnStartMessage =
             $"{reasonMessage}\n\n" +
             $"{turnCount}턴 시작.\n" +
             $"현재 행동권: {GetSideName(currentActionSide)}\n" +
             "서로 카드 1장을 드로우했습니다.\n" +
             $"내 시청자 +{myGainedViewers}\n" +
-            $"상대 시청자 +{enemyGainedViewers}"
-        );
+            $"상대 시청자 +{enemyGainedViewers}";
+
+        if (TryResolveVictory(turnStartMessage))
+            return;
+
+        SetSystemMessage(turnStartMessage);
     }
 
     public bool IsBroadcastSetupPhase()
@@ -1224,7 +1677,8 @@ public class BattleManager : MonoBehaviour
 
     public bool IsEnemyActionTurn()
     {
-        return currentPhase == BattlePhase.MainGame &&
+        return !isBattleEnded &&
+            currentPhase == BattlePhase.MainGame &&
             currentActionSide == BattlePlayerSide.Enemy;
     }
 
@@ -1350,6 +1804,7 @@ public class BattleManager : MonoBehaviour
         enemyPlayer.viewers -= cost;
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.Enemy);
+        targetSlot.faceUpSummonedTurn = turnCount;
 
         RefreshAllUI();
 
@@ -1401,6 +1856,7 @@ public class BattleManager : MonoBehaviour
         enemyPlayer.viewers -= cost;
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.Enemy);
+        targetSlot.faceUpSummonedTurn = turnCount;
         enemyPlayer.hand.Remove(characterCard);
 
         RefreshAllUI();
@@ -1671,6 +2127,7 @@ public class BattleManager : MonoBehaviour
         myPlayer.viewers -= cost;
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, targetSlot.characterOwner);
+        targetSlot.faceUpSummonedTurn = turnCount;
 
         ClearPendingFlipChoice();
 
@@ -2142,6 +2599,7 @@ public class BattleManager : MonoBehaviour
         myPlayer.viewers -= cost;
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.My);
+        targetSlot.faceUpSummonedTurn = turnCount;
         myPlayer.hand.Remove(characterCard);
 
         ClearPendingSummonChoice();
@@ -2237,7 +2695,8 @@ public class BattleManager : MonoBehaviour
                 $"메인 덱: {myPlayer.mainDeck.Count}\n" +
                 $"방송 덱: {myPlayer.broadcastDeck.Count}\n" +
                 $"손패: {myPlayer.hand.Count}\n" +
-                $"방송 설치: {myBroadcastPlacedCount}/{myRequiredBroadcastCount}";
+                $"방송 설치: {myBroadcastPlacedCount}/{myRequiredBroadcastCount}" +
+                GetVictoryStatusText();
         }
 
         if (enemyStatusText != null && enemyPlayer != null)
@@ -2248,10 +2707,22 @@ public class BattleManager : MonoBehaviour
                 $"메인 덱: {enemyPlayer.mainDeck.Count}\n" +
                 $"방송 덱: {enemyPlayer.broadcastDeck.Count}\n" +
                 $"손패: {enemyPlayer.hand.Count}\n" +
-                $"방송 설치: {enemyBroadcastPlacedCount}/{enemyRequiredBroadcastCount}";
+                $"방송 설치: {enemyBroadcastPlacedCount}/{enemyRequiredBroadcastCount}" +
+                GetVictoryStatusText();
         }
 
         RefreshViewerTextUI();
+    }
+
+    private string GetVictoryStatusText()
+    {
+        if (isBattleEnded)
+            return "\n배틀 종료";
+
+        if (isVictoryTiebreakerActive)
+            return "\n동점 승부 중";
+
+        return "";
     }
 
     private void RefreshViewerTextUI()
@@ -2378,8 +2849,8 @@ public class BattleManager : MonoBehaviour
             cardItemUI.SetCard(
                 card,
                 leftClickAction: SelectCard,
-                rightClickAction: null,
-                doubleClickAction: null
+                rightClickAction: DiscardMyHandCardToRestZone,
+                doubleClickAction: UseMyContentCardFromHand
             );
 
             bool canDrag = CanStartHandCardDrag(card);
@@ -2426,6 +2897,70 @@ public class BattleManager : MonoBehaviour
             button.onClick.RemoveAllListeners();
             button.onClick.AddListener(() => SelectCard(card));
         }
+    }
+
+    private void UseMyContentCardFromHand(BaseCardData card)
+    {
+        if (card == null)
+            return;
+
+        if (card.kind != "Content")
+        {
+            SelectCard(card);
+            return;
+        }
+
+        string failReason;
+        if (!CanUseMyAction(out failReason))
+        {
+            SetSystemMessage(failReason);
+            return;
+        }
+
+        if (!MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner.My, card))
+        {
+            SetSystemMessage("내 손패에 있는 카드만 사용할 수 있습니다.");
+            return;
+        }
+
+        ClearDraggingHandCard();
+        ClearPendingSummonChoice();
+        ClearPendingFlipChoice();
+        RefreshAllUI();
+
+        ResolveMyActionUsed(
+            $"{card.name} 콘텐츠 카드를 사용했습니다.\n" +
+            "사용한 카드는 휴식존으로 이동했습니다."
+        );
+    }
+
+    private void DiscardMyHandCardToRestZone(BaseCardData card)
+    {
+        if (card == null)
+            return;
+
+        string failReason;
+        if (!CanUseMyAction(out failReason))
+        {
+            SetSystemMessage(failReason);
+            return;
+        }
+
+        if (!MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner.My, card))
+        {
+            SetSystemMessage("내 손패에 있는 카드만 버릴 수 있습니다.");
+            return;
+        }
+
+        ClearDraggingHandCard();
+        ClearPendingSummonChoice();
+        ClearPendingFlipChoice();
+        RefreshAllUI();
+
+        ResolveMyActionUsed(
+            $"{card.name} 카드를 버렸습니다.\n" +
+            "버린 카드는 휴식존으로 이동했습니다."
+        );
     }
 
     private bool CanStartHandCardDrag(BaseCardData card)

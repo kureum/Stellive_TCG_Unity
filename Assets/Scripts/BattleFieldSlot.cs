@@ -46,6 +46,7 @@ public class BattleFieldSlot : MonoBehaviour,
     public BattleSlotOwner characterOwner { get; private set; }
     public BattleSlotOwner contentOwner { get; private set; }
     public int faceDownSummonedTurn = -1;
+    public int faceUpSummonedTurn = -1;
     public int currentCharacterTension { get; private set; }
     public int currentCharacterHp { get; private set; }
     private Action<BattleFieldSlot> onSetupButtonClick;
@@ -261,6 +262,8 @@ public class BattleFieldSlot : MonoBehaviour,
 
         if (!faceDown)
             faceDownSummonedTurn = -1;
+        else
+            faceUpSummonedTurn = -1;
 
         if (card == null)
         {
@@ -352,6 +355,7 @@ public class BattleFieldSlot : MonoBehaviour,
         characterOwner = BattleSlotOwner.My;
         isCharacterFaceDown = false;
         faceDownSummonedTurn = -1;
+        faceUpSummonedTurn = -1;
         characterMovedThisTurn = false;
         currentCharacterHp = 0;
         currentCharacterTension = 0;
@@ -393,6 +397,7 @@ public class BattleFieldSlot : MonoBehaviour,
         characterOwner = BattleSlotOwner.My;
         contentOwner = BattleSlotOwner.My;
         faceDownSummonedTurn = -1;
+        faceUpSummonedTurn = -1;
 
         isCharacterFaceDown = false;
 

@@ -394,6 +394,14 @@ public class MovementManager : MonoBehaviour
             return false;
         }
 
+        int currentTurn = battleManager.GetCurrentTurnCountFromExternal();
+        if (fromSlot.faceUpSummonedTurn >= 0 &&
+            currentTurn <= fromSlot.faceUpSummonedTurn)
+        {
+            failReason = "앞면으로 출연한 턴에는 이동할 수 없습니다.";
+            return false;
+        }
+
         if (fromSlot.characterMovedThisTurn)
         {
             failReason = "이 캐릭터는 이번 턴에 이미 이동했습니다.";
