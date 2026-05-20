@@ -26,6 +26,16 @@ public class CollaborationManager : MonoBehaviour
     [SerializeField] private GameObject collabResultPanel;
     [SerializeField] private TMP_Text resultText;
 
+    [Header("Animation Settings")]
+    [SerializeField] private float attackMoveDistance = 45f;
+    [SerializeField] private float attackMoveTime = 0.15f;
+    [SerializeField] private float attackReturnTime = 0.12f;
+    [SerializeField] private float hitShakeDistance = 12f;
+    [SerializeField] private float hitShakeTime = 0.18f;
+    [SerializeField] private float hpStepDelay = 0.12f;
+    [SerializeField] private float defeatFadeTime = 0.35f;
+
+private bool isResolvingCollaboration = false;
     private BaseCardData currentGuestCard;
     private BaseCardData currentHostCard;
     private BattleFieldSlot pendingGuestSlot;
@@ -94,6 +104,12 @@ public class CollaborationManager : MonoBehaviour
         if (battleManager == null)
             return;
 
+        if (isResolvingCollaboration)
+        {
+            battleManager.SetSystemMessageFromExternal("이미 합방 결과를 처리 중입니다.");
+            return;
+        }
+
         if (!ValidateCollaboration(pendingGuestSlot, pendingHostSlot))
         {
             ClearPendingCollaboration();
@@ -101,8 +117,7 @@ public class CollaborationManager : MonoBehaviour
             return;
         }
 
-        ExecuteBasicCollaboration(pendingGuestSlot, pendingHostSlot);
-        ClearPendingCollaboration();
+        StartCoroutine(ExecuteBasicCollaborationRoutine(pendingGuestSlot, pendingHostSlot));
     }
 
     private void CancelPendingCollaboration()
@@ -191,8 +206,10 @@ public class CollaborationManager : MonoBehaviour
         );
     }
 
-    private void ExecuteBasicCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
+    private IEnumerator ExecuteBasicCollaborationRoutine(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
     {
+        isResolvingCollaboration = true;
+
         BaseCardData guestCard = guestSlot.characterCard;
         BaseCardData hostCard = hostSlot.characterCard;
 
@@ -205,24 +222,52 @@ public class CollaborationManager : MonoBehaviour
         int guestTension = guestSlot.currentCharacterTension;
         int hostTension = hostSlot.currentCharacterTension;
 
-        // 1. 공격자 선공
-        hostSlot.ApplyCharacterDamage(guestTension);
+        // 초기 표시
+        SetGuestView(guestCard, guestSlot.currentCharacterTension, guestSlot.currentCharacterHp);
+        SetHostView(hostCard, hostSlot.currentCharacterTension, hostSlot.currentCharacterHp);
+
+        RectTransform guestRect = GetCharacterRect(guestCharacterItemUI);
+        RectTransform hostRect = GetCharacterRect(hostCharacterItemUI);
+
+        // 1. 공격자 선공 연출
+        yield return AnimateAttack(guestRect, true);
+        yield return AnimateHit(hostRect);
+        yield return AnimateHpDamage(
+            hostSlot,
+            hostCard,
+            false,
+            guestTension
+        );
 
         bool hostDefeated = hostSlot.currentCharacterHp <= 0;
         bool guestDefeated = false;
 
-        // 2. 수비자가 생존하면 반격
+        // 2. 방어자가 생존하면 반격
         if (!hostDefeated)
         {
-            guestSlot.ApplyCharacterDamage(hostTension);
+            yield return new WaitForSeconds(0.2f);
+
+            yield return AnimateAttack(hostRect, false);
+            yield return AnimateHit(guestRect);
+            yield return AnimateHpDamage(
+                guestSlot,
+                guestCard,
+                true,
+                hostTension
+            );
+
             guestDefeated = guestSlot.currentCharacterHp <= 0;
         }
 
         int guestFinalHp = guestSlot.currentCharacterHp;
         int hostFinalHp = hostSlot.currentCharacterHp;
 
-        SetGuestView(guestCard, guestTension, guestFinalHp);
-        SetHostView(hostCard, hostTension, hostFinalHp);
+        // 3. 패배 카드 페이드아웃
+        if (hostDefeated)
+            yield return AnimateDefeatFade(hostRect);
+
+        if (guestDefeated)
+            yield return AnimateDefeatFade(guestRect);
 
         string resultMessage = BuildResultMessage(hostDefeated, guestDefeated);
 
@@ -241,11 +286,18 @@ public class CollaborationManager : MonoBehaviour
             guestDefeated
         );
 
+        ResetUiAlpha(guestRect);
+        ResetUiAlpha(hostRect);
+
         ShowResult(resultMessage);
         ScheduleClosePanel();
 
+        ClearPendingCollaboration();
+
         battleManager.RefreshAllUIFromExternal();
         battleManager.ResolveMyActionUsedFromExternal(resultMessage);
+
+        isResolvingCollaboration = false;
     }
 
     private string BuildResultMessage(bool hostDefeated, bool guestDefeated)
@@ -253,7 +305,13 @@ public class CollaborationManager : MonoBehaviour
         if (hostDefeated && !guestDefeated)
             return "내 카드가 이겼습니다.";
 
-        return "내 카드가 졌습니다.";
+        if (!hostDefeated && guestDefeated)
+            return "내 카드가 졌습니다.";
+
+        if (hostDefeated && guestDefeated)
+            return "양쪽 캐릭터가 모두 퇴장했습니다.";
+
+        return "합방이 종료되었습니다.";
     }
 
     private void ResolveCollaborationResult(
@@ -331,6 +389,145 @@ public class CollaborationManager : MonoBehaviour
 
         if (guestCharacterHpText != null)
             guestCharacterHpText.text = $"체력: {hp}";
+    }
+
+    private RectTransform GetCharacterRect(DeckCardItemUI itemUI)
+    {
+        if (itemUI == null)
+            return null;
+
+        return itemUI.GetComponent<RectTransform>();
+    }
+
+    private IEnumerator AnimateAttack(RectTransform rect, bool moveRight)
+    {
+        if (rect == null)
+            yield break;
+
+        Vector2 startPos = rect.anchoredPosition;
+        Vector2 targetPos = startPos + new Vector2(
+            moveRight ? attackMoveDistance : -attackMoveDistance,
+            0f
+        );
+
+        float timer = 0f;
+
+        while (timer < attackMoveTime)
+        {
+            timer += Time.deltaTime;
+            float t = Mathf.Clamp01(timer / attackMoveTime);
+            rect.anchoredPosition = Vector2.Lerp(startPos, targetPos, t);
+            yield return null;
+        }
+
+        timer = 0f;
+
+        while (timer < attackReturnTime)
+        {
+            timer += Time.deltaTime;
+            float t = Mathf.Clamp01(timer / attackReturnTime);
+            rect.anchoredPosition = Vector2.Lerp(targetPos, startPos, t);
+            yield return null;
+        }
+
+        rect.anchoredPosition = startPos;
+    }
+
+    private IEnumerator AnimateHit(RectTransform rect)
+    {
+        if (rect == null)
+            yield break;
+
+        Vector2 startPos = rect.anchoredPosition;
+        float timer = 0f;
+
+        while (timer < hitShakeTime)
+        {
+            timer += Time.deltaTime;
+
+            float progress = Mathf.Clamp01(timer / hitShakeTime);
+            float shake = Mathf.Sin(progress * Mathf.PI * 6f) * hitShakeDistance * (1f - progress);
+
+            rect.anchoredPosition = startPos + new Vector2(shake, 0f);
+
+            yield return null;
+        }
+
+        rect.anchoredPosition = startPos;
+    }
+
+    private IEnumerator AnimateHpDamage(
+        BattleFieldSlot targetSlot,
+        BaseCardData targetCard,
+        bool isGuest,
+        int damage)
+    {
+        if (targetSlot == null || targetCard == null)
+            yield break;
+
+        int safeDamage = Mathf.Max(0, damage);
+
+        for (int i = 0; i < safeDamage; i++)
+        {
+            if (targetSlot.currentCharacterHp <= 0)
+                break;
+
+            targetSlot.ApplyCharacterDamage(1);
+
+            if (isGuest)
+            {
+                SetGuestView(
+                    targetCard,
+                    targetSlot.currentCharacterTension,
+                    targetSlot.currentCharacterHp
+                );
+            }
+            else
+            {
+                SetHostView(
+                    targetCard,
+                    targetSlot.currentCharacterTension,
+                    targetSlot.currentCharacterHp
+                );
+            }
+
+            yield return new WaitForSeconds(hpStepDelay);
+        }
+    }
+
+    private IEnumerator AnimateDefeatFade(RectTransform rect)
+    {
+        if (rect == null)
+            yield break;
+
+        CanvasGroup canvasGroup = rect.GetComponent<CanvasGroup>();
+
+        if (canvasGroup == null)
+            canvasGroup = rect.gameObject.AddComponent<CanvasGroup>();
+
+        float startAlpha = canvasGroup.alpha;
+        float timer = 0f;
+
+        while (timer < defeatFadeTime)
+        {
+            timer += Time.deltaTime;
+            float t = Mathf.Clamp01(timer / defeatFadeTime);
+            canvasGroup.alpha = Mathf.Lerp(startAlpha, 0.2f, t);
+            yield return null;
+        }
+
+        canvasGroup.alpha = 0.2f;
+    }
+
+    private void ResetUiAlpha(RectTransform rect)
+    {
+        if (rect == null)
+            return;
+
+        CanvasGroup canvasGroup = rect.GetComponent<CanvasGroup>();
+
+        if (canvasGroup != null)
+            canvasGroup.alpha = 1f;
     }
 
     private void SetHostView(BaseCardData card, int tension, int hp)
