@@ -18,6 +18,12 @@ public class MovementManager : MonoBehaviour
     private BaseCardData pendingMoveCard;
 
     public bool IsDraggingMoveCard => isDraggingMoveCard;
+    public bool HasPendingMoveChoice =>
+        pendingMoveFromSlot != null ||
+        pendingMoveToSlot != null ||
+        pendingMoveCard != null;
+
+    public bool IsMoveInteractionActive => isDraggingMoveCard || HasPendingMoveChoice;
 
     public void Init(BattleManager manager)
     {
@@ -159,12 +165,17 @@ public class MovementManager : MonoBehaviour
 
         ClearMoveHighlights();
 
-        questionPanel.ShowYesNoQuestion(
+        if (!questionPanel.TryShowYesNoQuestion(
             "이동하시겠습니까?",
             ConfirmPendingMove,
             CancelPendingMove,
             CancelPendingMove
-        );
+        ))
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal("이미 다른 선택창이 열려 있습니다.");
+            return;
+        }
 
         battleManager.SetSystemMessageFromExternal(
             $"{card.name} 카드를 ({fromSlot.x}, {fromSlot.y})에서 " +
@@ -206,12 +217,17 @@ public class MovementManager : MonoBehaviour
 
         ClearMoveHighlights();
 
-        questionPanel.ShowYesNoQuestion(
-        "합방을 하시겠습니까?",
-        ConfirmPendingCollaboration,
-        CancelPendingCollaboration,
-        CancelPendingCollaboration
-    );
+        if (!questionPanel.TryShowYesNoQuestion(
+            "합방을 하시겠습니까?",
+            ConfirmPendingCollaboration,
+            CancelPendingCollaboration,
+            CancelPendingCollaboration
+        ))
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal("이미 다른 선택창이 열려 있습니다.");
+            return;
+        }
 
         battleManager.SetSystemMessageFromExternal(
             $"{card.name} 카드가 상대 캐릭터에게 합방을 시도합니다."

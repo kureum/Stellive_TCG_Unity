@@ -44,7 +44,12 @@ public class QuestionPanel : MonoBehaviour, IPointerClickHandler
         return isOpen;
     }
 
-    public void ShowSummonQuestion(
+    public bool CanOpen()
+    {
+        return !isOpen;
+    }
+
+    public bool TryShowSummonQuestion(
         string message,
         bool canFront,
         bool canBackside,
@@ -52,6 +57,9 @@ public class QuestionPanel : MonoBehaviour, IPointerClickHandler
         Action onBackside,
         Action onCancel)
     {
+        if (isOpen)
+            return false;
+
         isOpen = true;
         enableRightClickCancel = true;
 
@@ -75,14 +83,37 @@ public class QuestionPanel : MonoBehaviour, IPointerClickHandler
 
         SetupButton(frontButton, canFront, OnClickFront);
         SetupButton(backsideButton, canBackside, OnClickBackside);
+
+        return true;
     }
 
-    public void ShowYesNoQuestion(
+    public void ShowSummonQuestion(
+        string message,
+        bool canFront,
+        bool canBackside,
+        Action onFront,
+        Action onBackside,
+        Action onCancel)
+    {
+        TryShowSummonQuestion(
+            message,
+            canFront,
+            canBackside,
+            onFront,
+            onBackside,
+            onCancel
+        );
+    }
+
+    public bool TryShowYesNoQuestion(
         string message,
         Action onYes,
         Action onNo,
         Action onCancel)
     {
+        if (isOpen)
+            return false;
+
         isOpen = true;
         enableRightClickCancel = true;
 
@@ -106,6 +137,17 @@ public class QuestionPanel : MonoBehaviour, IPointerClickHandler
 
         SetupButton(yesButton, true, OnClickYes);
         SetupButton(noButton, true, OnClickNo);
+
+        return true;
+    }
+
+    public void ShowYesNoQuestion(
+        string message,
+        Action onYes,
+        Action onNo,
+        Action onCancel)
+    {
+        TryShowYesNoQuestion(message, onYes, onNo, onCancel);
     }
 
     public void Hide()

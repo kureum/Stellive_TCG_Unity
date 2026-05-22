@@ -35,7 +35,7 @@ public class CollaborationManager : MonoBehaviour
     [SerializeField] private float hpStepDelay = 0.12f;
     [SerializeField] private float defeatFadeTime = 0.35f;
 
-private bool isResolvingCollaboration = false;
+    private bool isResolvingCollaboration = false;
     private BaseCardData currentGuestCard;
     private BaseCardData currentHostCard;
     private BattleFieldSlot pendingGuestSlot;
@@ -49,6 +49,16 @@ private bool isResolvingCollaboration = false;
         HidePanel();
     }
 
+    public bool IsResolvingCollaboration => isResolvingCollaboration;
+
+    public bool HasPendingCollaborationChoice =>
+        pendingGuestSlot != null ||
+        pendingHostSlot != null;
+
+    public bool IsCollaborationInteractionActive =>
+        isResolvingCollaboration ||
+        HasPendingCollaborationChoice;
+
     private void Awake()
     {
         if (battleManager == null)
@@ -61,6 +71,12 @@ private bool isResolvingCollaboration = false;
     {
         if (battleManager == null)
             return;
+
+        if (IsCollaborationInteractionActive)
+        {
+            battleManager.SetSystemMessageFromExternal("이미 합방 처리를 진행 중입니다.");
+            return;
+        }
 
         if (!ValidateCollaboration(guestSlot, hostSlot))
             return;
@@ -87,16 +103,24 @@ private bool isResolvingCollaboration = false;
 
         if (questionPanel.IsOpen())
         {
+            ClearPendingCollaboration();
+            HidePanel();
             battleManager.SetSystemMessageFromExternal("이미 다른 선택창이 열려 있습니다.");
             return;
         }
 
-        questionPanel.ShowYesNoQuestion(
+        if (!questionPanel.TryShowYesNoQuestion(
             "합방 결과를 처리할까요?",
             ExecutePendingCollaboration,
             CancelPendingCollaboration,
             CancelPendingCollaboration
-        );
+        ))
+        {
+            ClearPendingCollaboration();
+            HidePanel();
+            battleManager.SetSystemMessageFromExternal("이미 다른 선택창이 열려 있습니다.");
+            return;
+        }
     }
 
     private void ExecutePendingCollaboration()
@@ -117,6 +141,7 @@ private bool isResolvingCollaboration = false;
             return;
         }
 
+        battleManager.SetBattleBusyFromExternal(true);
         StartCoroutine(ExecuteBasicCollaborationRoutine(pendingGuestSlot, pendingHostSlot));
     }
 
@@ -133,6 +158,21 @@ private bool isResolvingCollaboration = false;
     {
         pendingGuestSlot = null;
         pendingHostSlot = null;
+    }
+
+    public void CancelCollaborationStateFromExternal()
+    {
+        if (isResolvingCollaboration)
+        {
+            StopAllCoroutines();
+            isResolvingCollaboration = false;
+        }
+
+        ClearPendingCollaboration();
+        HidePanel();
+
+        if (battleManager != null)
+            battleManager.SetBattleBusyFromExternal(false);
     }
 
     private bool ValidateCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
@@ -295,9 +335,9 @@ private bool isResolvingCollaboration = false;
         ClearPendingCollaboration();
 
         battleManager.RefreshAllUIFromExternal();
-        battleManager.ResolveMyActionUsedFromExternal(resultMessage);
-
         isResolvingCollaboration = false;
+        battleManager.ResolveMyActionUsedFromExternal(resultMessage);
+        battleManager.SetBattleBusyFromExternal(false);
     }
 
     private string BuildResultMessage(bool hostDefeated, bool guestDefeated)

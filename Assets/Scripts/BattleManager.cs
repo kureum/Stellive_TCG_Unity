@@ -112,10 +112,18 @@ public class BattleManager : MonoBehaviour
 
     [Header("Buttons")]
     public Button turnEndButton;
+    public Image turnEndButtonPanelImage;
+
+    [Header("Turn End Button Panel Colors")]
+    [SerializeField] private Color myTurnEndPanelColor = new Color(0.72f, 0.86f, 1f, 1f);
+    [SerializeField] private Color enemyTurnEndPanelColor = new Color(1f, 0.74f, 0.74f, 1f);
+    [SerializeField] private Color inactiveTurnEndPanelColor = new Color(1f, 1f, 1f, 0.35f);
 
     [Header("Sub Managers")]
+    public SummonManager summonManager;
     public MovementManager movementManager;
     public CollaborationManager collaborationManager;
+    public EffectManager effectManager;
 
     private readonly List<BaseCardData> allCards = new List<BaseCardData>();
     private readonly List<BattleFieldSlot> myBattleSlots = new List<BattleFieldSlot>();
@@ -127,10 +135,7 @@ public class BattleManager : MonoBehaviour
     private BaseCardData selectedCard;
     private BattleFieldSlot selectedBroadcastTargetSlot;
 
-    private BattleFieldSlot pendingSummonSlot;
-    private BaseCardData pendingSummonCard;
-    private BattleFieldSlot pendingFlipSlot;
-    private BaseCardData pendingFlipCard;
+    private BaseCardData pendingContentCard;
     private BattlePhase currentPhase = BattlePhase.None;
     private BattlePlayerSide firstPlayerSide;
     private BattlePlayerSide currentSetupSide;
@@ -147,11 +152,11 @@ public class BattleManager : MonoBehaviour
     private int consecutivePassCount = 0;
     private bool isRestZonePanelOpen = false;
     private const int VictoryViewerThreshold = 100000;
+    private bool isGameOver = false;
+    private bool isBusy = false;
     private bool isBattleEnded = false;
     private bool isVictoryTiebreakerActive = false;
 
-    // 뒷면 출연은 행동권과 별개의 1턴 1회 제한입니다.
-    private bool myHasSummonedFaceDownThisTurn = false;
     private bool enemyHasSummonedFaceDownThisTurn = false;
 
     private DeckCardItemUI draggingHandCardItem;
@@ -172,6 +177,15 @@ public class BattleManager : MonoBehaviour
         if (systemMessageCanvasGroup == null && systemMessageText != null)
             systemMessageCanvasGroup = systemMessageText.GetComponentInParent<CanvasGroup>();
 
+        if (summonManager == null)
+            summonManager = GetComponentInChildren<SummonManager>();
+
+        if (summonManager == null)
+            summonManager = gameObject.AddComponent<SummonManager>();
+
+        if (summonManager != null)
+            summonManager.Init(this);
+
         if (movementManager == null)
             movementManager = GetComponentInChildren<MovementManager>();
 
@@ -184,9 +198,16 @@ public class BattleManager : MonoBehaviour
         if (collaborationManager != null)
             collaborationManager.Init(this);
 
+        if (effectManager == null)
+            effectManager = GetComponentInChildren<EffectManager>();
+
+        if (effectManager != null)
+            effectManager.Init(this);
+
         if (turnEndButton != null)
             turnEndButton.onClick.AddListener(OnClickTurnEndButton);
 
+        ResolveTurnEndButtonPanelImage();
         ResolvePanelCloseButtons();
         ResolveBattleResultPanel();
 
@@ -272,6 +293,19 @@ public class BattleManager : MonoBehaviour
         return null;
     }
 
+    private void ResolveTurnEndButtonPanelImage()
+    {
+        if (turnEndButtonPanelImage != null)
+            return;
+
+        GameObject panelObject = FindSceneGameObjectByName("TurnEndButtonPanel");
+        if (panelObject != null)
+            turnEndButtonPanelImage = panelObject.GetComponent<Image>();
+
+        if (turnEndButtonPanelImage == null && turnEndButton != null)
+            turnEndButtonPanelImage = turnEndButton.GetComponentInParent<Image>();
+    }
+
     private void ResolvePanelCloseButtons()
     {
         if (broadcastSelectCancelButton == null && broadcastSelectPanel != null)
@@ -324,6 +358,8 @@ public class BattleManager : MonoBehaviour
     {
         SetSystemMessage("배틀 준비를 시작합니다.");
 
+        isGameOver = false;
+        isBusy = false;
         isBattleEnded = false;
         isVictoryTiebreakerActive = false;
 
@@ -672,6 +708,13 @@ public class BattleManager : MonoBehaviour
 
     public void Debug_AutoPlaceAllBroadcastsRandomly()
     {
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
+
         if (currentPhase != BattlePhase.BroadcastSetup)
         {
             SetSystemMessage("디버그 치트: 현재는 방송 카드 설치 단계가 아닙니다.");
@@ -804,6 +847,13 @@ public class BattleManager : MonoBehaviour
     {
         if (slot == null)
             return;
+
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
 
         if (currentPhase != BattlePhase.BroadcastSetup)
         {
@@ -957,6 +1007,13 @@ public class BattleManager : MonoBehaviour
 
     private void ConfirmPlaceBroadcastCard(BaseCardData card)
     {
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
+
         if (currentPhase != BattlePhase.BroadcastSetup)
         {
             SetSystemMessage("현재는 방송 카드 설치 단계가 아닙니다.");
@@ -1051,14 +1108,14 @@ public class BattleManager : MonoBehaviour
     {
         currentPhase = BattlePhase.MainGame;
         selectedBroadcastTargetSlot = null;
-        ClearDraggingHandCard();
-        ClearPendingSummonChoice();
-        ClearPendingFlipChoice();
+        ClearAllPendingActions();
 
         currentActionSide = firstPlayerSide;
         consecutivePassCount = 0;
-        myHasSummonedFaceDownThisTurn = false;
         enemyHasSummonedFaceDownThisTurn = false;
+
+        if (summonManager != null)
+            summonManager.ResetTurnLimitedFlagsForNewTurn();
 
         CloseBroadcastSelectPanel();
 
@@ -1129,6 +1186,13 @@ public class BattleManager : MonoBehaviour
 
     private void OpenRestZonePanel(BattlePlayerSide side)
     {
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
+
         BattlePlayerRuntime player = GetPlayer(side);
 
         if (player == null)
@@ -1350,6 +1414,11 @@ public class BattleManager : MonoBehaviour
         return LoadCardSprite(card);
     }
 
+    public Sprite GetCardBackSpriteFromExternal()
+    {
+        return cardBackSprite;
+    }
+
     public void SelectCardFromExternal(BaseCardData card)
     {
         SelectCard(card);
@@ -1391,6 +1460,58 @@ public class BattleManager : MonoBehaviour
         AddCardToRestZoneFromExternal(owner, card);
     }
 
+    public bool IsCardInHandFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null || card == null)
+            return false;
+
+        return targetPlayer.hand.Contains(card);
+    }
+
+    public bool RemoveCardFromHandFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null || card == null)
+            return false;
+
+        return targetPlayer.hand.Remove(card);
+    }
+
+    public bool CanPayViewerCostFromExternal(BattleSlotOwner owner, int cost)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        return CanPayViewerCost(targetPlayer, Mathf.Max(0, cost));
+    }
+
+    public bool TryPayViewerCostFromExternal(BattleSlotOwner owner, int cost)
+    {
+        int safeCost = Mathf.Max(0, cost);
+
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (!CanPayViewerCost(targetPlayer, safeCost))
+            return false;
+
+        targetPlayer.viewers -= safeCost;
+        return true;
+    }
+
     public bool MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
         BattlePlayerRuntime targetPlayer =
@@ -1414,9 +1535,33 @@ public class BattleManager : MonoBehaviour
     {
         failReason = "";
 
-        if (isBattleEnded)
+        if (IsGameOver())
         {
             failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = "현재 다른 처리를 진행 중입니다.";
+            return false;
+        }
+
+        if (questionPanel != null && questionPanel.IsOpen())
+        {
+            failReason = "이미 다른 선택창이 열려 있습니다.";
+            return false;
+        }
+
+        if (movementManager != null && movementManager.HasPendingMoveChoice)
+        {
+            failReason = "이동 선택을 처리 중입니다.";
+            return false;
+        }
+
+        if (collaborationManager != null && collaborationManager.HasPendingCollaborationChoice)
+        {
+            failReason = "합방 선택을 처리 중입니다.";
             return false;
         }
 
@@ -1435,25 +1580,118 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
-    private void ClearAllPendingBattleInteractions()
+    private bool IsGameOver()
     {
-        ClearDraggingHandCard();
-        ClearPendingSummonChoice();
-        ClearPendingFlipChoice();
+        return isGameOver || isBattleEnded;
+    }
 
-        if (movementManager != null)
-            movementManager.CancelMoveStateFromExternal();
+    private bool IsBattleBusy()
+    {
+        if (isBusy)
+            return true;
+
+        return collaborationManager != null &&
+            collaborationManager.IsResolvingCollaboration;
+    }
+
+    private bool IsInputBlocked(out string failReason)
+    {
+        failReason = "";
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return true;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = "현재 다른 처리를 진행 중입니다.";
+            return true;
+        }
+
+        if (questionPanel != null && questionPanel.IsOpen())
+        {
+            failReason = "이미 다른 선택창이 열려 있습니다.";
+            return true;
+        }
+
+        return false;
+    }
+
+    public void SetBattleBusyFromExternal(bool value)
+    {
+        if (IsGameOver() && value)
+            return;
+
+        isBusy = value;
+
+        RefreshTurnEndButtonState();
+    }
+
+    private void ClearAllPendingActions()
+    {
+        ClearPendingHandDragState();
+        ClearPendingSummonChoice();
+        ClearPendingContentChoice();
+        ClearPendingMoveChoice();
+        ClearPendingCollaborationChoice();
 
         if (questionPanel != null && questionPanel.IsOpen())
             questionPanel.Hide();
 
+        isBusy = false;
+
         CloseRestZonePanel();
+    }
+
+    private void ClearAllPendingBattleInteractions()
+    {
+        ClearAllPendingActions();
+    }
+
+    private void ClearPendingHandDragState()
+    {
+        ClearDraggingHandCard();
+    }
+
+    public void ClearDraggingHandCardFromExternal()
+    {
+        ClearDraggingHandCard();
+    }
+
+    private void ClearPendingSummonChoice()
+    {
+        if (summonManager != null)
+            summonManager.ClearPending();
+    }
+
+    private void ClearPendingMoveChoice()
+    {
+        if (movementManager != null)
+            movementManager.CancelMoveStateFromExternal();
+    }
+
+    private void ClearPendingCollaborationChoice()
+    {
+        if (collaborationManager != null)
+            collaborationManager.CancelCollaborationStateFromExternal();
+    }
+
+    private void ClearPendingContentChoice()
+    {
+        pendingContentCard = null;
+
+        if (questionPanel != null && questionPanel.IsOpen())
+            questionPanel.Hide();
     }
 
     private void ResetTurnLimitedFlags()
     {
-        myHasSummonedFaceDownThisTurn = false;
         enemyHasSummonedFaceDownThisTurn = false;
+
+        if (summonManager != null)
+            summonManager.ResetTurnLimitedFlagsForNewTurn();
 
         if (movementManager != null)
             movementManager.ResetAllCharacterMoveFlagsForNewTurn();
@@ -1590,7 +1828,9 @@ public class BattleManager : MonoBehaviour
         string previousMessage,
         string reason)
     {
+        isGameOver = true;
         isBattleEnded = true;
+        isBusy = false;
         currentPhase = BattlePhase.None;
         consecutivePassCount = 0;
 
@@ -1630,7 +1870,7 @@ public class BattleManager : MonoBehaviour
 
     private void EndCurrentTurnAndStartNextTurn(string reasonMessage)
     {
-        if (isBattleEnded)
+        if (IsGameOver())
             return;
 
         ClearAllPendingBattleInteractions();
@@ -1677,13 +1917,17 @@ public class BattleManager : MonoBehaviour
 
     public bool IsEnemyActionTurn()
     {
-        return !isBattleEnded &&
+        return !IsGameOver() &&
+            !IsBattleBusy() &&
             currentPhase == BattlePhase.MainGame &&
             currentActionSide == BattlePlayerSide.Enemy;
     }
 
     public void TestEnemyPassAction()
     {
+        if (IsGameOver() || IsBattleBusy())
+            return;
+
         if (currentPhase != BattlePhase.MainGame)
             return;
 
@@ -1695,6 +1939,9 @@ public class BattleManager : MonoBehaviour
 
     public void TestEnemyUseAction(string actionMessage)
     {
+        if (IsGameOver() || IsBattleBusy())
+            return;
+
         if (currentPhase != BattlePhase.MainGame)
             return;
 
@@ -1706,6 +1953,9 @@ public class BattleManager : MonoBehaviour
 
     public bool TestEnemyTrySummonBacksideCharacter()
     {
+        if (IsGameOver() || IsBattleBusy())
+            return false;
+
         if (currentPhase != BattlePhase.MainGame)
             return false;
 
@@ -1754,6 +2004,9 @@ public class BattleManager : MonoBehaviour
 
     public bool TestEnemyTryFlipSummonCharacter()
     {
+        if (IsGameOver() || IsBattleBusy())
+            return false;
+
         if (currentPhase != BattlePhase.MainGame)
             return false;
 
@@ -1763,6 +2016,9 @@ public class BattleManager : MonoBehaviour
         if (enemyPlayer == null)
             return false;
 
+        if (summonManager == null)
+            return false;
+
         BattleFieldSlot targetSlot = enemyBattleSlots.FirstOrDefault(slot =>
         {
             if (slot == null ||
@@ -1770,13 +2026,13 @@ public class BattleManager : MonoBehaviour
                 slot.characterOwner != BattleSlotOwner.Enemy ||
                 !slot.HasCharacter ||
                 !slot.isCharacterFaceDown ||
-                !CanFlipSummonByTurn(slot, out _))
+                !summonManager.CanFlipSummonByTurnFromExternal(slot, out _))
             {
                 return false;
             }
 
             BaseCardData card = slot.characterCard;
-            int cost = GetCharacterAppearCost(card);
+            int cost = summonManager.GetCharacterAppearCostFromExternal(card);
 
             return card != null &&
                 CanPayViewerCost(enemyPlayer, cost) &&
@@ -1791,7 +2047,7 @@ public class BattleManager : MonoBehaviour
         if (characterCard == null)
             return false;
 
-        int cost = GetCharacterAppearCost(characterCard);
+        int cost = summonManager.GetCharacterAppearCostFromExternal(characterCard);
 
         if (!CanPayViewerCost(enemyPlayer, cost))
             return false;
@@ -1818,6 +2074,9 @@ public class BattleManager : MonoBehaviour
 
     public bool TestEnemyTrySummonFrontCharacter()
     {
+        if (IsGameOver() || IsBattleBusy())
+            return false;
+
         if (currentPhase != BattlePhase.MainGame)
             return false;
 
@@ -1825,6 +2084,9 @@ public class BattleManager : MonoBehaviour
             return false;
 
         if (enemyPlayer == null || enemyPlayer.hand == null)
+            return false;
+
+        if (summonManager == null)
             return false;
 
         BattleFieldSlot targetSlot = enemyBattleSlots.FirstOrDefault(slot =>
@@ -1840,14 +2102,14 @@ public class BattleManager : MonoBehaviour
         BaseCardData characterCard = enemyPlayer.hand.FirstOrDefault(card =>
             card != null &&
             card.kind == "Character" &&
-            CanPayViewerCost(enemyPlayer, GetCharacterAppearCost(card)) &&
+            CanPayViewerCost(enemyPlayer, summonManager.GetCharacterAppearCostFromExternal(card)) &&
             LoadCardSprite(card) != null
         );
 
         if (characterCard == null)
             return false;
 
-        int cost = GetCharacterAppearCost(characterCard);
+        int cost = summonManager.GetCharacterAppearCostFromExternal(characterCard);
         Sprite sprite = LoadCardSprite(characterCard);
 
         if (sprite == null)
@@ -1871,6 +2133,9 @@ public class BattleManager : MonoBehaviour
 
     public void TestEnemyPlaceBroadcastCard()
     {
+        if (IsGameOver() || IsBattleBusy())
+            return;
+
         if (currentPhase != BattlePhase.BroadcastSetup)
             return;
 
@@ -1937,6 +2202,13 @@ public class BattleManager : MonoBehaviour
 
     private void OnClickBroadcastCardOnField(BattleFieldSlot slot, BaseCardData card)
     {
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
+
         SelectCard(card);
         SetSystemMessage($"방송 카드 확인: {card.name}");
     }
@@ -1946,13 +2218,24 @@ public class BattleManager : MonoBehaviour
         if (slot == null || card == null)
             return;
 
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
+
         if (slot.characterOwner == BattleSlotOwner.My)
         {
             SelectCard(card);
 
             if (slot.isCharacterFaceDown)
             {
-                OpenFlipSummonQuestion(slot, card);
+                if (summonManager != null)
+                    summonManager.OpenFlipSummonQuestion(slot, card);
+                else
+                    SetSystemMessage("SummonManager가 연결되어 있지 않습니다.");
+
                 return;
             }
 
@@ -1973,174 +2256,15 @@ public class BattleManager : MonoBehaviour
         }
     }
 
-    private void OpenFlipSummonQuestion(BattleFieldSlot slot, BaseCardData card)
-    {
-        if (slot == null || card == null)
-            return;
-
-        if (!slot.isCharacterFaceDown)
-            return;
-
-        if (slot.characterOwner != BattleSlotOwner.My)
-        {
-            SetSystemMessage("내 캐릭터만 뒤집기 출연할 수 있습니다.");
-            return;
-        }
-
-        string turnFailReason;
-        if (!CanFlipSummonByTurn(slot, out turnFailReason))
-        {
-            SetSystemMessage(turnFailReason);
-            return;
-        }
-
-        string failReason;
-        if (!CanUseMyAction(out failReason))
-        {
-            SetSystemMessage(failReason);
-            return;
-        }
-
-        if (questionPanel != null && questionPanel.IsOpen())
-        {
-            SetSystemMessage("이미 다른 선택창이 열려 있습니다.");
-            return;
-        }
-
-        ClearPendingSummonChoice();
-        ClearDraggingHandCard();
-
-        int cost = GetCharacterAppearCost(card);
-
-        if (!CanPayViewerCost(myPlayer, cost))
-        {
-            SetSystemMessage("시청자가 부족하여 플립 출연할 수 없습니다.");
-            return;
-        }
-
-        pendingFlipSlot = slot;
-        pendingFlipCard = card;
-
-        if (questionPanel == null)
-        {
-            SetSystemMessage("QuestionPanel이 BattleManager에 연결되어 있지 않습니다.");
-            return;
-        }
-
-        questionPanel.ShowYesNoQuestion(
-            "플립 출연을 하시겠습니까?",
-            OnConfirmFlipSummon,
-            CancelFlipSummonChoice,
-            CancelFlipSummonChoice
-        );
-
-        SetSystemMessage($"{card.name} 카드를 플립 출연할 수 있습니다.");
-    }
-
-    private void OnConfirmFlipSummon()
-    {
-        if (pendingFlipSlot == null || pendingFlipCard == null)
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage("플립 출연할 카드 또는 슬롯 정보가 없습니다.");
-            return;
-        }
-
-        string failReason;
-        if (!CanUseMyAction(out failReason))
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage(failReason);
-            return;
-        }
-
-        FlipSummonCharacter(pendingFlipSlot, pendingFlipCard);
-    }
-
-    private void CancelFlipSummonChoice()
-    {
-        string cardName = pendingFlipCard != null
-            ? pendingFlipCard.name
-            : "선택 카드";
-
-        ClearPendingFlipChoice();
-
-        SetSystemMessage($"{cardName}의 플립 출연을 취소했습니다.");
-    }
-
-    private void FlipSummonCharacter(BattleFieldSlot targetSlot, BaseCardData characterCard)
-    {
-        if (targetSlot == null || characterCard == null)
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage("플립 출연 처리에 필요한 정보가 없습니다.");
-            return;
-        }
-
-        if (targetSlot.characterOwner != BattleSlotOwner.My)
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage("내 캐릭터만 플립 출연할 수 있습니다.");
-            return;
-        }
-
-        if (!targetSlot.HasCharacter)
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage("플립 출연할 캐릭터가 없습니다.");
-            return;
-        }
-
-        if (!targetSlot.isCharacterFaceDown)
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage("이미 앞면 상태인 캐릭터입니다.");
-            return;
-        }
-
-        string turnFailReason;
-        if (!CanFlipSummonByTurn(targetSlot, out turnFailReason))
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage(turnFailReason);
-            return;
-        }
-
-        int cost = GetCharacterAppearCost(characterCard);
-
-        if (!CanPayViewerCost(myPlayer, cost))
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage("시청자가 부족하여 플립 출연할 수 없습니다.");
-            return;
-        }
-
-        Sprite sprite = LoadCardSprite(characterCard);
-
-        if (sprite == null)
-        {
-            ClearPendingFlipChoice();
-            SetSystemMessage($"{characterCard.name} 카드 이미지를 찾을 수 없습니다.");
-            return;
-        }
-
-        myPlayer.viewers -= cost;
-
-        targetSlot.SetCharacterCard(characterCard, sprite, false, targetSlot.characterOwner);
-        targetSlot.faceUpSummonedTurn = turnCount;
-
-        ClearPendingFlipChoice();
-
-        RefreshAllUI();
-
-        ResolveMyActionUsed(
-            $"{characterCard.name} 카드를 플립 출연했습니다.\n" +
-            $"시청자 -{cost}"
-        );
-    }  
-
     private void OnClickContentCardOnField(BattleFieldSlot slot, BaseCardData card)
     {
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
+
         SelectCard(card);
         SetSystemMessage($"콘텐츠 카드 확인: {card.name}");
     }
@@ -2188,7 +2312,7 @@ public class BattleManager : MonoBehaviour
             movementManager.OnDropMoveTargetSlot(slot, eventData);
             return;
         }
-        
+
         if (slot == null)
         {
             ClearDraggingHandCard();
@@ -2213,159 +2337,14 @@ public class BattleManager : MonoBehaviour
 
         BaseCardData card = draggingHandCardData;
 
-        string failReason;
-        if (!CanOpenSummonQuestion(slot, card, out failReason))
+        if (summonManager == null)
         {
-            ClearPendingSummonChoice();
             ClearDraggingHandCard();
-            SetSystemMessage(failReason);
+            SetSystemMessage("SummonManager가 연결되어 있지 않습니다.");
             return;
         }
 
-        OpenSummonQuestion(slot, card);
-    }
-
-    private bool CanOpenSummonQuestion(BattleFieldSlot slot, BaseCardData card, out string failReason)
-    {
-        failReason = "";
-
-        if (!CanUseMyAction(out failReason))
-            return false;
-
-        if (myPlayer == null)
-        {
-            failReason = "내 플레이어 데이터가 없습니다.";
-            return false;
-        }
-
-        if (card == null)
-        {
-            failReason = "드롭한 카드 데이터가 없습니다.";
-            return false;
-        }
-
-        if (card.kind != "Character")
-        {
-            failReason = "캐릭터 카드만 출연할 수 있습니다.";
-            return false;
-        }
-
-        if (!myPlayer.hand.Contains(card))
-        {
-            failReason = "내 손패에 있는 카드만 출연할 수 있습니다.";
-            return false;
-        }
-
-        if (slot == null)
-        {
-            failReason = "대상 슬롯이 없습니다.";
-            return false;
-        }
-
-        if (slot.owner != BattleSlotOwner.My)
-        {
-            failReason = "내 방송 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
-            return false;
-        }
-
-        if (!slot.HasBroadcast)
-        {
-            failReason = "방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
-            return false;
-        }
-
-        if (slot.HasCharacter)
-        {
-            failReason = "이미 캐릭터가 있는 슬롯입니다.";
-            return false;
-        }
-
-        return true;
-    }
-
-    private void OpenSummonQuestion(BattleFieldSlot slot, BaseCardData card)
-    {
-        string failReason;
-        if (!CanUseMyAction(out failReason))
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-            SetSystemMessage(failReason);
-            return;
-        }
-
-        if (questionPanel != null && questionPanel.IsOpen())
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-            SetSystemMessage("이미 다른 선택창이 열려 있습니다.");
-            return;
-        }
-
-        ClearPendingFlipChoice();
-
-        pendingSummonSlot = slot;
-        pendingSummonCard = card;
-
-        int appearCost = GetCharacterAppearCost(card);
-        bool canSummonFront = CanPayViewerCost(myPlayer, appearCost);
-        bool canSummonBackside = !myHasSummonedFaceDownThisTurn;
-
-        if (!canSummonFront && !canSummonBackside)
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-
-            SetSystemMessage(
-                "불가능한 행동입니다.\n" +
-                "시청자가 부족하여 앞면 출연할 수 없고,\n" +
-                "이번 턴에는 이미 뒷면 출연을 했습니다."
-            );
-
-            return;
-        }
-
-        if (questionPanel == null)
-        {
-            SetSystemMessage(
-                "QuestionPanel이 BattleManager에 연결되어 있지 않습니다.\n" +
-                "BattleManager 인스펙터의 Question Panel 필드에 QuestionPanel 오브젝트를 연결해주세요."
-            );
-            return;
-        }
-
-        questionPanel.ShowSummonQuestion(
-            "출연 방법을 선택해 주세요.",
-            canSummonFront,
-            canSummonBackside,
-            OnSelectFrontSummonChoice,
-            OnSelectBacksideSummonChoice,
-            CancelSummonChoice
-        );
-
-        string frontState = canSummonFront
-            ? "앞면 출연 가능"
-            : "시청자가 부족하여 앞면 출연 불가";
-
-        string backsideState = canSummonBackside
-            ? "뒷면 출연 가능"
-            : "이번 턴에는 이미 뒷면 출연을 했습니다.";
-
-        SetSystemMessage(
-            $"{card.name} 카드를 ({slot.x}, {slot.y}) 슬롯에 출연하려 합니다.\n" +
-            $"{frontState}\n" +
-            $"{backsideState}"
-        );
-    }
-
-    private int GetCharacterAppearCost(BaseCardData card)
-    {
-        CharacterCardData character = card as CharacterCardData;
-
-        if (character == null)
-            return 0;
-
-        return Mathf.Max(0, character.appearCost);
+        summonManager.OpenSummonQuestion(slot, card);
     }
 
     private bool CanPayViewerCost(BattlePlayerRuntime player, int cost)
@@ -2374,273 +2353,6 @@ public class BattleManager : MonoBehaviour
             return false;
 
         return player.viewers >= cost;
-    }
-
-    private bool CanFlipSummonByTurn(BattleFieldSlot slot, out string failReason)
-    {
-        failReason = "";
-
-        if (slot == null)
-        {
-            failReason = "플립 출연할 슬롯 정보가 없습니다.";
-            return false;
-        }
-
-        if (!slot.HasCharacter)
-        {
-            failReason = "플립 출연할 캐릭터가 없습니다.";
-            return false;
-        }
-
-        if (!slot.isCharacterFaceDown)
-        {
-            failReason = "이미 앞면 상태인 캐릭터입니다.";
-            return false;
-        }
-
-        if (slot.faceDownSummonedTurn >= 0 && turnCount <= slot.faceDownSummonedTurn)
-        {
-            failReason = "뒷면 출연한 턴에는 플립 출연할 수 없습니다.";
-            return false;
-        }
-
-        return true;
-    }
-
-    private void OnSelectFrontSummonChoice()
-    {
-        if (pendingSummonSlot == null || pendingSummonCard == null)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("앞면 출연할 카드 또는 슬롯 정보가 없습니다.");
-            return;
-        }
-
-        BattleFieldSlot targetSlot = pendingSummonSlot;
-        BaseCardData targetCard = pendingSummonCard;
-
-        string failReason;
-        if (!CanOpenSummonQuestion(targetSlot, targetCard, out failReason))
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-            SetSystemMessage(failReason);
-            return;
-        }
-
-        SummonCharacterFront(targetSlot, targetCard);
-    }
-
-    private void OnSelectBacksideSummonChoice()
-    {
-        if (pendingSummonSlot == null || pendingSummonCard == null)
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-            SetSystemMessage("뒷면 출연할 카드 또는 슬롯 정보가 없습니다.");
-            return;
-        }
-
-        string actionFailReason;
-        if (!CanUseMyAction(out actionFailReason))
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-            SetSystemMessage(actionFailReason);
-            return;
-        }
-
-        if (myHasSummonedFaceDownThisTurn)
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-            SetSystemMessage("뒷면 출연은 1턴에 1회만 가능합니다.");
-            return;
-        }
-
-        BattleFieldSlot targetSlot = pendingSummonSlot;
-        BaseCardData targetCard = pendingSummonCard;
-
-        string failReason;
-        if (!CanOpenSummonQuestion(targetSlot, targetCard, out failReason))
-        {
-            ClearPendingSummonChoice();
-            ClearDraggingHandCard();
-            SetSystemMessage(failReason);
-            return;
-        }
-
-        SummonCharacterBackside(targetSlot, targetCard);
-    }
-
-    private void SummonCharacterBackside(BattleFieldSlot targetSlot, BaseCardData characterCard)
-    {
-        if (targetSlot == null || characterCard == null)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("뒷면 출연 처리에 필요한 정보가 없습니다.");
-            return;
-        }
-
-        if (myPlayer == null || myPlayer.hand == null)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("내 손패 정보를 찾을 수 없습니다.");
-            return;
-        }
-
-        if (!myPlayer.hand.Contains(characterCard))
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("내 손패에 없는 카드는 출연시킬 수 없습니다.");
-            return;
-        }
-
-        if (targetSlot.owner != BattleSlotOwner.My)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("내 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
-        }
-
-        if (!targetSlot.HasBroadcast)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
-        }
-
-        if (targetSlot.HasCharacter)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("이미 캐릭터가 있는 슬롯입니다.");
-            return;
-        }
-
-        targetSlot.SetCharacterCard(characterCard, cardBackSprite, true, BattleSlotOwner.My);
-        targetSlot.faceDownSummonedTurn = turnCount;
-        myPlayer.hand.Remove(characterCard);
-
-        myHasSummonedFaceDownThisTurn = true;
-
-        ClearPendingSummonChoice();
-        ClearDraggingHandCard();
-
-        RefreshAllUI();
-
-        ResolveMyActionUsed(
-            $"{characterCard.name} 카드를 뒷면으로 출연시켰습니다.\n" +
-            $"위치: ({targetSlot.x}, {targetSlot.y})"
-        );
-    }
-
-    private void SummonCharacterFront(BattleFieldSlot targetSlot, BaseCardData characterCard)
-    {
-        if (targetSlot == null || characterCard == null)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("앞면 출연 처리에 필요한 정보가 없습니다.");
-            return;
-        }
-
-        if (myPlayer == null || myPlayer.hand == null)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("내 손패 정보를 찾을 수 없습니다.");
-            return;
-        }
-
-        if (!myPlayer.hand.Contains(characterCard))
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("내 손패에 없는 카드는 출연시킬 수 없습니다.");
-            return;
-        }
-
-        if (targetSlot.owner != BattleSlotOwner.My)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("내 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
-        }
-
-        if (!targetSlot.HasBroadcast)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
-        }
-
-        if (targetSlot.HasCharacter)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("이미 캐릭터가 있는 슬롯입니다.");
-            return;
-        }
-
-        int cost = GetCharacterAppearCost(characterCard);
-
-        if (!CanPayViewerCost(myPlayer, cost))
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage("시청자가 부족하여 앞면 출연할 수 없습니다.");
-            return;
-        }
-
-        Sprite sprite = LoadCardSprite(characterCard);
-
-        if (sprite == null)
-        {
-            ClearPendingSummonChoice();
-            SetSystemMessage($"{characterCard.name} 카드 이미지를 찾을 수 없습니다.");
-            return;
-        }
-
-        myPlayer.viewers -= cost;
-
-        targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.My);
-        targetSlot.faceUpSummonedTurn = turnCount;
-        myPlayer.hand.Remove(characterCard);
-
-        ClearPendingSummonChoice();
-        ClearDraggingHandCard();
-
-        RefreshAllUI();
-
-        ResolveMyActionUsed(
-            $"{characterCard.name} 카드를 앞면으로 출연시켰습니다.\n" +
-            $"시청자 -{cost}"
-        );
-    }
-
-    private void CancelSummonChoice()
-    {
-        string cardName = pendingSummonCard != null
-            ? pendingSummonCard.name
-            : "선택 카드";
-
-        ClearPendingSummonChoice();
-        ClearDraggingHandCard();
-
-        SetSystemMessage($"{cardName}의 출연 선택을 취소했습니다.");
-    }
-
-    private void ClearPendingSummonChoice()
-    {
-        pendingSummonSlot = null;
-        pendingSummonCard = null;
-
-        if (questionPanel != null && questionPanel.IsOpen())
-            questionPanel.Hide();
-    }
-
-    private void ClearPendingFlipChoice()
-    {
-        pendingFlipSlot = null;
-        pendingFlipCard = null;
-
-        if (questionPanel != null && questionPanel.IsOpen())
-            questionPanel.Hide();
     }
 
     private void Shuffle(List<BaseCardData> deck)
@@ -2683,6 +2395,43 @@ public class BattleManager : MonoBehaviour
 
         if (currentPhase == BattlePhase.BroadcastSetup)
             RefreshBroadcastSetupButtons();
+
+        RefreshTurnEndButtonState();
+    }
+
+    private void RefreshTurnEndButtonState()
+    {
+        RefreshTurnEndButtonPanelColor();
+
+        if (turnEndButton != null)
+        {
+            turnEndButton.interactable =
+                !IsGameOver() &&
+                !IsBattleBusy() &&
+                currentPhase == BattlePhase.MainGame &&
+                currentActionSide == BattlePlayerSide.My &&
+                (questionPanel == null || !questionPanel.IsOpen());
+        }
+    }
+
+    private void RefreshTurnEndButtonPanelColor()
+    {
+        if (turnEndButtonPanelImage == null)
+            ResolveTurnEndButtonPanelImage();
+
+        if (turnEndButtonPanelImage == null)
+            return;
+
+        if (currentPhase != BattlePhase.MainGame || IsGameOver())
+        {
+            turnEndButtonPanelImage.color = inactiveTurnEndPanelColor;
+            return;
+        }
+
+        turnEndButtonPanelImage.color =
+            currentActionSide == BattlePlayerSide.My
+                ? myTurnEndPanelColor
+                : enemyTurnEndPanelColor;
     }
 
     private void RefreshStatusUI()
@@ -2849,8 +2598,8 @@ public class BattleManager : MonoBehaviour
             cardItemUI.SetCard(
                 card,
                 leftClickAction: SelectCard,
-                rightClickAction: DiscardMyHandCardToRestZone,
-                doubleClickAction: UseMyContentCardFromHand
+                rightClickAction: null,
+                doubleClickAction: OnDoubleClickHandCard
             );
 
             bool canDrag = CanStartHandCardDrag(card);
@@ -2899,7 +2648,21 @@ public class BattleManager : MonoBehaviour
         }
     }
 
-    private void UseMyContentCardFromHand(BaseCardData card)
+    private void OnDoubleClickHandCard(BaseCardData card)
+    {
+        if (card == null)
+            return;
+
+        if (card.kind != "Content")
+        {
+            SelectCard(card);
+            return;
+        }
+
+        OpenContentUseQuestion(card);
+    }
+
+    private void OpenContentUseQuestion(BaseCardData card)
     {
         if (card == null)
             return;
@@ -2917,50 +2680,101 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (!MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner.My, card))
+        if (!IsCardInHandFromExternal(BattleSlotOwner.My, card))
         {
-            SetSystemMessage("내 손패에 있는 카드만 사용할 수 있습니다.");
+            SetSystemMessage("손패에 있는 콘텐츠 카드만 사용할 수 있습니다.");
+            return;
+        }
+
+        int cost = GetContentCardCost(card);
+        if (!CanPayViewerCostFromExternal(BattleSlotOwner.My, cost))
+        {
+            SetSystemMessage("시청자가 부족하여 콘텐츠 카드를 사용할 수 없습니다.");
+            return;
+        }
+
+        if (effectManager == null)
+        {
+            SetSystemMessage("EffectManager가 연결되어 있지 않습니다.");
+            return;
+        }
+
+        if (questionPanel == null)
+        {
+            SetSystemMessage("QuestionPanel이 BattleManager에 연결되어 있지 않습니다.");
             return;
         }
 
         ClearDraggingHandCard();
         ClearPendingSummonChoice();
-        ClearPendingFlipChoice();
-        RefreshAllUI();
 
-        ResolveMyActionUsed(
-            $"{card.name} 콘텐츠 카드를 사용했습니다.\n" +
-            "사용한 카드는 휴식존으로 이동했습니다."
-        );
+        pendingContentCard = card;
+
+        if (!questionPanel.TryShowYesNoQuestion(
+            "콘텐츠 카드를 사용하시겠습니까?",
+            ConfirmPendingContentUse,
+            CancelPendingContentUse,
+            CancelPendingContentUse
+        ))
+        {
+            ClearPendingContentChoice();
+            SetSystemMessage("이미 다른 선택창이 열려 있습니다.");
+            return;
+        }
+
+        SelectCard(card);
+        SetSystemMessage($"{card.name} 콘텐츠 카드를 사용할 수 있습니다.");
     }
 
-    private void DiscardMyHandCardToRestZone(BaseCardData card)
+    private void ConfirmPendingContentUse()
     {
-        if (card == null)
-            return;
-
-        string failReason;
-        if (!CanUseMyAction(out failReason))
+        if (pendingContentCard == null)
         {
-            SetSystemMessage(failReason);
+            ClearPendingContentChoice();
+            SetSystemMessage("사용할 콘텐츠 카드 정보가 없습니다.");
             return;
         }
 
-        if (!MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner.My, card))
+        BaseCardData card = pendingContentCard;
+        pendingContentCard = null;
+
+        if (effectManager == null)
         {
-            SetSystemMessage("내 손패에 있는 카드만 버릴 수 있습니다.");
+            SetSystemMessage("EffectManager가 연결되어 있지 않습니다.");
             return;
         }
 
-        ClearDraggingHandCard();
-        ClearPendingSummonChoice();
-        ClearPendingFlipChoice();
-        RefreshAllUI();
+        EffectActivationRequest request = new EffectActivationRequest
+        {
+            sourceCard = card,
+            owner = BattleSlotOwner.My,
+            timing = EffectTiming.MainPhase,
+            sourceSlot = null,
+            targetSlot = null,
+            consumeAction = true
+        };
 
-        ResolveMyActionUsed(
-            $"{card.name} 카드를 버렸습니다.\n" +
-            "버린 카드는 휴식존으로 이동했습니다."
-        );
+        effectManager.TryActivateEffect(request);
+    }
+
+    private void CancelPendingContentUse()
+    {
+        string cardName = pendingContentCard != null
+            ? pendingContentCard.name
+            : "선택 카드";
+
+        ClearPendingContentChoice();
+        SetSystemMessage($"{cardName} 콘텐츠 카드 사용을 취소했습니다.");
+    }
+
+    private int GetContentCardCost(BaseCardData card)
+    {
+        ContentCardData content = card as ContentCardData;
+
+        if (content == null)
+            return 0;
+
+        return Mathf.Max(0, content.cost);
     }
 
     private bool CanStartHandCardDrag(BaseCardData card)
@@ -2981,13 +2795,16 @@ public class BattleManager : MonoBehaviour
         if (card.kind != "Character")
             return false;
 
+        if (summonManager == null)
+            return false;
+
         if (questionPanel != null && questionPanel.IsOpen())
             return false;
 
-        if (pendingSummonCard != null || pendingSummonSlot != null)
+        if (summonManager != null && summonManager.HasPendingSummonChoice)
             return false;
 
-        if (pendingFlipCard != null || pendingFlipSlot != null)
+        if (summonManager != null && summonManager.HasPendingFlipChoice)
             return false;
 
         return true;
@@ -3045,7 +2862,8 @@ public class BattleManager : MonoBehaviour
             ? draggingHandCardData.name
             : "알 수 없는 카드";
 
-        bool hasPendingSummonChoice = pendingSummonCard != null && pendingSummonSlot != null;
+        bool hasPendingSummonChoice =
+            summonManager != null && summonManager.HasPendingSummonChoice;
 
         ClearDraggingHandCard();
         DestroyDragPreview();
@@ -3240,6 +3058,9 @@ public class BattleManager : MonoBehaviour
         if (card == null)
             return;
 
+        if (IsGameOver() || IsBattleBusy())
+            return;
+
         selectedCard = card;
 
         if (cardDetailPanel != null)
@@ -3372,6 +3193,19 @@ public class BattleManager : MonoBehaviour
 
     private void OnClickTurnEndButton()
     {
+        string inputFailReason;
+        if (IsInputBlocked(out inputFailReason))
+        {
+            SetSystemMessage(inputFailReason);
+            return;
+        }
+
+        if (questionPanel != null && questionPanel.IsOpen())
+        {
+            SetSystemMessage("이미 다른 선택창이 열려 있습니다.");
+            return;
+        }
+
         if (myPlayer == null || enemyPlayer == null)
         {
             SetSystemMessage("아직 배틀 준비가 완료되지 않았습니다.");
@@ -3390,7 +3224,36 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
+        if (questionPanel == null)
+        {
+            SetSystemMessage("QuestionPanel이 BattleManager에 연결되어 있지 않습니다.");
+            return;
+        }
+
+        if (!questionPanel.TryShowYesNoQuestion(
+            "행동을 종료하시겠습니까?",
+            ConfirmTurnEnd,
+            CancelTurnEnd,
+            CancelTurnEnd
+        ))
+        {
+            SetSystemMessage("이미 다른 선택창이 열려 있습니다.");
+            return;
+        }
+
+        RefreshTurnEndButtonState();
+        SetSystemMessage("행동 종료를 확인해 주세요.");
+    }
+
+    private void ConfirmTurnEnd()
+    {
         ResolveMyActionPass();
+    }
+
+    private void CancelTurnEnd()
+    {
+        RefreshTurnEndButtonState();
+        SetSystemMessage("행동 종료를 취소했습니다.");
     }
 
     private int GainPrepViewers(BattleSlotOwner characterOwner)
