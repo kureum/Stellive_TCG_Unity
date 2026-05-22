@@ -3951,7 +3951,7 @@ RectTransform:
   - {fileID: 27890127}
   - {fileID: 1093253113}
   - {fileID: 1579083214}
-  - {fileID: 2080913702}
+  - {fileID: 572903469}
   - {fileID: 516958986}
   - {fileID: 1832231315}
   - {fileID: 1777538616}
@@ -4384,6 +4384,37 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 334648049}
   m_CullTransparentMesh: 1
+--- !u!1 &336038282
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 336038283}
+  m_Layer: 0
+  m_Name: SummonManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &336038283
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 336038282}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 553288414}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &336194707
 GameObject:
   m_ObjectHideFlags: 0
@@ -4511,7 +4542,7 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 1440150543}
   m_HandleRect: {fileID: 1440150542}
   m_Direction: 0
-  m_Value: 0
+  m_Value: 1
   m_Size: 1
   m_NumberOfSteps: 0
   m_OnValueChanged:
@@ -7137,6 +7168,8 @@ MonoBehaviour:
   restZoneCloseButton: {fileID: 2090134525}
   restZoneCardItemPrefab: {fileID: 0}
   questionPanel: {fileID: 743632907}
+  battleResultPanel: {fileID: 151201426}
+  battleResultText: {fileID: 298248272}
   handCardItemPrefab: {fileID: 3607910217099511951, guid: 009c60e674b28ee40a7470a90fa3e089, type: 3}
   systemMessageText: {fileID: 793773826}
   myStatusText: {fileID: 929523906}
@@ -7153,8 +7186,14 @@ MonoBehaviour:
   dragPreviewSize: {x: 108, y: 154}
   cardDetailPanel: {fileID: 319741838}
   turnEndButton: {fileID: 2080913703}
+  turnEndButtonPanelImage: {fileID: 572903470}
+  myTurnEndPanelColor: {r: 0.72, g: 0.86, b: 1, a: 1}
+  enemyTurnEndPanelColor: {r: 1, g: 0.74, b: 0.74, a: 1}
+  inactiveTurnEndPanelColor: {r: 1, g: 1, b: 1, a: 0.35}
+  summonManager: {fileID: 0}
   movementManager: {fileID: 336194709}
   collaborationManager: {fileID: 1719501089}
+  effectManager: {fileID: 1196626982}
 --- !u!4 &553288414
 Transform:
   m_ObjectHideFlags: 0
@@ -7170,6 +7209,8 @@ Transform:
   m_Children:
   - {fileID: 336194708}
   - {fileID: 1719501088}
+  - {fileID: 1196626981}
+  - {fileID: 336038283}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &555824336
@@ -7390,6 +7431,82 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f4688fdb7df04437aeb418b961361dc5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Unity.TextMeshPro::TMPro.TextMeshProUGUI
+--- !u!1 &572903468
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 572903469}
+  - component: {fileID: 572903471}
+  - component: {fileID: 572903470}
+  m_Layer: 5
+  m_Name: TurnEndButtonPanel
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!224 &572903469
+RectTransform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 572903468}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children:
+  - {fileID: 2080913702}
+  m_Father: {fileID: 312463653}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_AnchorMin: {x: 0, y: 0}
+  m_AnchorMax: {x: 1, y: 1}
+  m_AnchoredPosition: {x: 733.62, y: -41.224}
+  m_SizeDelta: {x: -1542.4, y: -894.58}
+  m_Pivot: {x: 0.5, y: 0.5}
+--- !u!114 &572903470
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 572903468}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fe87c0e1cc204ed48ad3b37840f39efc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.Image
+  m_Material: {fileID: 0}
+  m_Color: {r: 1, g: 1, b: 1, a: 0.392}
+  m_RaycastTarget: 1
+  m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
+  m_Maskable: 1
+  m_OnCullStateChanged:
+    m_PersistentCalls:
+      m_Calls: []
+  m_Sprite: {fileID: 10907, guid: 0000000000000000f000000000000000, type: 0}
+  m_Type: 1
+  m_PreserveAspect: 0
+  m_FillCenter: 1
+  m_FillMethod: 4
+  m_FillAmount: 1
+  m_FillClockwise: 1
+  m_FillOrigin: 0
+  m_UseSpriteMesh: 0
+  m_PixelsPerUnitMultiplier: 1
+--- !u!222 &572903471
+CanvasRenderer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 572903468}
+  m_CullTransparentMesh: 1
 --- !u!224 &581704241 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 4692670710707024316, guid: 36ecfa2265e1c964a801697fbc65e6e1, type: 3}
@@ -13400,6 +13517,51 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1181575231}
   m_CullTransparentMesh: 1
+--- !u!1 &1196626980
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1196626981}
+  - component: {fileID: 1196626982}
+  m_Layer: 0
+  m_Name: EffectManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1196626981
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1196626980}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: -99.2345, y: 25.470993, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 553288414}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1196626982
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1196626980}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c1d062515e8447844a668845ce4f1a5e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::EffectManager
+  battleManager: {fileID: 553288413}
 --- !u!1 &1198552835
 GameObject:
   m_ObjectHideFlags: 0
@@ -18665,6 +18827,7 @@ MonoBehaviour:
   hitShakeTime: 0.18
   hpStepDelay: 0.12
   defeatFadeTime: 0.35
+  animationTimeScale: 1.5
 --- !u!1 &1736374409
 GameObject:
   m_ObjectHideFlags: 0
@@ -21636,17 +21799,17 @@ RectTransform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 2080913701}
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 2088212206}
-  m_Father: {fileID: 312463653}
+  m_Father: {fileID: 572903469}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 737.39, y: -41.224}
+  m_AnchoredPosition: {x: 3.7698364, y: -0.000019073486}
   m_SizeDelta: {x: 350.1503, y: 82.447}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!114 &2080913703
@@ -21671,7 +21834,7 @@ MonoBehaviour:
   m_Transition: 1
   m_Colors:
     m_NormalColor: {r: 1, g: 1, b: 1, a: 1}
-    m_HighlightedColor: {r: 0.7169812, g: 0.13866144, b: 0.13866144, a: 1}
+    m_HighlightedColor: {r: 0.5918476, g: 0.64891726, b: 0.9433962, a: 1}
     m_PressedColor: {r: 0.78431374, g: 0.78431374, b: 0.78431374, a: 1}
     m_SelectedColor: {r: 0.9607843, g: 0.9607843, b: 0.9607843, a: 1}
     m_DisabledColor: {r: 0.78431374, g: 0.78431374, b: 0.78431374, a: 0.5019608}
