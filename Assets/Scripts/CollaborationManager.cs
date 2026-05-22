@@ -34,6 +34,7 @@ public class CollaborationManager : MonoBehaviour
     [SerializeField] private float hitShakeTime = 0.18f;
     [SerializeField] private float hpStepDelay = 0.12f;
     [SerializeField] private float defeatFadeTime = 0.35f;
+    [SerializeField] private float animationTimeScale = 1.5f;
 
     private bool isResolvingCollaboration = false;
     private BaseCardData currentGuestCard;
@@ -285,7 +286,7 @@ public class CollaborationManager : MonoBehaviour
         // 2. 방어자가 생존하면 반격
         if (!hostDefeated)
         {
-            yield return new WaitForSeconds(0.2f);
+            yield return new WaitForSeconds(ScaleAnimationTime(0.2f));
 
             yield return AnimateAttack(hostRect, false);
             yield return AnimateHit(guestRect);
@@ -326,8 +327,11 @@ public class CollaborationManager : MonoBehaviour
             guestDefeated
         );
 
-        ResetUiAlpha(guestRect);
-        ResetUiAlpha(hostRect);
+        if (!guestDefeated)
+            ResetUiAlpha(guestRect);
+
+        if (!hostDefeated)
+            ResetUiAlpha(hostRect);
 
         ShowResult(resultMessage);
         ScheduleClosePanel();
@@ -452,20 +456,23 @@ public class CollaborationManager : MonoBehaviour
 
         float timer = 0f;
 
-        while (timer < attackMoveTime)
+        float moveDuration = ScaleAnimationTime(attackMoveTime);
+        float returnDuration = ScaleAnimationTime(attackReturnTime);
+
+        while (timer < moveDuration)
         {
             timer += Time.deltaTime;
-            float t = Mathf.Clamp01(timer / attackMoveTime);
+            float t = Mathf.Clamp01(timer / moveDuration);
             rect.anchoredPosition = Vector2.Lerp(startPos, targetPos, t);
             yield return null;
         }
 
         timer = 0f;
 
-        while (timer < attackReturnTime)
+        while (timer < returnDuration)
         {
             timer += Time.deltaTime;
-            float t = Mathf.Clamp01(timer / attackReturnTime);
+            float t = Mathf.Clamp01(timer / returnDuration);
             rect.anchoredPosition = Vector2.Lerp(targetPos, startPos, t);
             yield return null;
         }
@@ -480,12 +487,13 @@ public class CollaborationManager : MonoBehaviour
 
         Vector2 startPos = rect.anchoredPosition;
         float timer = 0f;
+        float duration = ScaleAnimationTime(hitShakeTime);
 
-        while (timer < hitShakeTime)
+        while (timer < duration)
         {
             timer += Time.deltaTime;
 
-            float progress = Mathf.Clamp01(timer / hitShakeTime);
+            float progress = Mathf.Clamp01(timer / duration);
             float shake = Mathf.Sin(progress * Mathf.PI * 6f) * hitShakeDistance * (1f - progress);
 
             rect.anchoredPosition = startPos + new Vector2(shake, 0f);
@@ -531,7 +539,7 @@ public class CollaborationManager : MonoBehaviour
                 );
             }
 
-            yield return new WaitForSeconds(hpStepDelay);
+            yield return new WaitForSeconds(ScaleAnimationTime(hpStepDelay));
         }
     }
 
@@ -547,16 +555,17 @@ public class CollaborationManager : MonoBehaviour
 
         float startAlpha = canvasGroup.alpha;
         float timer = 0f;
+        float duration = ScaleAnimationTime(defeatFadeTime);
 
-        while (timer < defeatFadeTime)
+        while (timer < duration)
         {
             timer += Time.deltaTime;
-            float t = Mathf.Clamp01(timer / defeatFadeTime);
-            canvasGroup.alpha = Mathf.Lerp(startAlpha, 0.2f, t);
+            float t = Mathf.Clamp01(timer / duration);
+            canvasGroup.alpha = Mathf.Lerp(startAlpha, 0f, t);
             yield return null;
         }
 
-        canvasGroup.alpha = 0.2f;
+        canvasGroup.alpha = 0f;
     }
 
     private void ResetUiAlpha(RectTransform rect)
@@ -568,6 +577,11 @@ public class CollaborationManager : MonoBehaviour
 
         if (canvasGroup != null)
             canvasGroup.alpha = 1f;
+    }
+
+    private float ScaleAnimationTime(float seconds)
+    {
+        return Mathf.Max(0.01f, seconds * Mathf.Max(0.01f, animationTimeScale));
     }
 
     private void SetHostView(BaseCardData card, int tension, int hp)
@@ -626,6 +640,9 @@ public class CollaborationManager : MonoBehaviour
             StopCoroutine(closePanelCoroutine);
             closePanelCoroutine = null;
         }
+
+        ResetUiAlpha(GetCharacterRect(guestCharacterItemUI));
+        ResetUiAlpha(GetCharacterRect(hostCharacterItemUI));
 
         if (collaborationPanel != null)
             collaborationPanel.SetActive(false);
