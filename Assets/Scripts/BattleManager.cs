@@ -1409,6 +1409,11 @@ public class BattleManager : MonoBehaviour
         return CanUseMyAction(out failReason);
     }
 
+    public bool IsBattleInputLockedFromExternal()
+    {
+        return IsBattleBusy();
+    }
+
     public Sprite LoadCardSpriteFromExternal(BaseCardData card)
     {
         return LoadCardSprite(card);
@@ -1422,6 +1427,11 @@ public class BattleManager : MonoBehaviour
     public void SelectCardFromExternal(BaseCardData card)
     {
         SelectCard(card);
+    }
+
+    public void SelectFieldCharacterFromExternal(BattleFieldSlot slot)
+    {
+        SelectFieldCharacter(slot);
     }
 
     public void SetSystemMessageFromExternal(string message)
@@ -1591,7 +1601,7 @@ public class BattleManager : MonoBehaviour
             return true;
 
         return collaborationManager != null &&
-            collaborationManager.IsResolvingCollaboration;
+            collaborationManager.IsCollaborationSequenceRunning;
     }
 
     private bool IsInputBlocked(out string failReason)
@@ -1970,7 +1980,8 @@ public class BattleManager : MonoBehaviour
 
         BaseCardData characterCard = enemyPlayer.hand.FirstOrDefault(card =>
             card != null &&
-            card.kind == "Character"
+            card.kind == "Character" &&
+            (summonManager == null || summonManager.CanSummonBacksideByCostFromExternal(card))
         );
 
         if (characterCard == null)
@@ -2227,7 +2238,7 @@ public class BattleManager : MonoBehaviour
 
         if (slot.characterOwner == BattleSlotOwner.My)
         {
-            SelectCard(card);
+            SelectFieldCharacter(slot);
 
             if (slot.isCharacterFaceDown)
             {
@@ -2247,11 +2258,14 @@ public class BattleManager : MonoBehaviour
         {
             if (slot.isCharacterFaceDown)
             {
+                if (cardDetailPanel != null)
+                    cardDetailPanel.Clear();
+
                 SetSystemMessage("상대의 뒷면 캐릭터입니다.");
                 return;
             }
 
-            SelectCard(card);
+            SelectFieldCharacter(slot);
             SetSystemMessage($"상대 캐릭터 카드 확인: {card.name}");
         }
     }
@@ -2653,7 +2667,7 @@ public class BattleManager : MonoBehaviour
         if (card == null)
             return;
 
-        if (card.kind != "Content")
+        if (card.kind != "Content" && card.kind != "Contents")
         {
             SelectCard(card);
             return;
@@ -2673,8 +2687,14 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
+        if (effectManager == null)
+        {
+            SetSystemMessage("EffectManager가 연결되어 있지 않습니다.");
+            return;
+        }
+
         string failReason;
-        if (!CanUseMyAction(out failReason))
+        if (!effectManager.CanUseContentCardNow(card, BattleSlotOwner.My, out failReason))
         {
             SetSystemMessage(failReason);
             return;
@@ -2683,19 +2703,6 @@ public class BattleManager : MonoBehaviour
         if (!IsCardInHandFromExternal(BattleSlotOwner.My, card))
         {
             SetSystemMessage("손패에 있는 콘텐츠 카드만 사용할 수 있습니다.");
-            return;
-        }
-
-        int cost = GetContentCardCost(card);
-        if (!CanPayViewerCostFromExternal(BattleSlotOwner.My, cost))
-        {
-            SetSystemMessage("시청자가 부족하여 콘텐츠 카드를 사용할 수 없습니다.");
-            return;
-        }
-
-        if (effectManager == null)
-        {
-            SetSystemMessage("EffectManager가 연결되어 있지 않습니다.");
             return;
         }
 
@@ -3069,6 +3076,22 @@ public class BattleManager : MonoBehaviour
         SetSystemMessage($"선택 카드: {card.name}");
     }
 
+    private void SelectFieldCharacter(BattleFieldSlot slot)
+    {
+        if (slot == null || slot.characterCard == null)
+            return;
+
+        if (IsGameOver() || IsBattleBusy())
+            return;
+
+        selectedCard = slot.characterCard;
+
+        if (cardDetailPanel != null)
+            cardDetailPanel.ShowFieldCharacter(slot);
+
+        SetSystemMessage($"선택 카드: {slot.characterCard.name}");
+    }
+
     private Sprite LoadCardSprite(BaseCardData card)
     {
         if (card == null || string.IsNullOrEmpty(card.image))
@@ -3272,10 +3295,11 @@ public class BattleManager : MonoBehaviour
 
     private int CalculatePrepViewerGain(BattleSlotOwner characterOwner)
     {
-        int totalGain = 0;
+        BattlePlayerRuntime player = GetPlayerRuntime(characterOwner);
+        int baseGain = GetIdolBaseViewersPerPrep(player);
+        int totalGain = baseGain;
 
-        AddPrepViewerGainFromSlots(myBattleSlots, characterOwner, ref totalGain);
-        AddPrepViewerGainFromSlots(enemyBattleSlots, characterOwner, ref totalGain);
+        AddPrepViewerGainFromSlots(GetBattleSlots(characterOwner), characterOwner, baseGain, ref totalGain);
 
         return Mathf.Max(0, totalGain);
     }
@@ -3283,6 +3307,7 @@ public class BattleManager : MonoBehaviour
     private void AddPrepViewerGainFromSlots(
         List<BattleFieldSlot> slots,
         BattleSlotOwner characterOwner,
+        int baseGain,
         ref int totalGain)
     {
         if (slots == null)
@@ -3302,13 +3327,16 @@ public class BattleManager : MonoBehaviour
             if (slot.characterOwner != characterOwner)
                 continue;
 
-            BattlePlayerRuntime fieldOwner = GetPlayerRuntime(slot.owner);
-            int baseGain = GetIdolBaseViewersPerPrep(fieldOwner);
             int slotGain = baseGain;
             slotGain += GetBroadcastViewersModifier(slot.broadcastCard);
 
             totalGain += slotGain;
         }
+    }
+
+    private List<BattleFieldSlot> GetBattleSlots(BattleSlotOwner owner)
+    {
+        return owner == BattleSlotOwner.My ? myBattleSlots : enemyBattleSlots;
     }
 
     private BattlePlayerRuntime GetPlayerRuntime(BattleSlotOwner owner)

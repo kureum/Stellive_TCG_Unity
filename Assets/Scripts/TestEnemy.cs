@@ -10,6 +10,8 @@ public class TestEnemy : MonoBehaviour
 
     [Header("Enemy Summon")]
     public bool enemySummonEnabled = true;
+    public bool enemyBacksideSummonEnabled = true;
+    public bool enemyFrontSummonEnabled = false;
 
     private bool isWaiting;
     private float timer;
@@ -83,10 +85,20 @@ public class TestEnemy : MonoBehaviour
         isWaiting = false;
         timer = 0f;
 
-        bool didAction = enemySummonEnabled &&
-            (battleManager.TestEnemyTryFlipSummonCharacter() ||
-                battleManager.TestEnemyTrySummonFrontCharacter() ||
-                battleManager.TestEnemyTrySummonBacksideCharacter());
+        bool didAction = false;
+
+        if (enemySummonEnabled)
+        {
+            if (enemyFrontSummonEnabled)
+            {
+                didAction =
+                    battleManager.TestEnemyTryFlipSummonCharacter() ||
+                    battleManager.TestEnemyTrySummonFrontCharacter();
+            }
+
+            if (!didAction && enemyBacksideSummonEnabled)
+                didAction = battleManager.TestEnemyTrySummonBacksideCharacter();
+        }
 
         if (didAction)
             return;

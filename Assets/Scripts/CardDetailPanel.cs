@@ -61,6 +61,21 @@ public class CardDetailPanel : MonoBehaviour
         SetEffectText(card);
     }
 
+    public void ShowFieldCharacter(BattleFieldSlot slot)
+    {
+        if (slot == null || slot.characterCard == null)
+        {
+            Clear();
+            return;
+        }
+
+        BaseCardData card = slot.characterCard;
+
+        SetBasicInfo(card);
+        SetCardImage(card);
+        SetEffectText(card, slot);
+    }
+
     private void SetBasicInfo(BaseCardData card)
     {
         if (cardNameText != null)
@@ -94,6 +109,11 @@ public class CardDetailPanel : MonoBehaviour
 
     private void SetEffectText(BaseCardData card)
     {
+        SetEffectText(card, null);
+    }
+
+    private void SetEffectText(BaseCardData card, BattleFieldSlot fieldSlot)
+    {
         if (cardEffectText == null) return;
 
         StringBuilder sb = new StringBuilder();
@@ -122,8 +142,8 @@ public class CardDetailPanel : MonoBehaviour
             sb.AppendLine("[캐릭터 정보]");
             sb.AppendLine($"출연 코스트: {character.appearCost}");
             sb.AppendLine($"액티브 코스트: {character.activeCost}");
-            sb.AppendLine($"합방 텐션: {character.tension}");
-            sb.AppendLine($"체력: {character.hpMax}");
+            sb.AppendLine(FormatRuntimeStat("합방 텐션", character.tension, fieldSlot?.currentCharacterTension));
+            sb.AppendLine(FormatRuntimeStat("체력", character.hpMax, fieldSlot?.currentCharacterHp));
             sb.AppendLine();
 
             AppendEffects(sb, "[캐릭터 효과]", character.effects);
@@ -139,6 +159,14 @@ public class CardDetailPanel : MonoBehaviour
         }
 
         cardEffectText.text = sb.ToString();
+    }
+
+    private string FormatRuntimeStat(string label, int baseValue, int? currentValue)
+    {
+        if (!currentValue.HasValue || currentValue.Value == baseValue)
+            return $"{label}: {baseValue}";
+
+        return $"{label}: {baseValue} (현재 {currentValue.Value})";
     }
 
     private void AppendEffects(StringBuilder sb, string title, EffectData[] effects)

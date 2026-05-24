@@ -2,6 +2,8 @@ using UnityEngine;
 
 public class SummonManager : MonoBehaviour
 {
+    private const int FaceDownSummonCostLimit = 10000;
+
     [SerializeField] private BattleManager battleManager;
 
     private BattleFieldSlot pendingSummonSlot;
@@ -46,6 +48,11 @@ public class SummonManager : MonoBehaviour
         return CanFlipSummonByTurn(slot, out failReason);
     }
 
+    public bool CanSummonBacksideByCostFromExternal(BaseCardData card)
+    {
+        return CanSummonBacksideByCost(card);
+    }
+
     public void ClearPending()
     {
         ClearPendingSummonChoice();
@@ -87,7 +94,8 @@ public class SummonManager : MonoBehaviour
 
         int appearCost = GetCharacterAppearCost(card);
         bool canSummonFront = battleManager.CanPayViewerCostFromExternal(BattleSlotOwner.My, appearCost);
-        bool canSummonBackside = !myHasSummonedFaceDownThisTurn;
+        string backsideFailReason;
+        bool canSummonBackside = CanSummonBackside(card, out backsideFailReason);
 
         if (!canSummonFront && !canSummonBackside)
         {
@@ -96,8 +104,8 @@ public class SummonManager : MonoBehaviour
 
             battleManager.SetSystemMessageFromExternal(
                 "불가능한 행동입니다.\n" +
-                "시청자가 부족하여 앞면 출연할 수 없고,\n" +
-                "이번 턴에는 이미 뒷면 출연을 했습니다."
+                "시청자가 부족하여 앞면 출연할 수 없습니다.\n" +
+                backsideFailReason
             );
 
             return;
@@ -133,7 +141,7 @@ public class SummonManager : MonoBehaviour
 
         string backsideState = canSummonBackside
             ? "뒷면 출연 가능"
-            : "이번 턴에는 이미 뒷면 출연을 했습니다.";
+            : backsideFailReason;
 
         battleManager.SetSystemMessageFromExternal(
             $"{card.name} 카드를 ({slot.x}, {slot.y}) 슬롯에 출연하려 합니다.\n" +
@@ -307,16 +315,17 @@ public class SummonManager : MonoBehaviour
             return;
         }
 
-        if (myHasSummonedFaceDownThisTurn)
+        BattleFieldSlot targetSlot = pendingSummonSlot;
+        BaseCardData targetCard = pendingSummonCard;
+
+        string backsideFailReason;
+        if (!CanSummonBackside(targetCard, out backsideFailReason))
         {
             ClearPendingSummonChoice();
             battleManager.ClearDraggingHandCardFromExternal();
-            battleManager.SetSystemMessageFromExternal("뒷면 출연은 1턴에 1회만 가능합니다.");
+            battleManager.SetSystemMessageFromExternal(backsideFailReason);
             return;
         }
-
-        BattleFieldSlot targetSlot = pendingSummonSlot;
-        BaseCardData targetCard = pendingSummonCard;
 
         string failReason;
         if (!CanOpenSummonQuestion(targetSlot, targetCard, out failReason))
@@ -384,6 +393,14 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("이미 캐릭터가 있는 슬롯입니다.");
+            return;
+        }
+
+        string backsideFailReason;
+        if (!CanSummonBackside(characterCard, out backsideFailReason))
+        {
+            ClearPendingSummonChoice();
+            battleManager.SetSystemMessageFromExternal(backsideFailReason);
             return;
         }
 
@@ -663,5 +680,34 @@ public class SummonManager : MonoBehaviour
             return 0;
 
         return Mathf.Max(0, character.appearCost);
+    }
+
+    private bool CanSummonBackside(BaseCardData card, out string failReason)
+    {
+        failReason = "";
+
+        if (myHasSummonedFaceDownThisTurn)
+        {
+            failReason = "이번 턴에는 이미 뒷면 출연을 했습니다.";
+            return false;
+        }
+
+        if (!CanSummonBacksideByCost(card))
+        {
+            failReason = $"출연 코스트가 {FaceDownSummonCostLimit} 이상인 캐릭터는 뒷면 출연할 수 없습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CanSummonBacksideByCost(BaseCardData card)
+    {
+        CharacterCardData character = card as CharacterCardData;
+
+        if (character == null)
+            return false;
+
+        return character.appearCost < FaceDownSummonCostLimit;
     }
 }

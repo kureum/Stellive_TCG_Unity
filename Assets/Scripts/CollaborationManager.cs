@@ -1,6 +1,17 @@
 using System.Collections;
 using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
+
+public class CollaborationContext
+{
+    public BattleFieldSlot attackerSlot;
+    public BattleFieldSlot defenderSlot;
+    public bool attackerWasFaceDownAtCollabStart;
+    public bool defenderWasFaceDownAtCollabStart;
+    public bool attackerEffectsBlockedThisCollab;
+    public bool defenderEffectsBlockedThisCollab;
+}
 
 public class CollaborationManager : MonoBehaviour
 {
@@ -35,13 +46,20 @@ public class CollaborationManager : MonoBehaviour
     [SerializeField] private float hpStepDelay = 0.12f;
     [SerializeField] private float defeatFadeTime = 0.35f;
     [SerializeField] private float animationTimeScale = 1.5f;
+    [SerializeField] private float resultPanelVisibleTime = 2.5f;
+    [SerializeField] private float winnerMoveDuration = 0.45f;
 
     private bool isResolvingCollaboration = false;
     private BaseCardData currentGuestCard;
     private BaseCardData currentHostCard;
     private BattleFieldSlot pendingGuestSlot;
     private BattleFieldSlot pendingHostSlot;
+    private CollaborationContext pendingContext;
+    private CollaborationContext currentContext;
     private Coroutine closePanelCoroutine;
+    private GameObject winnerMoveGhostObject;
+    private Image hiddenWinnerMoveSourceImage;
+    private Color hiddenWinnerMoveSourceColor;
 
     public void Init(BattleManager manager)
     {
@@ -51,6 +69,10 @@ public class CollaborationManager : MonoBehaviour
     }
 
     public bool IsResolvingCollaboration => isResolvingCollaboration;
+
+    public bool IsCollaborationSequenceRunning => isResolvingCollaboration;
+
+    public CollaborationContext CurrentCollaborationContext => currentContext;
 
     public bool HasPendingCollaborationChoice =>
         pendingGuestSlot != null ||
@@ -87,7 +109,9 @@ public class CollaborationManager : MonoBehaviour
         pendingGuestSlot = guestSlot;
         pendingHostSlot = hostSlot;
 
-        ShowPanelBeforeResult(guestSlot, hostSlot);
+        if (!HasHiddenParticipant(guestSlot, hostSlot))
+            ShowPanelBeforeResult(guestSlot, hostSlot);
+
         OpenResolveResultQuestion();
     }
 
@@ -142,8 +166,22 @@ public class CollaborationManager : MonoBehaviour
             return;
         }
 
+        pendingContext = CreateCollaborationContext(pendingGuestSlot, pendingHostSlot);
+
+        if (!RevealFaceDownParticipants(pendingGuestSlot, pendingHostSlot))
+        {
+            ClearPendingCollaboration();
+            HidePanel();
+            return;
+        }
+
         battleManager.SetBattleBusyFromExternal(true);
-        StartCoroutine(ExecuteBasicCollaborationRoutine(pendingGuestSlot, pendingHostSlot));
+        isResolvingCollaboration = true;
+        StartCoroutine(ExecuteBasicCollaborationRoutine(
+            pendingGuestSlot,
+            pendingHostSlot,
+            pendingContext
+        ));
     }
 
     private void CancelPendingCollaboration()
@@ -159,6 +197,7 @@ public class CollaborationManager : MonoBehaviour
     {
         pendingGuestSlot = null;
         pendingHostSlot = null;
+        pendingContext = null;
     }
 
     public void CancelCollaborationStateFromExternal()
@@ -171,6 +210,8 @@ public class CollaborationManager : MonoBehaviour
 
         ClearPendingCollaboration();
         HidePanel();
+        currentContext = null;
+        CleanupWinnerMoveVisual();
 
         if (battleManager != null)
             battleManager.SetBattleBusyFromExternal(false);
@@ -190,27 +231,15 @@ public class CollaborationManager : MonoBehaviour
             return false;
         }
 
-        if (guestSlot.characterOwner != BattleSlotOwner.My)
+        if (guestSlot.characterOwner == hostSlot.characterOwner)
         {
-            battleManager.SetSystemMessageFromExternal("현재는 내 캐릭터만 합방을 시도할 수 있습니다.");
-            return false;
-        }
-
-        if (hostSlot.characterOwner != BattleSlotOwner.Enemy)
-        {
-            battleManager.SetSystemMessageFromExternal("상대 캐릭터가 있는 슬롯에만 합방할 수 있습니다.");
+            battleManager.SetSystemMessageFromExternal("서로 다른 플레이어의 캐릭터끼리만 합방할 수 있습니다.");
             return false;
         }
 
         if (guestSlot.isCharacterFaceDown)
         {
-            battleManager.SetSystemMessageFromExternal("뒷면 캐릭터는 합방할 수 없습니다.");
-            return false;
-        }
-
-        if (hostSlot.isCharacterFaceDown)
-        {
-            battleManager.SetSystemMessageFromExternal("상대의 뒷면 캐릭터와는 아직 합방할 수 없습니다.");
+            battleManager.SetSystemMessageFromExternal("뒷면 캐릭터는 합방을 시도할 수 없습니다.");
             return false;
         }
 
@@ -222,6 +251,70 @@ public class CollaborationManager : MonoBehaviour
             battleManager.SetSystemMessageFromExternal("합방은 캐릭터 카드끼리만 가능합니다.");
             return false;
         }
+
+        return true;
+    }
+
+    private bool HasHiddenParticipant(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
+    {
+        return (guestSlot != null && guestSlot.isCharacterFaceDown) ||
+            (hostSlot != null && hostSlot.isCharacterFaceDown);
+    }
+
+    private bool RevealFaceDownParticipants(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
+    {
+        if (!RevealFaceDownCharacter(guestSlot))
+            return false;
+
+        if (!RevealFaceDownCharacter(hostSlot))
+            return false;
+
+        return true;
+    }
+
+    private CollaborationContext CreateCollaborationContext(
+        BattleFieldSlot guestSlot,
+        BattleFieldSlot hostSlot)
+    {
+        CollaborationContext context = new CollaborationContext();
+        context.attackerSlot = guestSlot;
+        context.defenderSlot = hostSlot;
+        context.attackerWasFaceDownAtCollabStart =
+            guestSlot != null && guestSlot.isCharacterFaceDown;
+        context.defenderWasFaceDownAtCollabStart =
+            hostSlot != null && hostSlot.isCharacterFaceDown;
+        context.attackerEffectsBlockedThisCollab =
+            context.attackerWasFaceDownAtCollabStart;
+        context.defenderEffectsBlockedThisCollab =
+            context.defenderWasFaceDownAtCollabStart;
+
+        return context;
+    }
+
+    private bool RevealFaceDownCharacter(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.isCharacterFaceDown)
+            return true;
+
+        BaseCardData card = slot.characterCard;
+
+        if (card == null)
+        {
+            battleManager.SetSystemMessageFromExternal("공개할 캐릭터 정보가 없습니다.");
+            return false;
+        }
+
+        Sprite sprite = battleManager.LoadCardSpriteFromExternal(card);
+
+        if (sprite == null)
+        {
+            battleManager.SetSystemMessageFromExternal($"{card.name} 카드 이미지를 찾을 수 없습니다.");
+            return false;
+        }
+
+        slot.SetCharacterCard(card, sprite, false, slot.characterOwner);
+        battleManager.RefreshAllUIFromExternal();
+        battleManager.SetSystemMessageFromExternal($"{card.name} 카드가 공개되었습니다.");
 
         return true;
     }
@@ -247,9 +340,15 @@ public class CollaborationManager : MonoBehaviour
         );
     }
 
-    private IEnumerator ExecuteBasicCollaborationRoutine(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
+    private IEnumerator ExecuteBasicCollaborationRoutine(
+        BattleFieldSlot guestSlot,
+        BattleFieldSlot hostSlot,
+        CollaborationContext context)
     {
         isResolvingCollaboration = true;
+        currentContext = context;
+
+        ShowPanelBeforeResult(guestSlot, hostSlot);
 
         BaseCardData guestCard = guestSlot.characterCard;
         BaseCardData hostCard = hostSlot.characterCard;
@@ -262,6 +361,14 @@ public class CollaborationManager : MonoBehaviour
 
         int guestTension = guestSlot.currentCharacterTension;
         int hostTension = hostSlot.currentCharacterTension;
+        int hostDamage = CalculateCollaborationDamage(
+            guestTension,
+            context != null && context.defenderWasFaceDownAtCollabStart
+        );
+        int guestDamage = CalculateCollaborationDamage(
+            hostTension,
+            context != null && context.attackerWasFaceDownAtCollabStart
+        );
 
         // 초기 표시
         SetGuestView(guestCard, guestSlot.currentCharacterTension, guestSlot.currentCharacterHp);
@@ -277,14 +384,18 @@ public class CollaborationManager : MonoBehaviour
             hostSlot,
             hostCard,
             false,
-            guestTension
+            hostDamage
         );
 
         bool hostDefeated = hostSlot.currentCharacterHp <= 0;
         bool guestDefeated = false;
 
         // 2. 방어자가 생존하면 반격
-        if (!hostDefeated)
+        bool hostCanCounter =
+            !hostDefeated &&
+            (context == null || !context.defenderWasFaceDownAtCollabStart);
+
+        if (hostCanCounter)
         {
             yield return new WaitForSeconds(ScaleAnimationTime(0.2f));
 
@@ -294,7 +405,7 @@ public class CollaborationManager : MonoBehaviour
                 guestSlot,
                 guestCard,
                 true,
-                hostTension
+                guestDamage
             );
 
             guestDefeated = guestSlot.currentCharacterHp <= 0;
@@ -312,21 +423,6 @@ public class CollaborationManager : MonoBehaviour
 
         string resultMessage = BuildResultMessage(hostDefeated, guestDefeated);
 
-        ResolveCollaborationResult(
-            guestSlot,
-            hostSlot,
-            guestCard,
-            hostCard,
-            guestOwner,
-            hostOwner,
-            guestSprite,
-            hostSprite,
-            guestTension,
-            guestFinalHp,
-            hostDefeated,
-            guestDefeated
-        );
-
         if (!guestDefeated)
             ResetUiAlpha(guestRect);
 
@@ -334,14 +430,61 @@ public class CollaborationManager : MonoBehaviour
             ResetUiAlpha(hostRect);
 
         ShowResult(resultMessage);
-        ScheduleClosePanel();
+
+        CollaborationResolutionData resolutionData = new CollaborationResolutionData
+        {
+            guestSlot = guestSlot,
+            hostSlot = hostSlot,
+            guestCard = guestCard,
+            hostCard = hostCard,
+            guestOwner = guestOwner,
+            hostOwner = hostOwner,
+            guestSprite = guestSprite,
+            hostSprite = hostSprite,
+            guestTension = guestTension,
+            guestFinalHp = guestFinalHp,
+            hostFinalHp = hostFinalHp,
+            hostDefeated = hostDefeated,
+            guestDefeated = guestDefeated
+        };
+
+        yield return WaitForResultPanelAndHide();
+        yield return ResolveCollaborationResultRoutine(resolutionData);
 
         ClearPendingCollaboration();
 
         battleManager.RefreshAllUIFromExternal();
         isResolvingCollaboration = false;
+        currentContext = null;
         battleManager.ResolveMyActionUsedFromExternal(resultMessage);
         battleManager.SetBattleBusyFromExternal(false);
+    }
+
+    private int CalculateCollaborationDamage(int baseDamage, bool targetWasFaceDownAtCollabStart)
+    {
+        int safeDamage = Mathf.Max(0, baseDamage);
+
+        if (targetWasFaceDownAtCollabStart)
+            safeDamage *= 2;
+
+        return safeDamage;
+    }
+
+    private class CollaborationResolutionData
+    {
+        public BattleFieldSlot guestSlot;
+        public BattleFieldSlot hostSlot;
+        public BaseCardData guestCard;
+        public BaseCardData hostCard;
+        public BattleSlotOwner guestOwner;
+        public BattleSlotOwner hostOwner;
+        public Sprite guestSprite;
+        public Sprite hostSprite;
+        public int guestTension;
+        public int guestFinalHp;
+        public int hostFinalHp;
+        public bool hostDefeated;
+        public bool guestDefeated;
     }
 
     private string BuildResultMessage(bool hostDefeated, bool guestDefeated)
@@ -358,57 +501,66 @@ public class CollaborationManager : MonoBehaviour
         return "합방이 종료되었습니다.";
     }
 
-    private void ResolveCollaborationResult(
-        BattleFieldSlot guestSlot,
-        BattleFieldSlot hostSlot,
-        BaseCardData guestCard,
-        BaseCardData hostCard,
-        BattleSlotOwner guestOwner,
-        BattleSlotOwner hostOwner,
-        Sprite guestSprite,
-        Sprite hostSprite,
-        int guestTension,
-        int guestFinalHp,
-        bool hostDefeated,
-        bool guestDefeated)
+    private IEnumerator ResolveCollaborationResultRoutine(CollaborationResolutionData data)
     {
-        if (hostDefeated)
+        if (data == null)
+            yield break;
+
+        if (data.hostDefeated)
         {
-            battleManager.AddCharacterToRestZoneFromExternal(hostOwner, hostCard);
-            hostSlot.ClearCharacterCard();
+            battleManager.AddCharacterToRestZoneFromExternal(data.hostOwner, data.hostCard);
+            data.hostSlot.ClearCharacterCard();
 
-            if (!guestDefeated)
+            if (!data.guestDefeated)
             {
-                bool guestWasFaceDown = guestSlot.isCharacterFaceDown;
-
-                hostSlot.SetCharacterCard(
-                    guestCard,
-                    guestSprite,
-                    guestWasFaceDown,
-                    guestOwner
-                );
-
-                hostSlot.SetCharacterBattleStats(
-                    guestFinalHp,
-                    guestTension
-                );
-
-                hostSlot.SetCharacterMovedThisTurn(true);
-
-                guestSlot.ClearCharacterCard();
+                yield return AnimateWinnerMoveToTargetSlot(data);
+                MoveGuestToHostSlot(data);
+            }
+            else
+            {
+                battleManager.AddCharacterToRestZoneFromExternal(data.guestOwner, data.guestCard);
+                data.guestSlot.ClearCharacterCard();
             }
 
-            return;
+            yield break;
         }
 
-        if (guestDefeated)
+        if (data.guestDefeated)
         {
-            battleManager.AddCharacterToRestZoneFromExternal(guestOwner, guestCard);
-            guestSlot.ClearCharacterCard();
+            battleManager.AddCharacterToRestZoneFromExternal(data.guestOwner, data.guestCard);
+            data.guestSlot.ClearCharacterCard();
+            yield break;
+        }
+
+        data.guestSlot.SetCharacterMovedThisTurn(true);
+    }
+
+    private void MoveGuestToHostSlot(CollaborationResolutionData data)
+    {
+        if (data == null ||
+            data.guestSlot == null ||
+            data.hostSlot == null ||
+            data.guestCard == null)
+        {
             return;
         }
 
-        guestSlot.SetCharacterMovedThisTurn(true);
+        bool guestWasFaceDown = data.guestSlot.isCharacterFaceDown;
+
+        data.hostSlot.SetCharacterCard(
+            data.guestCard,
+            data.guestSprite,
+            guestWasFaceDown,
+            data.guestOwner
+        );
+
+        data.hostSlot.SetCharacterBattleStats(
+            data.guestFinalHp,
+            data.guestTension
+        );
+
+        data.hostSlot.SetCharacterMovedThisTurn(true);
+        data.guestSlot.ClearCharacterCard();
     }
 
     private void SetGuestView(BaseCardData card, int tension, int hp)
@@ -615,6 +767,130 @@ public class CollaborationManager : MonoBehaviour
 
         if (resultText != null)
             resultText.text = message;
+    }
+
+    private IEnumerator WaitForResultPanelAndHide()
+    {
+        yield return new WaitForSeconds(Mathf.Max(0f, resultPanelVisibleTime));
+        HidePanel();
+    }
+
+    private IEnumerator AnimateWinnerMoveToTargetSlot(CollaborationResolutionData data)
+    {
+        if (data == null ||
+            data.guestSlot == null ||
+            data.hostSlot == null ||
+            data.guestSprite == null)
+        {
+            yield break;
+        }
+
+        RectTransform startRect = GetSlotCharacterRect(data.guestSlot);
+        RectTransform targetRect = GetSlotCharacterRect(data.hostSlot);
+
+        if (startRect == null || targetRect == null)
+            yield break;
+
+        Canvas canvas = ResolveAnimationCanvas(startRect);
+
+        if (canvas == null)
+            yield break;
+
+        CleanupWinnerMoveVisual();
+
+        winnerMoveGhostObject = new GameObject(
+            "RuntimeCollaborationWinnerMove",
+            typeof(RectTransform),
+            typeof(CanvasGroup),
+            typeof(Image)
+        );
+
+        winnerMoveGhostObject.transform.SetParent(canvas.transform, false);
+        winnerMoveGhostObject.transform.SetAsLastSibling();
+
+        RectTransform ghostRect = winnerMoveGhostObject.GetComponent<RectTransform>();
+        ghostRect.position = startRect.position;
+        ghostRect.rotation = startRect.rotation;
+        ghostRect.sizeDelta = startRect.rect.size;
+
+        Image ghostImage = winnerMoveGhostObject.GetComponent<Image>();
+        ghostImage.sprite = data.guestSprite;
+        ghostImage.color = Color.white;
+        ghostImage.preserveAspect = true;
+        ghostImage.raycastTarget = false;
+
+        CanvasGroup canvasGroup = winnerMoveGhostObject.GetComponent<CanvasGroup>();
+        canvasGroup.blocksRaycasts = false;
+        canvasGroup.interactable = false;
+
+        if (data.guestSlot.characterCardImage != null)
+        {
+            hiddenWinnerMoveSourceImage = data.guestSlot.characterCardImage;
+            hiddenWinnerMoveSourceColor = hiddenWinnerMoveSourceImage.color;
+            Color hiddenColor = hiddenWinnerMoveSourceColor;
+            hiddenColor.a = 0f;
+            hiddenWinnerMoveSourceImage.color = hiddenColor;
+        }
+
+        Vector3 startPosition = startRect.position;
+        Vector3 targetPosition = targetRect.position;
+        float duration = Mathf.Max(0.01f, winnerMoveDuration);
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            float easedT = Mathf.SmoothStep(0f, 1f, t);
+            ghostRect.position = Vector3.Lerp(startPosition, targetPosition, easedT);
+            yield return null;
+        }
+
+        ghostRect.position = targetPosition;
+
+        CleanupWinnerMoveVisual();
+    }
+
+    private void CleanupWinnerMoveVisual()
+    {
+        if (hiddenWinnerMoveSourceImage != null)
+            hiddenWinnerMoveSourceImage.color = hiddenWinnerMoveSourceColor;
+
+        hiddenWinnerMoveSourceImage = null;
+
+        if (winnerMoveGhostObject != null)
+            Destroy(winnerMoveGhostObject);
+
+        winnerMoveGhostObject = null;
+    }
+
+    private RectTransform GetSlotCharacterRect(BattleFieldSlot slot)
+    {
+        if (slot == null)
+            return null;
+
+        if (slot.characterCardImage != null)
+            return slot.characterCardImage.rectTransform;
+
+        return slot.transform as RectTransform;
+    }
+
+    private Canvas ResolveAnimationCanvas(RectTransform referenceRect)
+    {
+        Canvas canvas = null;
+
+        if (referenceRect != null)
+            canvas = referenceRect.GetComponentInParent<Canvas>();
+
+        if (canvas != null)
+            return canvas;
+
+        canvas = GetComponentInParent<Canvas>();
+
+        if (canvas != null)
+            return canvas;
+
+        return FindAnyObjectByType<Canvas>();
     }
 
     private void ScheduleClosePanel()
