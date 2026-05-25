@@ -36,6 +36,10 @@ public class BattleFieldSlot : MonoBehaviour,
     public Image characterCardImage;
     public Image contentCardImage;
 
+    [Header("Question Target Highlight")]
+    [Tooltip("카드 질문 패널에서 필드 대상 후보를 표시할 별도 오브젝트입니다. 비워두면 슬롯 배경 색상으로 표시합니다.")]
+    public GameObject questionTargetHighlight;
+
     [Header("Runtime Cards")]
     public BaseCardData broadcastCard;
     public BaseCardData characterCard;
@@ -66,6 +70,7 @@ public class BattleFieldSlot : MonoBehaviour,
     private bool isMoveHighlightVisible;
     private bool isQuestionTargetHighlightVisible;
     private Coroutine contentFadeCoroutine;
+    private CanvasGroup contentFadeCanvasGroup;
 
     public bool HasBroadcast => broadcastCard != null;
     public bool HasCharacter => characterCard != null;
@@ -98,6 +103,7 @@ public class BattleFieldSlot : MonoBehaviour,
 
         SetSetupButtonVisible(false);
         SetMoveHighlightVisible(false);
+        SetQuestionTargetHighlight(false);
         RefreshVisualState();
     }
 
@@ -245,13 +251,19 @@ public class BattleFieldSlot : MonoBehaviour,
 
     public void SetQuestionTargetHighlight(bool visible)
     {
+        isQuestionTargetHighlightVisible = visible;
+
+        if (questionTargetHighlight != null)
+        {
+            questionTargetHighlight.SetActive(visible);
+            return;
+        }
+
         if (rootRaycastImage == null)
             EnsureDropRaycastTarget();
 
         if (rootRaycastImage == null)
             return;
-
-        isQuestionTargetHighlightVisible = visible;
 
         if (visible)
         {
@@ -378,6 +390,8 @@ public class BattleFieldSlot : MonoBehaviour,
             contentCardImage.color = Color.white;
         }
 
+        ResetContentFadeAlpha();
+
         if (contentCardButton != null)
         {
             contentCardButton.gameObject.SetActive(card != null);
@@ -438,10 +452,11 @@ public class BattleFieldSlot : MonoBehaviour,
             contentCardImage.color = Color.white;
         }
 
+        ResetContentFadeAlpha();
         RefreshVisualState();
     }
 
-    public void ClearContentCardWithFade(float fadeDuration = 1.00f)
+    public void ClearContentCardWithFade(float fadeDuration = 0.35f)
     {
         StopContentFadeIfNeeded();
 
@@ -463,24 +478,54 @@ public class BattleFieldSlot : MonoBehaviour,
     private IEnumerator FadeOutContentCardRoutine(float fadeDuration)
     {
         float safeDuration = Mathf.Max(0.01f, fadeDuration);
-        float elapsed = 0f;
-        Color startColor = contentCardImage.color;
+        float timer = 0f;
+        CanvasGroup canvasGroup = ResolveContentFadeCanvasGroup();
 
-        while (elapsed < safeDuration)
+        if (canvasGroup == null)
         {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / safeDuration);
-            Color color = startColor;
-            color.a = Mathf.Lerp(startColor.a, 0f, t);
-            contentCardImage.color = color;
+            ClearContentCard();
+            yield break;
+        }
+
+        float startAlpha = canvasGroup.alpha;
+
+        while (timer < safeDuration)
+        {
+            timer += Time.deltaTime;
+            float t = Mathf.Clamp01(timer / safeDuration);
+            canvasGroup.alpha = Mathf.Lerp(startAlpha, 0f, t);
             yield return null;
         }
 
+        canvasGroup.alpha = 0f;
         contentCardImage.sprite = null;
-        contentCardImage.color = Color.white;
+        canvasGroup.alpha = 1f;
         contentFadeCoroutine = null;
 
         RefreshVisualState();
+    }
+
+    private CanvasGroup ResolveContentFadeCanvasGroup()
+    {
+        if (contentFadeCanvasGroup != null)
+            return contentFadeCanvasGroup;
+
+        GameObject targetObject = null;
+
+        if (contentCardButton != null)
+            targetObject = contentCardButton.gameObject;
+        else if (contentCardImage != null)
+            targetObject = contentCardImage.gameObject;
+
+        if (targetObject == null)
+            return null;
+
+        contentFadeCanvasGroup = targetObject.GetComponent<CanvasGroup>();
+
+        if (contentFadeCanvasGroup == null)
+            contentFadeCanvasGroup = targetObject.AddComponent<CanvasGroup>();
+
+        return contentFadeCanvasGroup;
     }
 
     private void StopContentFadeIfNeeded()
@@ -491,8 +536,15 @@ public class BattleFieldSlot : MonoBehaviour,
         StopCoroutine(contentFadeCoroutine);
         contentFadeCoroutine = null;
 
-        if (contentCardImage != null)
-            contentCardImage.color = Color.white;
+        ResetContentFadeAlpha();
+    }
+
+    private void ResetContentFadeAlpha()
+    {
+        CanvasGroup canvasGroup = ResolveContentFadeCanvasGroup();
+
+        if (canvasGroup != null)
+            canvasGroup.alpha = 1f;
     }
 
     public void ClearAllCards()

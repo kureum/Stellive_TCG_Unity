@@ -146,6 +146,7 @@ public class BattleManager : MonoBehaviour
     private BattleFieldSlot selectedBroadcastTargetSlot;
 
     private BaseCardData pendingContentCard;
+    private int pendingContentHandIndex = -1;
     private BattleFieldSlot pendingContentInstallSlot;
     private BattlePhase currentPhase = BattlePhase.None;
     private BattlePlayerSide firstPlayerSide;
@@ -770,6 +771,150 @@ public class BattleManager : MonoBehaviour
             $"상대 방송 배치: {enemyBroadcastPlacedCount}/{enemyRequiredBroadcastCount}";
 
         SetSystemMessage(message);
+    }
+
+    public BaseCardData DebugFindCardById(string cardId)
+    {
+        if (string.IsNullOrWhiteSpace(cardId))
+            return null;
+
+        return allCards.FirstOrDefault(card =>
+            card != null &&
+            string.Equals(card.id, cardId.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+
+    public bool DebugGiveCardToHand(
+        BattleSlotOwner owner,
+        string cardId,
+        out string message)
+    {
+        message = "";
+
+        BattlePlayerRuntime targetPlayer = GetPlayerRuntime(owner);
+
+        if (targetPlayer == null || targetPlayer.hand == null)
+        {
+            message = "Cheat failed: player hand not ready";
+            return false;
+        }
+
+        BaseCardData card = DebugFindCardById(cardId);
+
+        if (card == null)
+        {
+            message = "Cheat failed: card id not found";
+            return false;
+        }
+
+        targetPlayer.hand.Add(card);
+        RefreshAllUI();
+
+        message = $"Cheat give: {card.id} -> {FormatCheatOwner(owner)} hand";
+        return true;
+    }
+
+    public bool DebugSummonCharacterToSlot(
+        BattleSlotOwner owner,
+        string coord,
+        string cardId,
+        out string message)
+    {
+        message = "";
+
+        if (!TryParseDebugCoord(coord, out int x, out int y))
+        {
+            message = "Cheat failed: invalid coord";
+            return false;
+        }
+
+        BattleFieldSlot targetSlot = FindBattleSlot(owner, x, y);
+
+        if (targetSlot == null)
+        {
+            message = "Cheat failed: target slot not found";
+            return false;
+        }
+
+        if (!targetSlot.HasBroadcast)
+        {
+            message = "Cheat failed: target slot has no broadcast card";
+            return false;
+        }
+
+        if (targetSlot.HasCharacter)
+        {
+            message = "Cheat failed: target slot already has a character";
+            return false;
+        }
+
+        BaseCardData card = DebugFindCardById(cardId);
+
+        if (card == null)
+        {
+            message = "Cheat failed: card id not found";
+            return false;
+        }
+
+        if (!IsCharacterCardKind(card))
+        {
+            message = "Cheat failed: summon only supports Character cards";
+            return false;
+        }
+
+        Sprite sprite = LoadCardSprite(card);
+
+        if (sprite == null)
+        {
+            message = "Cheat failed: card image not found";
+            return false;
+        }
+
+        targetSlot.SetCharacterCard(card, sprite, false, owner);
+        RefreshAllUI();
+
+        message = $"Cheat summon: {card.id} -> {FormatCheatOwner(owner)} {coord.Trim()}";
+        return true;
+    }
+
+    private BattleFieldSlot FindBattleSlot(BattleSlotOwner owner, int x, int y)
+    {
+        List<BattleFieldSlot> slots = GetBattleSlots(owner);
+
+        if (slots == null)
+            return null;
+
+        return slots.FirstOrDefault(slot =>
+            slot != null &&
+            slot.owner == owner &&
+            slot.x == x &&
+            slot.y == y);
+    }
+
+    private bool TryParseDebugCoord(string coord, out int x, out int y)
+    {
+        x = 0;
+        y = 0;
+
+        if (string.IsNullOrWhiteSpace(coord))
+            return false;
+
+        string trimmed = coord.Trim();
+
+        if (trimmed.Length != 2)
+            return false;
+
+        if (!char.IsDigit(trimmed[0]) || !char.IsDigit(trimmed[1]))
+            return false;
+
+        y = trimmed[0] - '0';
+        x = trimmed[1] - '0';
+
+        return x > 0 && y > 0;
+    }
+
+    private string FormatCheatOwner(BattleSlotOwner owner)
+    {
+        return owner == BattleSlotOwner.My ? "me" : "enemy";
     }
 
     private bool Debug_AutoPlaceBroadcastsForSide(BattlePlayerSide side)
@@ -1511,6 +1656,50 @@ public class BattleManager : MonoBehaviour
         return targetPlayer.hand.Contains(card);
     }
 
+    public IReadOnlyList<BaseCardData> GetHandCardsFromExternal(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        return targetPlayer != null
+            ? targetPlayer.hand
+            : null;
+    }
+
+    public int FindHandCardIndexFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null || card == null)
+            return -1;
+
+        return targetPlayer.hand.IndexOf(card);
+    }
+
+    public bool IsCardInHandAtIndexFromExternal(
+        BattleSlotOwner owner,
+        int handIndex,
+        BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null || card == null)
+            return false;
+
+        if (handIndex < 0 || handIndex >= targetPlayer.hand.Count)
+            return false;
+
+        return targetPlayer.hand[handIndex] == card;
+    }
+
     public bool RemoveCardFromHandFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
         BattlePlayerRuntime targetPlayer =
@@ -1590,6 +1779,39 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
+    public bool MoveHandCardAtIndexToRestZoneFromExternal(
+        BattleSlotOwner owner,
+        int handIndex,
+        BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null || targetPlayer.restZone == null)
+            return false;
+
+        if (card == null || handIndex < 0 || handIndex >= targetPlayer.hand.Count)
+            return false;
+
+        if (targetPlayer.hand[handIndex] != card)
+            return false;
+
+        targetPlayer.hand.RemoveAt(handIndex);
+        targetPlayer.restZone.Add(card);
+
+        if (owner == BattleSlotOwner.My)
+        {
+            if (handIndex == selectedHandCardIndex)
+                ClearSelectedHandCard();
+            else if (handIndex < selectedHandCardIndex)
+                selectedHandCardIndex--;
+        }
+
+        return true;
+    }
+
     public void RemoveAllLastingContentsOnBoardFromExternal(
         BattleSlotOwner effectOwner,
         out int removedCount)
@@ -1606,7 +1828,8 @@ public class BattleManager : MonoBehaviour
         BaseCardData sourceCard,
         BattleSlotOwner owner,
         int cost,
-        bool consumeAction)
+        bool consumeAction,
+        int sourceHandIndex = -1)
     {
         if (sourceCard == null)
         {
@@ -1650,7 +1873,7 @@ public class BattleManager : MonoBehaviour
             "채팅 밴 대상을 선택하세요.",
             candidates,
             false,
-            selectedOption => ConfirmSilenceCharacterCollabThisTurn(sourceCard, owner, cost, consumeAction, selectedOption),
+            selectedOption => ConfirmSilenceCharacterCollabThisTurn(sourceCard, owner, cost, consumeAction, sourceHandIndex, selectedOption),
             null
         ))
         {
@@ -1866,6 +2089,7 @@ public class BattleManager : MonoBehaviour
     private void ClearPendingContentChoice()
     {
         pendingContentCard = null;
+        pendingContentHandIndex = -1;
         pendingContentInstallSlot = null;
 
         if (questionPanel != null && questionPanel.IsOpen())
@@ -1947,6 +2171,7 @@ public class BattleManager : MonoBehaviour
         BattleSlotOwner owner,
         int cost,
         bool consumeAction,
+        int sourceHandIndex,
         CardQuestionOption selectedOption)
     {
         BaseCardData selectedCharacter = selectedOption != null
@@ -1968,7 +2193,11 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (!MoveCardFromHandToRestZoneFromExternal(owner, sourceCard))
+        bool movedToRestZone = sourceHandIndex >= 0
+            ? MoveHandCardAtIndexToRestZoneFromExternal(owner, sourceHandIndex, sourceCard)
+            : MoveCardFromHandToRestZoneFromExternal(owner, sourceCard);
+
+        if (!movedToRestZone)
         {
             SetSystemMessage("효과 발동 카드를 손패에서 휴식존으로 이동할 수 없습니다.");
             return;
@@ -2048,6 +2277,39 @@ public class BattleManager : MonoBehaviour
     {
         SetSystemMessage("합방 전 콘텐츠 카드 발동을 하지 않습니다.");
         onContinueCollaboration?.Invoke();
+    }
+
+    public void RequestPreCollabEffectsFromExternal(
+        BattleFieldSlot attackerSlot,
+        BattleFieldSlot defenderSlot,
+        Action onComplete)
+    {
+        if (effectManager == null)
+        {
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext context = new EffectContext
+        {
+            battleManager = this,
+            collaborationManager = collaborationManager,
+            actingOwner = attackerSlot != null ? attackerSlot.characterOwner : BattleSlotOwner.My,
+            timing = EffectTiming.PreCollab,
+            attackerSlot = attackerSlot,
+            defenderSlot = defenderSlot,
+            sourceSlot = attackerSlot,
+            targetSlot = defenderSlot,
+            sourceCard = attackerSlot != null ? attackerSlot.characterCard : null,
+            targetCard = defenderSlot != null ? defenderSlot.characterCard : null,
+            consumeAction = false
+        };
+
+        effectManager.RequestOptionalEffectActivation(
+            EffectTiming.PreCollab,
+            context,
+            onComplete
+        );
     }
 
     private void ResolveMyActionUsed(string actionMessage)
@@ -3105,6 +3367,7 @@ public class BattleManager : MonoBehaviour
         ClearPendingSummonChoice();
 
         pendingContentCard = card;
+        pendingContentHandIndex = selectedHandCardIndex;
 
         if (!questionPanel.TryShowYesNoQuestion(
             "콘텐츠 카드를 사용하시겠습니까?",
@@ -3160,27 +3423,42 @@ public class BattleManager : MonoBehaviour
         ClearDraggingHandCard();
         ClearPendingSummonChoice();
 
-        List<BaseCardData> usableContentCards = effectManager.GetUsableContentCardsForTiming(
-            myPlayer != null ? myPlayer.hand : null,
-            BattleSlotOwner.My,
-            EffectTiming.MainPhase
-        );
-        usableContentCards.RemoveAll(IsLastingContentCard);
-        usableContentCards.RemoveAll(IsCollabContentCard);
+        EffectContext context = new EffectContext
+        {
+            battleManager = this,
+            actingOwner = BattleSlotOwner.My,
+            timing = EffectTiming.Content,
+            sourceCard = card,
+            consumeAction = true
+        };
 
-        if (usableContentCards.Count == 0)
+        List<EffectCandidate> usableContentCandidates =
+            effectManager.GetPlayableEffects(EffectTiming.Content, context);
+        usableContentCandidates.RemoveAll(candidate =>
+            candidate == null ||
+            IsLastingContentCard(candidate.card) ||
+            IsCollabContentCard(candidate.card));
+
+        if (usableContentCandidates.Count == 0)
         {
             ClearPendingContentChoice();
             SetSystemMessage("발동 가능한 콘텐츠 카드가 없습니다.");
             return;
         }
 
-        if (!usableContentCards.Contains(card))
-            usableContentCards.Insert(0, card);
+        List<CardQuestionOption> options = new List<CardQuestionOption>();
 
-        if (!cardQuestionPanel.TryShow(
+        foreach (EffectCandidate candidate in usableContentCandidates)
+        {
+            if (candidate == null || candidate.card == null)
+                continue;
+
+            options.Add(new CardQuestionOption(candidate.card, null, candidate));
+        }
+
+        if (!cardQuestionPanel.TryShowOptions(
             "발동할 카드를 선택하세요.",
-            usableContentCards,
+            options,
             true,
             ConfirmSelectedContentUse,
             CancelPendingContentUse
@@ -3195,8 +3473,12 @@ public class BattleManager : MonoBehaviour
         SetSystemMessage("발동할 콘텐츠 카드를 선택하세요.");
     }
 
-    private void ConfirmSelectedContentUse(BaseCardData card)
+    private void ConfirmSelectedContentUse(CardQuestionOption option)
     {
+        BaseCardData card = option != null
+            ? option.card
+            : null;
+
         if (card == null)
         {
             ClearPendingContentChoice();
@@ -3220,6 +3502,9 @@ public class BattleManager : MonoBehaviour
         }
 
         pendingContentCard = card;
+        pendingContentHandIndex = option != null && option.linkedCandidate != null
+            ? option.linkedCandidate.handIndex
+            : FindHandCardIndexFromExternal(BattleSlotOwner.My, card);
         ConfirmPendingContentUse();
     }
 
@@ -3233,7 +3518,9 @@ public class BattleManager : MonoBehaviour
         }
 
         BaseCardData card = pendingContentCard;
+        int handIndex = pendingContentHandIndex;
         pendingContentCard = null;
+        pendingContentHandIndex = -1;
 
         if (effectManager == null)
         {
@@ -3245,9 +3532,10 @@ public class BattleManager : MonoBehaviour
         {
             sourceCard = card,
             owner = BattleSlotOwner.My,
-            timing = EffectTiming.MainPhase,
+            timing = EffectTiming.Content,
             sourceSlot = null,
             targetSlot = null,
+            handIndex = handIndex,
             consumeAction = true
         };
 
