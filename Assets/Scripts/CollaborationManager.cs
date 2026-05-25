@@ -112,7 +112,10 @@ public class CollaborationManager : MonoBehaviour
         if (!HasHiddenParticipant(guestSlot, hostSlot))
             ShowPanelBeforeResult(guestSlot, hostSlot);
 
-        OpenResolveResultQuestion();
+        if (battleManager.TryOpenPreCollabContentQuestionFromExternal(ExecutePendingCollaboration))
+            return;
+
+        ExecutePendingCollaboration();
     }
 
     private void OpenResolveResultQuestion()

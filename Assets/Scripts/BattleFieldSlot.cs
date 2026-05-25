@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -62,6 +63,9 @@ public class BattleFieldSlot : MonoBehaviour,
 
     private Image rootRaycastImage;
     private Color normalRootColor = new Color(1f, 1f, 1f, 0.01f);
+    private bool isMoveHighlightVisible;
+    private bool isQuestionTargetHighlightVisible;
+    private Coroutine contentFadeCoroutine;
 
     public bool HasBroadcast => broadcastCard != null;
     public bool HasCharacter => characterCard != null;
@@ -219,6 +223,14 @@ public class BattleFieldSlot : MonoBehaviour,
         if (rootRaycastImage == null)
             return;
 
+        isMoveHighlightVisible = value;
+
+        if (isQuestionTargetHighlightVisible)
+        {
+            rootRaycastImage.color = new Color(1f, 0.86f, 0.2f, 0.45f);
+            return;
+        }
+
         if (value)
         {
             rootRaycastImage.color = isCollaborationTarget
@@ -229,6 +241,28 @@ public class BattleFieldSlot : MonoBehaviour,
         {
             rootRaycastImage.color = normalRootColor;
         }
+    }
+
+    public void SetQuestionTargetHighlight(bool visible)
+    {
+        if (rootRaycastImage == null)
+            EnsureDropRaycastTarget();
+
+        if (rootRaycastImage == null)
+            return;
+
+        isQuestionTargetHighlightVisible = visible;
+
+        if (visible)
+        {
+            rootRaycastImage.color = new Color(1f, 0.86f, 0.2f, 0.45f);
+            return;
+        }
+
+        if (isMoveHighlightVisible)
+            rootRaycastImage.color = new Color(0.2f, 1f, 0.35f, 0.35f);
+        else
+            rootRaycastImage.color = normalRootColor;
     }
     public void SetBroadcastCard(BaseCardData card, Sprite sprite)
     {
@@ -326,14 +360,28 @@ public class BattleFieldSlot : MonoBehaviour,
         currentCharacterHp = Mathf.Max(0, currentCharacterHp - safeDamage);
     }
 
-    public void SetContentCard(BaseCardData card, Sprite sprite)
+    public void SetContentCard(
+        BaseCardData card,
+        Sprite sprite,
+        BattleSlotOwner cardOwner = BattleSlotOwner.My)
     {
         contentCard = card;
+        contentOwner = cardOwner;
+
+        StopContentFadeIfNeeded();
 
         if (contentCardImage != null)
         {
             contentCardImage.sprite = sprite;
+            contentCardImage.enabled = sprite != null;
             contentCardImage.preserveAspect = true;
+            contentCardImage.color = Color.white;
+        }
+
+        if (contentCardButton != null)
+        {
+            contentCardButton.gameObject.SetActive(card != null);
+            contentCardButton.interactable = card != null;
         }
 
         RefreshVisualState();
@@ -380,13 +428,71 @@ public class BattleFieldSlot : MonoBehaviour,
 
     public void ClearContentCard()
     {
+        StopContentFadeIfNeeded();
         contentCard = null;
         contentOwner = BattleSlotOwner.My;
 
         if (contentCardImage != null)
+        {
             contentCardImage.sprite = null;
+            contentCardImage.color = Color.white;
+        }
 
         RefreshVisualState();
+    }
+
+    public void ClearContentCardWithFade(float fadeDuration = 1.00f)
+    {
+        StopContentFadeIfNeeded();
+
+        contentCard = null;
+        contentOwner = BattleSlotOwner.My;
+
+        if (contentCardButton != null)
+            contentCardButton.interactable = false;
+
+        if (contentCardImage == null || contentCardImage.sprite == null)
+        {
+            ClearContentCard();
+            return;
+        }
+
+        contentFadeCoroutine = StartCoroutine(FadeOutContentCardRoutine(fadeDuration));
+    }
+
+    private IEnumerator FadeOutContentCardRoutine(float fadeDuration)
+    {
+        float safeDuration = Mathf.Max(0.01f, fadeDuration);
+        float elapsed = 0f;
+        Color startColor = contentCardImage.color;
+
+        while (elapsed < safeDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / safeDuration);
+            Color color = startColor;
+            color.a = Mathf.Lerp(startColor.a, 0f, t);
+            contentCardImage.color = color;
+            yield return null;
+        }
+
+        contentCardImage.sprite = null;
+        contentCardImage.color = Color.white;
+        contentFadeCoroutine = null;
+
+        RefreshVisualState();
+    }
+
+    private void StopContentFadeIfNeeded()
+    {
+        if (contentFadeCoroutine == null)
+            return;
+
+        StopCoroutine(contentFadeCoroutine);
+        contentFadeCoroutine = null;
+
+        if (contentCardImage != null)
+            contentCardImage.color = Color.white;
     }
 
     public void ClearAllCards()

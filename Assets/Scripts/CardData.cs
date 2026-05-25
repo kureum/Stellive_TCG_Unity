@@ -28,6 +28,7 @@ public class EffectData
     public string id;
     public string timing;
     public string description;
+    public string @ref;
     public string refName;
 }
 

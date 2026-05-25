@@ -49,6 +49,17 @@ public class EffectManager : MonoBehaviour
         }
 
         int cost = GetActivationCost(request.sourceCard);
+        string effectRef = GetPrimaryEffectRef(request.sourceCard);
+
+        if (effectRef == "content.silenceCharacterCollabThisTurn")
+        {
+            return battleManager.TryStartSilenceCharacterCollabThisTurnFromExternal(
+                request.sourceCard,
+                request.owner,
+                cost,
+                request.consumeAction
+            );
+        }
 
         if (cost > 0 &&
             !battleManager.TryPayViewerCostFromExternal(request.owner, cost))
@@ -65,9 +76,7 @@ public class EffectManager : MonoBehaviour
 
         battleManager.RefreshAllUIFromExternal();
 
-        string message =
-            $"{request.sourceCard.name} 콘텐츠 카드 효과를 발동했습니다.\n" +
-            "효과 발동 성공: 실제 효과는 아직 미구현입니다.";
+        string message = ResolveImmediateContentEffectMessage(request.sourceCard, request.owner, effectRef);
 
         if (cost > 0)
             message += $"\n시청자 -{cost}";
@@ -227,6 +236,58 @@ public class EffectManager : MonoBehaviour
             return 0;
 
         return Mathf.Max(0, content.cost);
+    }
+
+    private string ResolveImmediateContentEffectMessage(
+        BaseCardData sourceCard,
+        BattleSlotOwner owner,
+        string effectRef)
+    {
+        switch (effectRef)
+        {
+            case "content.removeAllLastingContentsOnBoard":
+                int removedCount;
+                battleManager.RemoveAllLastingContentsOnBoardFromExternal(owner, out removedCount);
+                return $"{sourceCard.name} 발동: 장기 콘텐츠 {removedCount}장을 제거했습니다.";
+
+            case "content.collabClicheSpendBuffRefund":
+                // TODO: Our Tales 실제 조건, 시청자 소모 기반 버프, 합방 후 환급 처리를 구현한다.
+                return "Our Tales 발동 테스트: 실제 효과는 아직 미구현입니다.";
+
+            default:
+                return
+                    $"{sourceCard.name} 콘텐츠 카드 효과를 발동했습니다.\n" +
+                    "효과 발동 성공: 실제 효과는 아직 미구현입니다.";
+        }
+    }
+
+    private string GetPrimaryEffectRef(BaseCardData card)
+    {
+        ContentCardData content = card as ContentCardData;
+
+        if (content == null || content.effects == null)
+            return "";
+
+        foreach (EffectData effect in content.effects)
+        {
+            string effectRef = GetEffectRef(effect);
+
+            if (!string.IsNullOrEmpty(effectRef))
+                return effectRef;
+        }
+
+        return "";
+    }
+
+    private string GetEffectRef(EffectData effect)
+    {
+        if (effect == null)
+            return "";
+
+        if (!string.IsNullOrEmpty(effect.refName))
+            return effect.refName;
+
+        return effect.@ref;
     }
 
     private bool IsContentCard(BaseCardData card)
