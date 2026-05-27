@@ -34,6 +34,7 @@ public class CardQuestionPanel : MonoBehaviour
     private Action<CardQuestionOption> onOptionSelectedAction;
     private Action onCancelAction;
     private Action<string> systemMessageAction;
+    private Action<BaseCardData, BattleFieldSlot> detailPreviewAction;
     private bool isOpen;
     private bool canCancel;
 
@@ -55,12 +56,16 @@ public class CardQuestionPanel : MonoBehaviour
         get { return selectedQuestionCard; }
     }
 
-    public void Configure(GameObject defaultCardItemPrefab, Action<string> messageAction)
+    public void Configure(
+        GameObject defaultCardItemPrefab,
+        Action<string> messageAction,
+        Action<BaseCardData, BattleFieldSlot> previewAction = null)
     {
         if (cardItemPrefab == null)
             cardItemPrefab = defaultCardItemPrefab;
 
         systemMessageAction = messageAction;
+        detailPreviewAction = previewAction;
     }
 
     public void Show(
@@ -337,6 +342,7 @@ public class CardQuestionPanel : MonoBehaviour
         selectedQuestionOutline = outline;
         ClearLinkedSlotHighlights();
         RefreshSelectionVisual();
+        ShowDetailPreview(card, null);
         SendSystemMessage($"선택 카드: {card.name}");
     }
 
@@ -350,6 +356,7 @@ public class CardQuestionPanel : MonoBehaviour
         selectedQuestionOutline = outline;
         ClearLinkedSlotHighlights();
         RefreshSelectionVisual();
+        ShowDetailPreview(card, null);
         ConfirmCurrentSelection();
     }
 
@@ -363,6 +370,7 @@ public class CardQuestionPanel : MonoBehaviour
         selectedQuestionOutline = outline;
         RefreshLinkedSlotHighlight(option);
         RefreshSelectionVisual();
+        ShowDetailPreview(option.card, option.linkedSlot);
         SendSystemMessage($"선택 카드: {option.card.name}");
     }
 
@@ -376,6 +384,7 @@ public class CardQuestionPanel : MonoBehaviour
         selectedQuestionOutline = outline;
         RefreshLinkedSlotHighlight(option);
         RefreshSelectionVisual();
+        ShowDetailPreview(option.card, option.linkedSlot);
         ConfirmCurrentSelection();
     }
 
@@ -463,6 +472,11 @@ public class CardQuestionPanel : MonoBehaviour
             systemMessageAction.Invoke(message);
         else
             Debug.Log(message);
+    }
+
+    private void ShowDetailPreview(BaseCardData card, BattleFieldSlot linkedSlot)
+    {
+        detailPreviewAction?.Invoke(card, linkedSlot);
     }
 
     private class SelectionOutlineEntry

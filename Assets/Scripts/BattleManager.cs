@@ -116,6 +116,10 @@ public class BattleManager : MonoBehaviour
     [Tooltip("드래그 중 마우스를 따라다니는 카드 이미지 크기입니다.")]
     public Vector2 dragPreviewSize = new Vector2(108f, 154f);
 
+    [Header("Draw Animation")]
+    [SerializeField] private float drawAnimationDuration = 0.35f;
+    [SerializeField] private Vector2 drawAnimationCardSize = new Vector2(90f, 122f);
+
     [Header("Detail Panel")]
     public CardDetailPanel cardDetailPanel;
 
@@ -170,6 +174,7 @@ public class BattleManager : MonoBehaviour
     private bool isVictoryTiebreakerActive = false;
 
     private bool enemyHasSummonedFaceDownThisTurn = false;
+    private TestEnemy testEnemyController;
 
     private DeckCardItemUI draggingHandCardItem;
     private BaseCardData draggingHandCardData;
@@ -219,6 +224,9 @@ public class BattleManager : MonoBehaviour
         if (turnEndButton != null)
             turnEndButton.onClick.AddListener(OnClickTurnEndButton);
 
+        if (cardDetailPanel != null)
+            cardDetailPanel.Init(this);
+
         ResolveTurnEndButtonPanelImage();
         ResolvePanelCloseButtons();
         ResolveBattleResultPanel();
@@ -234,7 +242,11 @@ public class BattleManager : MonoBehaviour
 
         if (cardQuestionPanel != null)
         {
-            cardQuestionPanel.Configure(handCardItemPrefab, SetSystemMessage);
+            cardQuestionPanel.Configure(
+                handCardItemPrefab,
+                SetSystemMessage,
+                ShowCardQuestionDetailPreview
+            );
             cardQuestionPanel.Hide();
         }
 
@@ -1750,6 +1762,79 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
+    public int ModifyViewersFromExternal(BattleSlotOwner owner, int delta)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null)
+            return 0;
+
+        int before = targetPlayer.viewers;
+        targetPlayer.viewers = Mathf.Max(0, targetPlayer.viewers + delta);
+
+        return targetPlayer.viewers - before;
+    }
+
+    public int DrawCardsFromExternal(BattleSlotOwner owner, int count)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null)
+            return 0;
+
+        int before = targetPlayer.hand != null ? targetPlayer.hand.Count : 0;
+        DrawCards(targetPlayer, Mathf.Max(0, count));
+        int after = targetPlayer.hand != null ? targetPlayer.hand.Count : before;
+
+        return Mathf.Max(0, after - before);
+    }
+
+    public void DrawCardsWithAnimationFromExternal(
+        BattleSlotOwner owner,
+        int count,
+        Action<int> onComplete)
+    {
+        StartCoroutine(DrawCardsWithAnimationRoutine(owner, Mathf.Max(0, count), onComplete));
+    }
+
+    public int HealCharacterFromExternal(BattleFieldSlot slot, int amount)
+    {
+        if (slot == null || !slot.HasCharacter || slot.characterCard == null)
+            return 0;
+
+        CharacterCardData character = slot.characterCard as CharacterCardData;
+
+        if (character == null)
+            return 0;
+
+        int maxHp = Mathf.Max(0, character.hpMax);
+        int beforeHp = slot.currentCharacterHp;
+        int afterHp = Mathf.Min(maxHp, beforeHp + Mathf.Max(0, amount));
+
+        slot.SetCharacterBattleStats(afterHp, slot.currentCharacterTension);
+
+        return afterHp - beforeHp;
+    }
+
+    public int FullHealCharacterFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter || slot.characterCard == null)
+            return 0;
+
+        CharacterCardData character = slot.characterCard as CharacterCardData;
+
+        if (character == null)
+            return 0;
+
+        return HealCharacterFromExternal(slot, Mathf.Max(0, character.hpMax));
+    }
+
     public bool MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
         BattlePlayerRuntime targetPlayer =
@@ -1822,6 +1907,215 @@ public class BattleManager : MonoBehaviour
         removedCount += RemoveLastingContentsFromSlots(enemyBattleSlots);
 
         Debug.Log($"빙하기 테스트 효과: 장기 콘텐츠 {removedCount}장을 제거했습니다.");
+    }
+
+    public int GetSlotCharacterTensionModifierFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null)
+        {
+            return 0;
+        }
+
+        int modifier = 0;
+        modifier += GetBroadcastCharacterTensionModifier(slot);
+        modifier += GetInstalledContentCharacterTensionModifier(slot);
+
+        return modifier;
+    }
+
+    public int GetSlotCharacterHpModifierFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null)
+        {
+            return 0;
+        }
+
+        int modifier = 0;
+        modifier += GetBroadcastCharacterHpModifier(slot);
+        modifier += GetInstalledContentCharacterHpModifier(slot);
+
+        return modifier;
+    }
+
+    private int GetBroadcastCharacterTensionModifier(BattleFieldSlot slot)
+    {
+        return 0;
+    }
+
+    private int GetBroadcastCharacterHpModifier(BattleFieldSlot slot)
+    {
+        if (slot == null || slot.broadcastCard == null)
+            return 0;
+
+        // TODO: cards.json에 방송 슬롯 스탯 보정용 ref/params가 추가되면 id fallback 대신 ref 기반으로 처리한다.
+        if (string.Equals(slot.broadcastCard.id, "BRST-STL004", StringComparison.OrdinalIgnoreCase))
+            return -1;
+
+        return 0;
+    }
+
+    private int GetInstalledContentCharacterTensionModifier(BattleFieldSlot slot)
+    {
+        return GetInstalledContentCharacterStatModifier(slot, "tension");
+    }
+
+    private int GetInstalledContentCharacterHpModifier(BattleFieldSlot slot)
+    {
+        return GetInstalledContentCharacterStatModifier(slot, "hp");
+    }
+
+    private int GetInstalledContentCharacterStatModifier(
+        BattleFieldSlot slot,
+        string statKey)
+    {
+        if (slot == null ||
+            slot.characterCard == null ||
+            slot.contentCard == null)
+        {
+            return 0;
+        }
+
+        ContentCardData content = slot.contentCard as ContentCardData;
+
+        if (content == null || content.effects == null)
+            return 0;
+
+        int modifier = 0;
+
+        foreach (EffectData effect in content.effects)
+        {
+            if (effect == null ||
+                !string.Equals(GetEffectRefForBattleManager(effect), "content.lasting.buffTagTensionAndHp", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
+
+            if (!MatchesEffectTagOrSharedHashtag(slot.contentCard, slot.characterCard, tag))
+                continue;
+
+            modifier += GetEffectIntParamForBattleManager(effect, statKey, 0);
+        }
+
+        return modifier;
+    }
+
+    [Obsolete("Use GetSlotCharacterTensionModifierFromExternal instead.")]
+    public int GetLastingContentTensionBonusFromExternal(BattleFieldSlot slot)
+    {
+        return GetInstalledContentCharacterTensionModifier(slot);
+    }
+
+    [Obsolete("Use GetSlotCharacterHpModifierFromExternal instead.")]
+    public int GetLastingContentHpBonusFromExternal(BattleFieldSlot slot)
+    {
+        return GetInstalledContentCharacterHpModifier(slot);
+    }
+
+    private bool MatchesEffectTagOrSharedHashtag(
+        BaseCardData sourceCard,
+        BaseCardData targetCard,
+        string tag)
+    {
+        if (!string.IsNullOrEmpty(tag))
+            return CardHasHashtag(targetCard, tag);
+
+        if (sourceCard == null ||
+            sourceCard.hashtags == null ||
+            targetCard == null ||
+            targetCard.hashtags == null)
+        {
+            return false;
+        }
+
+        foreach (string sourceTag in sourceCard.hashtags)
+        {
+            if (CardHasHashtag(targetCard, sourceTag))
+                return true;
+        }
+
+        return false;
+    }
+
+    private string GetEffectRefForBattleManager(EffectData effect)
+    {
+        if (effect == null)
+            return "";
+
+        if (!string.IsNullOrEmpty(effect.refName))
+            return effect.refName;
+
+        return effect.@ref;
+    }
+
+    private bool CardHasHashtag(BaseCardData card, string tag)
+    {
+        if (card == null || card.hashtags == null || string.IsNullOrEmpty(tag))
+            return false;
+
+        string normalizedTarget = NormalizeTagForComparison(tag);
+
+        foreach (string hashtag in card.hashtags)
+        {
+            if (string.Equals(NormalizeTagForComparison(hashtag), normalizedTarget, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private string NormalizeTagForComparison(string tag)
+    {
+        return string.IsNullOrEmpty(tag)
+            ? ""
+            : tag.Trim();
+    }
+
+    private int GetEffectIntParamForBattleManager(
+        EffectData effect,
+        string key,
+        int defaultValue)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrEmpty(key))
+            return defaultValue;
+
+        switch (key)
+        {
+            case "tension":
+                return effectParams.tension;
+            case "hp":
+                return effectParams.hp;
+            default:
+                return defaultValue;
+        }
+    }
+
+    private string GetEffectStringParamForBattleManager(
+        EffectData effect,
+        string key,
+        string defaultValue)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrEmpty(key))
+            return defaultValue;
+
+        switch (key)
+        {
+            case "tag":
+                return !string.IsNullOrEmpty(effectParams.tag)
+                    ? effectParams.tag
+                    : defaultValue;
+            default:
+                return defaultValue;
+        }
     }
 
     public bool TryStartSilenceCharacterCollabThisTurnFromExternal(
@@ -2312,6 +2606,130 @@ public class BattleManager : MonoBehaviour
         );
     }
 
+    public void RequestPostCollabEffectsFromExternal(
+        BattleFieldSlot attackerSlot,
+        BattleFieldSlot defenderSlot,
+        Action onComplete)
+    {
+        if (effectManager == null)
+        {
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext context = new EffectContext
+        {
+            battleManager = this,
+            collaborationManager = collaborationManager,
+            actingOwner = attackerSlot != null ? attackerSlot.characterOwner : BattleSlotOwner.My,
+            timing = EffectTiming.PostCollab,
+            attackerSlot = attackerSlot,
+            defenderSlot = defenderSlot,
+            sourceSlot = attackerSlot,
+            targetSlot = defenderSlot,
+            sourceCard = attackerSlot != null ? attackerSlot.characterCard : null,
+            targetCard = defenderSlot != null ? defenderSlot.characterCard : null,
+            consumeAction = false
+        };
+
+        effectManager.RequestOptionalEffectActivation(
+            EffectTiming.PostCollab,
+            context,
+            onComplete
+        );
+    }
+
+    public void RequestOnAppearEffectsFromExternal(
+        BattleFieldSlot sourceSlot,
+        BaseCardData appearedCard,
+        Action onComplete)
+    {
+        if (effectManager == null)
+        {
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext context = new EffectContext
+        {
+            battleManager = this,
+            actingOwner = sourceSlot != null ? sourceSlot.characterOwner : BattleSlotOwner.My,
+            timing = EffectTiming.OnAppear,
+            sourceSlot = sourceSlot,
+            sourceCard = appearedCard,
+            consumeAction = false
+        };
+
+        effectManager.RequestOptionalEffectActivation(
+            EffectTiming.OnAppear,
+            context,
+            onComplete
+        );
+    }
+
+    public void RequestOnRestEffectsFromExternal(
+        BattleFieldSlot restedSlot,
+        BaseCardData restedCard,
+        BattleSlotOwner owner,
+        Action onComplete)
+    {
+        if (effectManager == null)
+        {
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext context = new EffectContext
+        {
+            battleManager = this,
+            collaborationManager = collaborationManager,
+            actingOwner = owner,
+            timing = EffectTiming.OnRest,
+            sourceSlot = restedSlot,
+            defeatedSlot = restedSlot,
+            restedSlot = restedSlot,
+            sourceCard = restedCard,
+            defeatedCard = restedCard,
+            restedCard = restedCard,
+            consumeAction = false
+        };
+
+        if (owner == BattleSlotOwner.Enemy &&
+            TryRequestTestEnemyEffectActivation(EffectTiming.OnRest, context, onComplete))
+        {
+            return;
+        }
+
+        effectManager.RequestOptionalEffectActivation(
+            EffectTiming.OnRest,
+            context,
+            onComplete
+        );
+    }
+
+    private bool TryRequestTestEnemyEffectActivation(
+        EffectTiming timing,
+        EffectContext context,
+        Action onComplete)
+    {
+        TestEnemy controller = GetTestEnemyController();
+
+        if (controller == null)
+            return false;
+
+        return controller.TryResolveEffectActivation(timing, context, onComplete);
+    }
+
+    private TestEnemy GetTestEnemyController()
+    {
+        if (testEnemyController != null)
+            return testEnemyController;
+
+        testEnemyController = FindAnyObjectByType<TestEnemy>();
+
+        return testEnemyController;
+    }
+
     private void ResolveMyActionUsed(string actionMessage)
     {
         consecutivePassCount = 0;
@@ -2491,7 +2909,17 @@ public class BattleManager : MonoBehaviour
         if (IsGameOver())
             return;
 
+        StartCoroutine(EndCurrentTurnAndStartNextTurnRoutine(reasonMessage));
+    }
+
+    private IEnumerator EndCurrentTurnAndStartNextTurnRoutine(string reasonMessage)
+    {
+        if (IsGameOver())
+            yield break;
+
         ClearAllPendingBattleInteractions();
+        isBusy = true;
+        RefreshTurnEndButtonState();
 
         turnCount++;
 
@@ -2500,24 +2928,37 @@ public class BattleManager : MonoBehaviour
 
         ResetTurnLimitedFlags();
 
-        DrawCards(myPlayer, 1);
-        DrawCards(enemyPlayer, 1);
+        int myDrawnCount = 0;
+        int enemyDrawnCount = 0;
+
+        yield return DrawCardsWithAnimationRoutine(
+            BattleSlotOwner.My,
+            1,
+            drawnCount => myDrawnCount = drawnCount
+        );
+
+        yield return DrawCardsWithAnimationRoutine(
+            BattleSlotOwner.Enemy,
+            1,
+            drawnCount => enemyDrawnCount = drawnCount
+        );
 
         int myGainedViewers = GainPrepViewers(BattleSlotOwner.My);
         int enemyGainedViewers = GainPrepViewers(BattleSlotOwner.Enemy);
 
+        isBusy = false;
         RefreshAllUI();
 
         string turnStartMessage =
             $"{reasonMessage}\n\n" +
             $"{turnCount}턴 시작.\n" +
             $"현재 행동권: {GetSideName(currentActionSide)}\n" +
-            "서로 카드 1장을 드로우했습니다.\n" +
+            $"내 드로우 {myDrawnCount}장 / 상대 드로우 {enemyDrawnCount}장\n" +
             $"내 시청자 +{myGainedViewers}\n" +
             $"상대 시청자 +{enemyGainedViewers}";
 
         if (TryResolveVictory(turnStartMessage))
-            return;
+            yield break;
 
         SetSystemMessage(turnStartMessage);
     }
@@ -3027,6 +3468,141 @@ public class BattleManager : MonoBehaviour
             player.mainDeck.RemoveAt(0);
             player.hand.Add(drawnCard);
         }
+    }
+
+    private IEnumerator DrawCardsWithAnimationRoutine(
+        BattleSlotOwner owner,
+        int count,
+        Action<int> onComplete)
+    {
+        BattlePlayerRuntime player = GetPlayerRuntime(owner);
+        int drawnCount = 0;
+
+        if (player == null || count <= 0)
+        {
+            onComplete?.Invoke(0);
+            yield break;
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            if (player.mainDeck == null || player.mainDeck.Count == 0)
+            {
+                Debug.LogWarning($"{player.playerName}의 메인 덱이 비어 있어 더 이상 드로우할 수 없습니다.");
+                break;
+            }
+
+            yield return PlayDrawCardAnimation(owner);
+
+            BaseCardData drawnCard = player.mainDeck[0];
+            player.mainDeck.RemoveAt(0);
+            player.hand.Add(drawnCard);
+            drawnCount++;
+
+            RefreshAllUI();
+        }
+
+        onComplete?.Invoke(drawnCount);
+    }
+
+    private IEnumerator PlayDrawCardAnimation(BattleSlotOwner owner)
+    {
+        Transform deckTransform = owner == BattleSlotOwner.My
+            ? myDeckSlot
+            : enemyDeckSlot;
+        Transform handTransform = owner == BattleSlotOwner.My
+            ? myHandPanel
+            : enemyHandCardArea;
+
+        if (deckTransform == null || handTransform == null || cardBackSprite == null)
+            yield break;
+
+        Canvas canvas = ResolveAnimationCanvas(deckTransform);
+
+        if (canvas == null)
+            yield break;
+
+        GameObject drawObject = new GameObject(
+            "RuntimeDrawCardAnimation",
+            typeof(RectTransform),
+            typeof(CanvasGroup),
+            typeof(Image)
+        );
+
+        drawObject.transform.SetParent(canvas.transform, false);
+        drawObject.transform.SetAsLastSibling();
+
+        RectTransform rect = drawObject.GetComponent<RectTransform>();
+        rect.anchorMin = new Vector2(0.5f, 0.5f);
+        rect.anchorMax = new Vector2(0.5f, 0.5f);
+        rect.pivot = new Vector2(0.5f, 0.5f);
+        rect.sizeDelta = ResolveDrawAnimationSize(deckTransform);
+        rect.position = GetTransformCenterPosition(deckTransform);
+
+        Image image = drawObject.GetComponent<Image>();
+        image.sprite = cardBackSprite;
+        image.color = Color.white;
+        image.preserveAspect = true;
+        image.raycastTarget = false;
+
+        CanvasGroup canvasGroup = drawObject.GetComponent<CanvasGroup>();
+        canvasGroup.blocksRaycasts = false;
+        canvasGroup.interactable = false;
+
+        Vector3 startPosition = GetTransformCenterPosition(deckTransform);
+        Vector3 targetPosition = GetTransformCenterPosition(handTransform);
+        float duration = Mathf.Max(0.01f, drawAnimationDuration);
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            float easedT = Mathf.SmoothStep(0f, 1f, t);
+            rect.position = Vector3.Lerp(startPosition, targetPosition, easedT);
+            yield return null;
+        }
+
+        rect.position = targetPosition;
+        Destroy(drawObject);
+    }
+
+    private Canvas ResolveAnimationCanvas(Transform referenceTransform)
+    {
+        Canvas canvas = null;
+
+        if (referenceTransform != null)
+            canvas = referenceTransform.GetComponentInParent<Canvas>();
+
+        if (canvas != null)
+            return canvas;
+
+        canvas = GetComponentInParent<Canvas>();
+
+        if (canvas != null)
+            return canvas;
+
+        return FindAnyObjectByType<Canvas>();
+    }
+
+    private Vector2 ResolveDrawAnimationSize(Transform deckTransform)
+    {
+        RectTransform deckRect = deckTransform as RectTransform;
+
+        if (deckRect != null && deckRect.rect.width > 1f && deckRect.rect.height > 1f)
+            return deckRect.rect.size;
+
+        return drawAnimationCardSize;
+    }
+
+    private Vector3 GetTransformCenterPosition(Transform targetTransform)
+    {
+        RectTransform rect = targetTransform as RectTransform;
+
+        if (rect == null)
+            return targetTransform.position;
+
+        return rect.TransformPoint(rect.rect.center);
     }
 
     private void RefreshAllUI()
@@ -4202,6 +4778,22 @@ public class BattleManager : MonoBehaviour
 
         RefreshHandSelectionHighlights();
         SetSystemMessage($"선택 카드: {slot.characterCard.name}");
+    }
+
+    private void ShowCardQuestionDetailPreview(BaseCardData card, BattleFieldSlot linkedSlot)
+    {
+        if (cardDetailPanel == null || card == null)
+            return;
+
+        if (linkedSlot != null &&
+            linkedSlot.HasCharacter &&
+            linkedSlot.characterCard == card)
+        {
+            cardDetailPanel.ShowFieldCharacter(linkedSlot);
+            return;
+        }
+
+        cardDetailPanel.ShowCard(card);
     }
 
     private Sprite LoadCardSprite(BaseCardData card)

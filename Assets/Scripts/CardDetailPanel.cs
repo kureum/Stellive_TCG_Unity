@@ -5,6 +5,8 @@ using UnityEngine.UI;
 
 public class CardDetailPanel : MonoBehaviour
 {
+    private BattleManager battleManager;
+
     [Header("Image")]
     public Image cardImage;
 
@@ -23,6 +25,9 @@ public class CardDetailPanel : MonoBehaviour
     
     private void Awake()
     {
+        if (battleManager == null)
+            battleManager = GetComponentInParent<BattleManager>();
+
         if (cardZoomPopupPanel != null)
             cardZoomPopupPanel.SetActive(false);
 
@@ -48,6 +53,12 @@ public class CardDetailPanel : MonoBehaviour
             popupButton.onClick.AddListener(CloseZoomPopup);
         }
     }
+
+    public void Init(BattleManager manager)
+    {
+        battleManager = manager;
+    }
+
     public void ShowCard(BaseCardData card)
     {
         if (card == null)
@@ -142,8 +153,14 @@ public class CardDetailPanel : MonoBehaviour
             sb.AppendLine("[캐릭터 정보]");
             sb.AppendLine($"출연 코스트: {character.appearCost}");
             sb.AppendLine($"액티브 코스트: {character.activeCost}");
-            sb.AppendLine(FormatRuntimeStat("합방 텐션", character.tension, fieldSlot?.currentCharacterTension));
-            sb.AppendLine(FormatRuntimeStat("체력", character.hpMax, fieldSlot?.currentCharacterHp));
+            int? currentTension = fieldSlot != null
+                ? GetDisplayedCharacterTension(fieldSlot)
+                : null;
+            int? currentHp = fieldSlot != null
+                ? GetDisplayedCharacterHp(fieldSlot)
+                : null;
+            sb.AppendLine(FormatRuntimeStat("합방 텐션", character.tension, currentTension));
+            sb.AppendLine(FormatRuntimeStat("체력", character.hpMax, currentHp));
             sb.AppendLine();
 
             AppendEffects(sb, "[캐릭터 효과]", character.effects);
@@ -167,6 +184,35 @@ public class CardDetailPanel : MonoBehaviour
             return $"{label}: {baseValue}";
 
         return $"{label}: {baseValue} (현재 {currentValue.Value})";
+    }
+
+    private int GetDisplayedCharacterTension(BattleFieldSlot slot)
+    {
+        if (slot == null)
+            return 0;
+
+        int value = slot.currentCharacterTension;
+
+        if (battleManager != null)
+            value += battleManager.GetSlotCharacterTensionModifierFromExternal(slot);
+
+        return Mathf.Max(0, value);
+    }
+
+    private int GetDisplayedCharacterHp(BattleFieldSlot slot)
+    {
+        if (slot == null)
+            return 0;
+
+        if (slot.currentCharacterHp <= 0)
+            return 0;
+
+        int value = slot.currentCharacterHp;
+
+        if (battleManager != null)
+            value += battleManager.GetSlotCharacterHpModifierFromExternal(slot);
+
+        return Mathf.Max(0, value);
     }
 
     private void AppendEffects(StringBuilder sb, string title, EffectData[] effects)

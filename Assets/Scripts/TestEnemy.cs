@@ -1,4 +1,6 @@
 using UnityEngine;
+using System;
+using System.Collections.Generic;
 
 public class TestEnemy : MonoBehaviour
 {
@@ -116,5 +118,74 @@ public class TestEnemy : MonoBehaviour
             return;
 
         battleManager.TestEnemyPassAction();
+    }
+
+    public bool TryResolveEffectActivation(
+        EffectTiming timing,
+        EffectContext context,
+        Action onComplete)
+    {
+        if (battleManager == null || battleManager.effectManager == null)
+            return false;
+
+        if (timing != EffectTiming.OnRest)
+            return false;
+
+        List<EffectCandidate> candidates =
+            battleManager.effectManager.GetPlayableEffects(timing, context);
+
+        if (candidates == null || candidates.Count == 0)
+            return false;
+
+        if (!AreAllCandidatesTestEnemyMandatoryEffects(timing, candidates))
+            return false;
+
+        ResolveCandidatesSequentially(candidates, context, 0, onComplete);
+        return true;
+    }
+
+    private bool AreAllCandidatesTestEnemyMandatoryEffects(
+        EffectTiming timing,
+        List<EffectCandidate> candidates)
+    {
+        if (candidates == null || candidates.Count == 0)
+            return false;
+
+        foreach (EffectCandidate candidate in candidates)
+        {
+            if (!IsTestEnemyMandatoryEffect(timing, candidate))
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool IsTestEnemyMandatoryEffect(
+        EffectTiming timing,
+        EffectCandidate candidate)
+    {
+        return timing == EffectTiming.OnRest &&
+            candidate != null &&
+            candidate.owner == BattleSlotOwner.Enemy &&
+            candidate.card is CharacterCardData;
+    }
+
+    private void ResolveCandidatesSequentially(
+        List<EffectCandidate> candidates,
+        EffectContext context,
+        int index,
+        Action onComplete)
+    {
+        if (candidates == null || index >= candidates.Count)
+        {
+            onComplete?.Invoke();
+            return;
+        }
+
+        battleManager.effectManager.ResolveEffect(
+            candidates[index],
+            context,
+            () => ResolveCandidatesSequentially(candidates, context, index + 1, onComplete)
+        );
     }
 }

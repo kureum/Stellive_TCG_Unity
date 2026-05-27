@@ -509,10 +509,11 @@ public class SummonManager : MonoBehaviour
 
         battleManager.RefreshAllUIFromExternal();
 
-        battleManager.ResolveMyActionUsedFromExternal(
+        string actionMessage =
             $"{characterCard.name} 카드를 앞면으로 출연시켰습니다.\n" +
-            $"시청자 -{cost}"
-        );
+            $"시청자 -{cost}";
+
+        RequestOnAppearThenResolveAction(targetSlot, characterCard, actionMessage);
     }
 
     private void FlipSummonCharacter(BattleFieldSlot targetSlot, BaseCardData characterCard)
@@ -585,9 +586,22 @@ public class SummonManager : MonoBehaviour
 
         battleManager.RefreshAllUIFromExternal();
 
-        battleManager.ResolveMyActionUsedFromExternal(
+        string actionMessage =
             $"{characterCard.name} 카드를 플립 출연했습니다.\n" +
-            $"시청자 -{cost}"
+            $"시청자 -{cost}";
+
+        RequestOnAppearThenResolveAction(targetSlot, characterCard, actionMessage);
+    }
+
+    private void RequestOnAppearThenResolveAction(
+        BattleFieldSlot targetSlot,
+        BaseCardData characterCard,
+        string actionMessage)
+    {
+        battleManager.RequestOnAppearEffectsFromExternal(
+            targetSlot,
+            characterCard,
+            () => battleManager.ResolveMyActionUsedFromExternal(actionMessage)
         );
     }
 

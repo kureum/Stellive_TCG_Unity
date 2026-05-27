@@ -30,6 +30,32 @@ public class EffectData
     public string description;
     public string @ref;
     public string refName;
+    public EffectParams @params;
+}
+
+[Serializable]
+public class EffectParams
+{
+    public int amount;
+    public int draw;
+    public int discard;
+    public int hp;
+    public int tension;
+    public int tensionDelta;
+    public int hpMaxDelta;
+    public int max;
+    public int maxCount;
+    public int range;
+    public int reveal;
+    public int extraCostPer;
+    public string tag;
+    public string requireTag;
+    public string tabiTag;
+    public string bunnyTag;
+    public string kind;
+    public string[] allTags;
+    public bool oncePerTurn;
+    public bool faceUp;
 }
 
 [Serializable]

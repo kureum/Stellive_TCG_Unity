@@ -35,8 +35,13 @@ public class EffectContext
     public BattleFieldSlot targetSlot;
     public BattleFieldSlot attackerSlot;
     public BattleFieldSlot defenderSlot;
+    public BattleFieldSlot defeatedSlot;
+    public BattleFieldSlot restedSlot;
     public BaseCardData sourceCard;
     public BaseCardData targetCard;
+    public BaseCardData defeatedCard;
+    public BaseCardData restedCard;
+    public EffectData sourceEffect;
     public bool consumeAction = true;
 }
 
@@ -49,6 +54,7 @@ public class EffectCandidate
     public BattleFieldSlot targetSlot;
     public int handIndex = -1;
     public string refId;
+    public EffectData sourceEffect;
     public EffectTiming timing = EffectTiming.None;
     public bool consumeAction = true;
 }
@@ -101,8 +107,17 @@ public class EffectManager : MonoBehaviour
                 break;
 
             case EffectTiming.PostCollab:
+                CollectPostCollabCandidates(safeContext, candidates);
+                break;
+
             case EffectTiming.OnAppear:
+                CollectCharacterTimingCandidate(safeContext, EffectTiming.OnAppear, candidates);
+                break;
+
             case EffectTiming.OnRest:
+                CollectCharacterTimingCandidate(safeContext, EffectTiming.OnRest, candidates);
+                break;
+
             case EffectTiming.Passive:
             case EffectTiming.IdolActive:
             case EffectTiming.Broadcast:
@@ -160,7 +175,7 @@ public class EffectManager : MonoBehaviour
         bool opened = panel.TryShowOptions(
             GetOptionalEffectQuestionMessage(timing),
             options,
-            true,
+            CanCancelEffectActivation(timing, candidates),
             selectedOption =>
             {
                 EffectCandidate selectedCandidate = selectedOption != null
@@ -182,11 +197,44 @@ public class EffectManager : MonoBehaviour
         }
     }
 
+    private bool CanCancelEffectActivation(
+        EffectTiming timing,
+        List<EffectCandidate> candidates)
+    {
+        if (candidates == null || candidates.Count == 0)
+            return true;
+
+        foreach (EffectCandidate candidate in candidates)
+        {
+            if (IsMandatoryEffectActivation(timing, candidate))
+                return false;
+        }
+
+        return true;
+    }
+
+    private bool IsMandatoryEffectActivation(
+        EffectTiming timing,
+        EffectCandidate candidate)
+    {
+        if (candidate == null || candidate.card == null)
+            return false;
+
+        return timing == EffectTiming.OnRest &&
+            candidate.card is CharacterCardData;
+    }
+
     public void ResolveEffect(
         EffectCandidate candidate,
         EffectContext context,
         Action onComplete)
     {
+        if (candidate != null && IsDrawThenDiscardEffect(candidate, context))
+        {
+            ResolveDrawThenDiscardEffect(candidate, context, onComplete);
+            return;
+        }
+
         if (!TryResolveEffect(candidate, context, out string failReason))
         {
             if (!string.IsNullOrEmpty(failReason))
@@ -208,10 +256,9 @@ public class EffectManager : MonoBehaviour
         }
 
         ExecuteEffectByRefInternal(
-            candidate.card,
-            candidate.owner,
-            candidate.refId,
-            candidate.consumeAction
+            candidate,
+            context,
+            ShouldConsumeAction(candidate, context)
         );
 
         onComplete?.Invoke();
@@ -224,6 +271,12 @@ public class EffectManager : MonoBehaviour
         {
             battleManager?.SetSystemMessageFromExternal(failReason);
             return false;
+        }
+
+        if (IsDrawThenDiscardEffect(candidate, context))
+        {
+            ResolveDrawThenDiscardEffect(candidate, context, null);
+            return true;
         }
 
         if (!TryResolveEffect(candidate, context, out failReason))
@@ -298,8 +351,9 @@ public class EffectManager : MonoBehaviour
             owner = owner,
             sourceZone = EffectSourceZone.Hand,
             handIndex = battleManager.FindHandCardIndexFromExternal(owner, card),
-            refId = GetPrimaryEffectRef(card),
-            timing = ResolveContentCardTiming(card),
+            refId = GetPrimaryEffectRef(card, timing),
+            sourceEffect = GetPrimaryEffectData(card, timing),
+            timing = ResolveCardEffectTiming(card, timing),
             consumeAction = timing == EffectTiming.Content
         };
 
@@ -340,6 +394,57 @@ public class EffectManager : MonoBehaviour
         CollectHandCandidates(owner, EffectTiming.PreCollab, context, candidates);
     }
 
+    private void CollectPostCollabCandidates(
+        EffectContext context,
+        List<EffectCandidate> candidates)
+    {
+        BattleSlotOwner owner = context.actingOwner;
+
+        CollectHandCandidates(owner, EffectTiming.PostCollab, context, candidates);
+        CollectCharacterTimingCandidate(context, EffectTiming.PostCollab, candidates);
+    }
+
+    private void CollectCharacterTimingCandidate(
+        EffectContext context,
+        EffectTiming timing,
+        List<EffectCandidate> candidates)
+    {
+        if (context == null || candidates == null)
+            return;
+
+        BaseCardData card = ResolveContextCharacterCard(context, timing);
+
+        if (card == null)
+            return;
+
+        BattleFieldSlot slot = ResolveContextCharacterSlot(context, timing);
+        BattleSlotOwner owner = timing == EffectTiming.OnRest
+            ? context.actingOwner
+            : slot != null
+            ? slot.characterOwner
+            : context.actingOwner;
+
+        EffectCandidate candidate = new EffectCandidate
+        {
+            card = card,
+            owner = owner,
+            sourceZone = timing == EffectTiming.OnRest
+                ? EffectSourceZone.RestZone
+                : EffectSourceZone.Field,
+            sourceSlot = slot,
+            targetSlot = context.targetSlot,
+            handIndex = -1,
+            refId = GetPrimaryEffectRef(card, timing),
+            sourceEffect = GetPrimaryEffectData(card, timing),
+            timing = ResolveCardEffectTiming(card, timing),
+            consumeAction = false
+        };
+
+        string failReason;
+        if (CanActivateEffect(candidate, context, out failReason))
+            candidates.Add(candidate);
+    }
+
     private void CollectHandCandidates(
         BattleSlotOwner owner,
         EffectTiming timing,
@@ -360,8 +465,9 @@ public class EffectManager : MonoBehaviour
                 owner = owner,
                 sourceZone = EffectSourceZone.Hand,
                 handIndex = i,
-                refId = GetPrimaryEffectRef(card),
-                timing = ResolveContentCardTiming(card),
+                refId = GetPrimaryEffectRef(card, timing),
+                sourceEffect = GetPrimaryEffectData(card, timing),
+                timing = ResolveCardEffectTiming(card, timing),
                 consumeAction = timing == EffectTiming.Content
             };
 
@@ -396,9 +502,12 @@ public class EffectManager : MonoBehaviour
             return false;
         }
 
-        if (!IsContentCard(candidate.card))
+        EffectContext safeContext = NormalizeContext(context, candidate.timing);
+        EffectTiming requestedTiming = safeContext.timing;
+
+        if (!IsEffectCardKindSupportedAtTiming(candidate.card, requestedTiming))
         {
-            failReason = "현재는 콘텐츠 카드 효과만 발동할 수 있습니다.";
+            failReason = "현재 타이밍에 발동할 수 없는 카드입니다.";
             return false;
         }
 
@@ -409,12 +518,17 @@ public class EffectManager : MonoBehaviour
             return false;
         }
 
-        EffectContext safeContext = NormalizeContext(context, candidate.timing);
-        EffectTiming requestedTiming = safeContext.timing;
-
         if (candidate.timing != requestedTiming)
         {
             failReason = GetTimingMismatchMessage(candidate.timing);
+            return false;
+        }
+
+        if (requestedTiming == EffectTiming.OnRest &&
+            candidate.owner != BattleSlotOwner.My &&
+            !IsMandatoryEffectActivation(requestedTiming, candidate))
+        {
+            failReason = "상대 카드의 휴식 시 효과는 내가 발동할 수 없습니다.";
             return false;
         }
 
@@ -462,7 +576,7 @@ public class EffectManager : MonoBehaviour
 
         string effectRef = !string.IsNullOrEmpty(candidate.refId)
             ? candidate.refId
-            : GetPrimaryEffectRef(candidate.card);
+            : GetPrimaryEffectRef(candidate.card, context != null ? context.timing : candidate.timing);
         int cost = GetActivationCost(candidate.card);
 
         if (effectRef == "content.silenceCharacterCollabThisTurn")
@@ -471,7 +585,7 @@ public class EffectManager : MonoBehaviour
                 candidate.card,
                 candidate.owner,
                 cost,
-                candidate.consumeAction,
+                ShouldConsumeAction(candidate, context),
                 candidate.handIndex
             );
         }
@@ -493,23 +607,240 @@ public class EffectManager : MonoBehaviour
         battleManager.RefreshAllUIFromExternal();
 
         ExecuteEffectByRefInternal(
-            candidate.card,
-            candidate.owner,
-            effectRef,
-            candidate.consumeAction
+            candidate,
+            context,
+            ShouldConsumeAction(candidate, context)
         );
 
         return true;
     }
 
-    private void ExecuteEffectByRefInternal(
-        BaseCardData sourceCard,
+    private bool IsDrawThenDiscardEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        if (candidate == null)
+            return false;
+
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetPrimaryEffectRef(candidate.card, context != null ? context.timing : candidate.timing);
+
+        return effectRef == "content.drawThenDiscard";
+    }
+
+    private void ResolveDrawThenDiscardEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action onComplete)
+    {
+        if (!CanActivateEffect(candidate, context, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke();
+            return;
+        }
+
+        int cost = GetActivationCost(candidate.card);
+
+        if (cost > 0 &&
+            !battleManager.TryPayViewerCostFromExternal(candidate.owner, cost))
+        {
+            battleManager?.SetSystemMessageFromExternal("시청자가 부족하여 효과를 발동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        if (candidate.sourceZone == EffectSourceZone.Hand &&
+            !battleManager.MoveHandCardAtIndexToRestZoneFromExternal(candidate.owner, candidate.handIndex, candidate.card))
+        {
+            battleManager?.SetSystemMessageFromExternal("효과 발동 카드를 손패에서 휴식존으로 이동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext safeContext = NormalizeContext(context, candidate.timing);
+        if (safeContext.sourceEffect == null)
+            safeContext.sourceEffect = candidate.sourceEffect;
+
+        int drawCount = GetIntParam(safeContext.sourceEffect, "draw", 0);
+        int discardCount = GetIntParam(safeContext.sourceEffect, "discard", 0);
+
+        battleManager.DrawCardsWithAnimationFromExternal(
+            candidate.owner,
+            Mathf.Max(0, drawCount),
+            drawnCount =>
+            {
+                battleManager.RefreshAllUIFromExternal();
+
+                string startMessage = $"{candidate.card.name} 발동: {drawnCount}장을 드로우했습니다.";
+                if (cost > 0)
+                    startMessage += $"\n시청자 -{cost}";
+
+                if (discardCount <= 0)
+                {
+                    CompleteEffectResolution(startMessage, ShouldConsumeAction(candidate, context), onComplete);
+                    return;
+                }
+
+                RequestDiscardCards(
+                    candidate.owner,
+                    Mathf.Max(0, discardCount),
+                    startMessage,
+                    ShouldConsumeAction(candidate, context),
+                    onComplete
+                );
+            }
+        );
+    }
+
+    private void RequestDiscardCards(
         BattleSlotOwner owner,
-        string effectRef,
+        int remainingCount,
+        string accumulatedMessage,
+        bool consumeAction,
+        Action onComplete)
+    {
+        if (remainingCount <= 0)
+        {
+            CompleteEffectResolution(accumulatedMessage, consumeAction, onComplete);
+            return;
+        }
+
+        IReadOnlyList<BaseCardData> hand = battleManager.GetHandCardsFromExternal(owner);
+
+        if (hand == null || hand.Count == 0)
+        {
+            CompleteEffectResolution(
+                $"{accumulatedMessage}\n버릴 패가 없어 남은 버림을 처리하지 않았습니다.",
+                consumeAction,
+                onComplete
+            );
+            return;
+        }
+
+        CardQuestionPanel panel = battleManager.BattleCardQuestionPanel;
+
+        if (panel == null)
+        {
+            CompleteEffectResolution(
+                $"{accumulatedMessage}\nCardQuestionPanel이 없어 패 버림을 처리하지 않았습니다.",
+                consumeAction,
+                onComplete
+            );
+            return;
+        }
+
+        if (panel.IsOpen())
+        {
+            CompleteEffectResolution(
+                $"{accumulatedMessage}\n이미 카드 선택창이 열려 있어 패 버림을 처리하지 않았습니다.",
+                consumeAction,
+                onComplete
+            );
+            return;
+        }
+
+        List<CardQuestionOption> options = BuildHandOptions(owner, hand);
+
+        bool opened = panel.TryShowOptions(
+            $"버릴 카드를 선택하세요. ({remainingCount}장 남음)",
+            options,
+            false,
+            selectedOption =>
+            {
+                BaseCardData discardCard = selectedOption != null
+                    ? selectedOption.card
+                    : null;
+                int handIndex = selectedOption != null && selectedOption.linkedCandidate != null
+                    ? selectedOption.linkedCandidate.handIndex
+                    : battleManager.FindHandCardIndexFromExternal(owner, discardCard);
+
+                if (discardCard == null ||
+                    !battleManager.MoveHandCardAtIndexToRestZoneFromExternal(owner, handIndex, discardCard))
+                {
+                    CompleteEffectResolution(
+                        $"{accumulatedMessage}\n선택한 카드를 버릴 수 없습니다.",
+                        consumeAction,
+                        onComplete
+                    );
+                    return;
+                }
+
+                battleManager.RefreshAllUIFromExternal();
+                RequestDiscardCards(
+                    owner,
+                    remainingCount - 1,
+                    $"{accumulatedMessage}\n{discardCard.name} 카드를 버렸습니다.",
+                    consumeAction,
+                    onComplete
+                );
+            },
+            null
+        );
+
+        if (!opened)
+        {
+            CompleteEffectResolution(
+                $"{accumulatedMessage}\n카드 선택창을 열 수 없어 패 버림을 처리하지 않았습니다.",
+                consumeAction,
+                onComplete
+            );
+        }
+    }
+
+    private List<CardQuestionOption> BuildHandOptions(
+        BattleSlotOwner owner,
+        IReadOnlyList<BaseCardData> hand)
+    {
+        List<CardQuestionOption> options = new List<CardQuestionOption>();
+
+        if (hand == null)
+            return options;
+
+        for (int i = 0; i < hand.Count; i++)
+        {
+            BaseCardData card = hand[i];
+
+            if (card == null)
+                continue;
+
+            EffectCandidate linkedCandidate = new EffectCandidate
+            {
+                card = card,
+                owner = owner,
+                sourceZone = EffectSourceZone.Hand,
+                handIndex = i,
+                timing = EffectTiming.Content,
+                consumeAction = false
+            };
+
+            options.Add(new CardQuestionOption(card, null, linkedCandidate));
+        }
+
+        return options;
+    }
+
+    private void CompleteEffectResolution(
+        string message,
+        bool consumeAction,
+        Action onComplete)
+    {
+        if (consumeAction)
+            battleManager.ResolveMyActionUsedFromExternal(message);
+        else
+            battleManager.SetSystemMessageFromExternal(message);
+
+        onComplete?.Invoke();
+    }
+
+    private void ExecuteEffectByRefInternal(
+        EffectCandidate candidate,
+        EffectContext context,
         bool consumeAction)
     {
-        string message = ResolveImmediateContentEffectMessage(sourceCard, owner, effectRef);
-        int cost = GetActivationCost(sourceCard);
+        string message = ExecuteEffectByRefInternal(candidate, context);
+        int cost = GetActivationCost(candidate != null ? candidate.card : null);
 
         if (cost > 0)
             message += $"\n시청자 -{cost}";
@@ -518,6 +849,61 @@ public class EffectManager : MonoBehaviour
             battleManager.ResolveMyActionUsedFromExternal(message);
         else
             battleManager.SetSystemMessageFromExternal(message);
+    }
+
+    private string ExecuteEffectByRefInternal(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        if (candidate == null || candidate.card == null)
+            return "효과 발동 카드 정보가 없습니다.";
+
+        EffectContext safeContext = NormalizeContext(context, candidate.timing);
+        if (safeContext.sourceEffect == null)
+            safeContext.sourceEffect = candidate.sourceEffect;
+
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetPrimaryEffectRef(candidate.card, safeContext.timing);
+        EffectData effect = safeContext.sourceEffect ?? candidate.sourceEffect;
+
+        switch (effectRef)
+        {
+            case "character.rest.gainViewers":
+                return ModifyViewers(candidate.owner, GetIntParam(effect, "amount", 0));
+
+            case "character.rest.loseViewers":
+                return ModifyViewers(candidate.owner, -GetIntParam(effect, "amount", 0));
+
+            case "content.drawThenDiscard":
+                return DrawThenDiscard(
+                    candidate.owner,
+                    GetIntParam(effect, "draw", 0),
+                    GetIntParam(effect, "discard", 0)
+                );
+
+            case "content.postCollabHealOwnParticipant":
+                return HealOwnCollabParticipant(
+                    candidate.owner,
+                    safeContext,
+                    GetIntParam(effect, "amount", 0)
+                );
+
+            case "idol.active.fullHealOneControlled":
+                return "아이돌 액티브 회복 효과는 대상 선택 UI 연결 후 구현 예정입니다.";
+
+            case "content.removeAllLastingContentsOnBoard":
+                return RemoveAllLastingContentsOnBoard(candidate.owner);
+
+            case "content.lasting.buffTagTensionAndHp":
+                return $"{candidate.card.name} 지속형 보정은 필드에 설치된 동안 합방 계산에 반영됩니다.";
+
+            case "content.collabClicheSpendBuffRefund":
+                return "Our Tales 발동 테스트: 실제 효과는 아직 미구현입니다.";
+
+            default:
+                return GetUnimplementedEffectMessage(candidate.card, effect, effectRef);
+        }
     }
 
     private bool TryBuildCandidateFromRequest(
@@ -550,7 +936,8 @@ public class EffectManager : MonoBehaviour
             sourceSlot = request.sourceSlot,
             targetSlot = request.targetSlot,
             sourceCard = request.sourceCard,
-            consumeAction = request.consumeAction
+            sourceEffect = GetPrimaryEffectData(request.sourceCard, request.timing),
+            consumeAction = ShouldConsumeActionForTiming(request.timing, request.consumeAction)
         };
 
         candidate = new EffectCandidate
@@ -563,12 +950,30 @@ public class EffectManager : MonoBehaviour
             handIndex = request.sourceSlot == null
                 ? ResolveRequestHandIndex(request)
                 : -1,
-            refId = GetPrimaryEffectRef(request.sourceCard),
+            refId = GetPrimaryEffectRef(request.sourceCard, request.timing),
+            sourceEffect = GetPrimaryEffectData(request.sourceCard, request.timing),
             timing = request.timing,
-            consumeAction = request.consumeAction
+            consumeAction = ShouldConsumeActionForTiming(request.timing, request.consumeAction)
         };
 
         return true;
+    }
+
+    private bool ShouldConsumeAction(EffectCandidate candidate, EffectContext context)
+    {
+        if (candidate == null)
+            return false;
+
+        EffectTiming timing = context != null && context.timing != EffectTiming.None
+            ? context.timing
+            : candidate.timing;
+
+        return ShouldConsumeActionForTiming(timing, candidate.consumeAction);
+    }
+
+    private bool ShouldConsumeActionForTiming(EffectTiming timing, bool requestedConsumeAction)
+    {
+        return timing == EffectTiming.Content && requestedConsumeAction;
     }
 
     private int ResolveRequestHandIndex(EffectActivationRequest request)
@@ -594,6 +999,14 @@ public class EffectManager : MonoBehaviour
 
         if (safeContext.timing == EffectTiming.None)
             safeContext.timing = timing;
+
+        if (safeContext.sourceCard == null)
+        {
+            if (timing == EffectTiming.OnRest)
+                safeContext.sourceCard = safeContext.restedCard ?? safeContext.defeatedCard;
+            else if (safeContext.sourceSlot != null)
+                safeContext.sourceCard = safeContext.sourceSlot.characterCard;
+        }
 
         return safeContext;
     }
@@ -623,11 +1036,209 @@ public class EffectManager : MonoBehaviour
         return Mathf.Max(0, content.cost);
     }
 
+    private string ModifyViewers(BattleSlotOwner owner, int delta)
+    {
+        int actualDelta = battleManager.ModifyViewersFromExternal(owner, delta);
+        string ownerName = owner == BattleSlotOwner.My ? "내" : "상대";
+        string sign = actualDelta >= 0 ? "+" : "";
+
+        battleManager.RefreshAllUIFromExternal();
+        return $"{ownerName} 시청자 {sign}{actualDelta}";
+    }
+
+    private string DrawThenDiscard(
+        BattleSlotOwner owner,
+        int drawCount,
+        int discardCount)
+    {
+        int drawnCount = battleManager.DrawCardsFromExternal(owner, Mathf.Max(0, drawCount));
+        string ownerName = owner == BattleSlotOwner.My ? "내" : "상대";
+        string message = $"{ownerName} 덱에서 {drawnCount}장을 드로우했습니다.";
+
+        if (discardCount > 0)
+        {
+            message +=
+                $"\n패 {discardCount}장 버림은 대상 선택 UI 연결 후 구현 예정입니다.";
+            Debug.LogWarning($"EffectManager: drawThenDiscard discard 미구현. owner={owner}, discard={discardCount}");
+        }
+
+        battleManager.RefreshAllUIFromExternal();
+        return message;
+    }
+
+    private string HealOwnCollabParticipant(
+        BattleSlotOwner owner,
+        EffectContext context,
+        int amount)
+    {
+        BattleFieldSlot targetSlot = GetOwnCollabParticipant(owner, context);
+
+        if (targetSlot == null)
+            return "회복할 합방 참가 캐릭터를 찾지 못했습니다.";
+
+        int healedAmount = battleManager.HealCharacterFromExternal(targetSlot, Mathf.Max(0, amount));
+        battleManager.RefreshAllUIFromExternal();
+
+        string cardName = targetSlot.characterCard != null
+            ? targetSlot.characterCard.name
+            : "선택 캐릭터";
+
+        return $"{cardName}의 체력을 {healedAmount} 회복했습니다.";
+    }
+
+    private BattleFieldSlot GetOwnCollabParticipant(
+        BattleSlotOwner owner,
+        EffectContext context)
+    {
+        if (context == null)
+            return null;
+
+        if (IsOwnedActiveCharacterSlot(context.attackerSlot, owner))
+            return context.attackerSlot;
+
+        if (IsOwnedActiveCharacterSlot(context.defenderSlot, owner))
+            return context.defenderSlot;
+
+        return null;
+    }
+
+    private bool IsOwnedActiveCharacterSlot(BattleFieldSlot slot, BattleSlotOwner owner)
+    {
+        return slot != null &&
+            slot.HasCharacter &&
+            !slot.isCharacterFaceDown &&
+            slot.characterOwner == owner;
+    }
+
+    private string RemoveAllLastingContentsOnBoard(BattleSlotOwner owner)
+    {
+        int removedCount;
+        battleManager.RemoveAllLastingContentsOnBoardFromExternal(owner, out removedCount);
+        battleManager.RefreshAllUIFromExternal();
+
+        return $"장기 콘텐츠 {removedCount}장을 제거했습니다.";
+    }
+
+    private string GetUnimplementedEffectMessage(
+        BaseCardData sourceCard,
+        EffectData effect,
+        string effectRef)
+    {
+        string safeRef = string.IsNullOrEmpty(effectRef)
+            ? "(ref 없음)"
+            : effectRef;
+        string effectName = effect != null && !string.IsNullOrEmpty(effect.id)
+            ? effect.id
+            : "효과";
+
+        Debug.LogWarning($"EffectManager: 미구현 effectRef={safeRef}, card={sourceCard?.id}/{sourceCard?.name}, effect={effectName}");
+
+        return
+            $"{sourceCard.name} 효과를 발동했습니다.\n" +
+            $"아직 구현되지 않은 효과입니다: {safeRef}";
+    }
+
+    private int GetIntParam(EffectData effect, string key, int defaultValue)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrEmpty(key))
+            return defaultValue;
+
+        switch (key)
+        {
+            case "amount":
+                return effectParams.amount;
+            case "draw":
+                return effectParams.draw;
+            case "discard":
+                return effectParams.discard;
+            case "hp":
+                return effectParams.hp;
+            case "tension":
+                return effectParams.tension;
+            case "tensionDelta":
+                return effectParams.tensionDelta;
+            case "hpMaxDelta":
+                return effectParams.hpMaxDelta;
+            case "max":
+                return effectParams.max;
+            case "maxCount":
+                return effectParams.maxCount;
+            case "range":
+                return effectParams.range;
+            case "reveal":
+                return effectParams.reveal;
+            case "extraCostPer":
+                return effectParams.extraCostPer;
+            default:
+                return defaultValue;
+        }
+    }
+
+    private string GetStringParam(EffectData effect, string key, string defaultValue)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrEmpty(key))
+            return defaultValue;
+
+        switch (key)
+        {
+            case "tag":
+                return !string.IsNullOrEmpty(effectParams.tag) ? effectParams.tag : defaultValue;
+            case "requireTag":
+                return !string.IsNullOrEmpty(effectParams.requireTag) ? effectParams.requireTag : defaultValue;
+            case "tabiTag":
+                return !string.IsNullOrEmpty(effectParams.tabiTag) ? effectParams.tabiTag : defaultValue;
+            case "bunnyTag":
+                return !string.IsNullOrEmpty(effectParams.bunnyTag) ? effectParams.bunnyTag : defaultValue;
+            case "kind":
+                return !string.IsNullOrEmpty(effectParams.kind) ? effectParams.kind : defaultValue;
+            default:
+                return defaultValue;
+        }
+    }
+
+    private string[] GetStringListParam(EffectData effect, string key)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrEmpty(key))
+            return Array.Empty<string>();
+
+        if (key == "allTags" && effectParams.allTags != null)
+            return effectParams.allTags;
+
+        return Array.Empty<string>();
+    }
+
+    private bool GetBoolParam(EffectData effect, string key, bool defaultValue)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrEmpty(key))
+            return defaultValue;
+
+        switch (key)
+        {
+            case "oncePerTurn":
+                return effectParams.oncePerTurn;
+            case "faceUp":
+                return effectParams.faceUp;
+            default:
+                return defaultValue;
+        }
+    }
+
     private string ResolveImmediateContentEffectMessage(
         BaseCardData sourceCard,
         BattleSlotOwner owner,
         string effectRef)
     {
+        if (sourceCard is CharacterCardData)
+            return ResolveCharacterTimingEffectMessage(sourceCard, effectRef);
+
         switch (effectRef)
         {
             case "content.removeAllLastingContentsOnBoard":
@@ -646,22 +1257,106 @@ public class EffectManager : MonoBehaviour
         }
     }
 
-    private string GetPrimaryEffectRef(BaseCardData card)
+    private string ResolveCharacterTimingEffectMessage(BaseCardData sourceCard, string effectRef)
     {
-        ContentCardData content = card as ContentCardData;
+        string timingText = "효과";
 
-        if (content == null || content.effects == null)
-            return "";
-
-        foreach (EffectData effect in content.effects)
+        if (!string.IsNullOrEmpty(effectRef))
         {
-            string effectRef = GetEffectRef(effect);
-
-            if (!string.IsNullOrEmpty(effectRef))
-                return effectRef;
+            if (effectRef.IndexOf("appear", StringComparison.OrdinalIgnoreCase) >= 0)
+                timingText = "출연 시 효과";
+            else if (effectRef.IndexOf("rest", StringComparison.OrdinalIgnoreCase) >= 0)
+                timingText = "휴식 시 효과";
+            else if (effectRef.IndexOf("collab", StringComparison.OrdinalIgnoreCase) >= 0)
+                timingText = "합방 후 효과";
         }
 
-        return "";
+        return $"{sourceCard.name}의 {timingText}가 발동되었습니다.\n실제 효과는 아직 미구현입니다.";
+    }
+
+    private string GetPrimaryEffectRef(BaseCardData card)
+    {
+        return GetPrimaryEffectRef(card, EffectTiming.None);
+    }
+
+    private string GetPrimaryEffectRef(BaseCardData card, EffectTiming preferredTiming)
+    {
+        EffectData effect = GetPrimaryEffectData(card, preferredTiming);
+        return GetEffectRef(effect);
+    }
+
+    private EffectData GetPrimaryEffectData(BaseCardData card, EffectTiming preferredTiming)
+    {
+        EffectData[] effects = null;
+
+        if (card is ContentCardData content)
+            effects = content.effects;
+        else if (card is CharacterCardData character)
+            effects = character.effects;
+        else if (card is BroadcastCardData broadcast)
+            effects = broadcast.effects;
+        else if (card is IdolCardData idol)
+            effects = MergeIdolEffects(idol);
+
+        if (effects == null)
+            return null;
+
+        if (preferredTiming != EffectTiming.None)
+        {
+            foreach (EffectData effect in effects)
+            {
+                if (effect == null || string.IsNullOrEmpty(effect.timing))
+                    continue;
+
+                if (!TryParseEffectTiming(effect.timing, out EffectTiming effectTiming) ||
+                    effectTiming != preferredTiming)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(GetEffectRef(effect)))
+                    return effect;
+            }
+        }
+
+        foreach (EffectData effect in effects)
+        {
+            if (!string.IsNullOrEmpty(GetEffectRef(effect)))
+                return effect;
+        }
+
+        if (preferredTiming != EffectTiming.None)
+        {
+            foreach (EffectData effect in effects)
+            {
+                if (effect == null || string.IsNullOrEmpty(effect.timing))
+                    continue;
+
+                if (TryParseEffectTiming(effect.timing, out EffectTiming effectTiming) &&
+                    effectTiming == preferredTiming)
+                {
+                    return effect;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private EffectData[] MergeIdolEffects(IdolCardData idol)
+    {
+        if (idol == null)
+            return null;
+
+        List<EffectData> effects = new List<EffectData>();
+
+        if (idol.active != null)
+            effects.AddRange(idol.active);
+
+        if (idol.passive != null)
+            effects.AddRange(idol.passive);
+
+        return effects.ToArray();
     }
 
     private string GetEffectRef(EffectData effect)
@@ -684,12 +1379,95 @@ public class EffectManager : MonoBehaviour
             string.Equals(card.kind, "Contents", StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool IsCharacterCard(BaseCardData card)
+    {
+        if (card == null || string.IsNullOrEmpty(card.kind))
+            return false;
+
+        return string.Equals(card.kind, "Character", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsEffectCardKindSupportedAtTiming(BaseCardData card, EffectTiming timing)
+    {
+        if (IsContentCard(card))
+            return true;
+
+        if (IsCharacterCard(card))
+        {
+            return timing == EffectTiming.OnAppear ||
+                timing == EffectTiming.OnRest ||
+                timing == EffectTiming.PostCollab;
+        }
+
+        return false;
+    }
+
+    private BaseCardData ResolveContextCharacterCard(EffectContext context, EffectTiming timing)
+    {
+        if (context == null)
+            return null;
+
+        if (timing == EffectTiming.OnRest)
+            return context.restedCard ?? context.defeatedCard ?? context.sourceCard;
+
+        if (context.sourceCard != null)
+            return context.sourceCard;
+
+        if (context.sourceSlot != null)
+            return context.sourceSlot.characterCard;
+
+        return null;
+    }
+
+    private BattleFieldSlot ResolveContextCharacterSlot(EffectContext context, EffectTiming timing)
+    {
+        if (context == null)
+            return null;
+
+        if (timing == EffectTiming.OnRest)
+            return context.restedSlot ?? context.defeatedSlot ?? context.sourceSlot;
+
+        return context.sourceSlot;
+    }
+
+    private EffectTiming ResolveCardEffectTiming(BaseCardData card, EffectTiming requestedTiming)
+    {
+        if (IsContentCard(card))
+            return ResolveContentCardTiming(card, requestedTiming);
+
+        CharacterCardData character = card as CharacterCardData;
+
+        if (character != null && character.effects != null)
+            return ResolveTimingFromEffects(character.effects, requestedTiming, EffectTiming.None);
+
+        BroadcastCardData broadcast = card as BroadcastCardData;
+
+        if (broadcast != null && broadcast.effects != null)
+            return ResolveTimingFromEffects(broadcast.effects, requestedTiming, EffectTiming.None);
+
+        return requestedTiming;
+    }
+
     private EffectTiming ResolveContentCardTiming(BaseCardData card)
+    {
+        return ResolveContentCardTiming(card, EffectTiming.None);
+    }
+
+    private EffectTiming ResolveContentCardTiming(BaseCardData card, EffectTiming requestedTiming)
     {
         ContentCardData content = card as ContentCardData;
 
         if (content != null && content.effects != null)
         {
+            EffectTiming requested = ResolveTimingFromEffects(
+                content.effects,
+                requestedTiming,
+                EffectTiming.None
+            );
+
+            if (requested != EffectTiming.None)
+                return requested;
+
             foreach (EffectData effect in content.effects)
             {
                 if (effect == null || string.IsNullOrEmpty(effect.timing))
@@ -720,6 +1498,32 @@ public class EffectManager : MonoBehaviour
 
         // TODO: JSON에 콘텐츠 카드 전용 timing 필드를 추가하면 이 기본값 대신 해당 값을 사용한다.
         return EffectTiming.Content;
+    }
+
+    private EffectTiming ResolveTimingFromEffects(
+        EffectData[] effects,
+        EffectTiming requestedTiming,
+        EffectTiming fallbackTiming)
+    {
+        if (effects == null)
+            return fallbackTiming;
+
+        if (requestedTiming != EffectTiming.None)
+        {
+            foreach (EffectData effect in effects)
+            {
+                if (effect == null || string.IsNullOrEmpty(effect.timing))
+                    continue;
+
+                if (TryParseEffectTiming(effect.timing, out EffectTiming timing) &&
+                    timing == requestedTiming)
+                {
+                    return timing;
+                }
+            }
+        }
+
+        return fallbackTiming;
     }
 
     private bool TryResolveContentTypeTiming(string contentType, out EffectTiming timing)
@@ -868,6 +1672,15 @@ public class EffectManager : MonoBehaviour
             case EffectTiming.PreCollab:
                 return "합방 전에 발동할 카드를 선택하세요.";
 
+            case EffectTiming.PostCollab:
+                return "합방 후에 발동할 카드를 선택하세요.";
+
+            case EffectTiming.OnAppear:
+                return "출연 시 발동할 카드를 선택하세요.";
+
+            case EffectTiming.OnRest:
+                return "휴식 시 발동할 카드를 선택하세요.";
+
             case EffectTiming.Content:
                 return "발동할 카드를 선택하세요.";
 
@@ -882,6 +1695,15 @@ public class EffectManager : MonoBehaviour
         {
             case EffectTiming.PreCollab:
                 return "합방 전 콘텐츠 카드 발동을 하지 않습니다.";
+
+            case EffectTiming.PostCollab:
+                return "합방 후 카드 효과를 발동하지 않습니다.";
+
+            case EffectTiming.OnAppear:
+                return "출연 시 카드 효과를 발동하지 않습니다.";
+
+            case EffectTiming.OnRest:
+                return "휴식 시 카드 효과를 발동하지 않습니다.";
 
             default:
                 return "카드 발동을 하지 않습니다.";
