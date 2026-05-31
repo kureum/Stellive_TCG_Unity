@@ -85,6 +85,48 @@ public class EffectManager : MonoBehaviour
             battleManager = GetComponentInParent<BattleManager>();
     }
 
+    public bool ShouldDeferZeroHpDuringCollab(BattleFieldSlot slot)
+    {
+        return HasIdolPassiveForSlot(
+            slot,
+            "idol.passive.collabNoKOByTag",
+            out _
+        );
+    }
+
+    public int GetIdolPassiveCollabTensionModifier(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null ||
+            slot.currentCharacterHp <= 0)
+        {
+            return 0;
+        }
+
+        if (slot.owner != slot.characterOwner)
+            return 0;
+
+        if (!HasIdolPassiveForSlot(
+            slot,
+            "idol.passive.collabTensionByCurrentHpForTag",
+            out _))
+        {
+            return 0;
+        }
+
+        return Mathf.Max(0, slot.currentCharacterHp);
+    }
+
+    public bool CanIgnoreAppearTurnActionLimit(BattleFieldSlot slot)
+    {
+        return HasIdolPassiveForSlot(
+            slot,
+            "idol.passive.allowActionOnAppearByTag",
+            out _
+        );
+    }
+
     public List<EffectCandidate> GetPlayableEffects(
         EffectTiming timing,
         EffectContext context)
@@ -1108,6 +1150,71 @@ public class EffectManager : MonoBehaviour
             slot.HasCharacter &&
             !slot.isCharacterFaceDown &&
             slot.characterOwner == owner;
+    }
+
+    private bool HasIdolPassiveForSlot(
+        BattleFieldSlot slot,
+        string requiredEffectRef,
+        out EffectData matchedEffect)
+    {
+        matchedEffect = null;
+
+        if (battleManager == null ||
+            slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null ||
+            string.IsNullOrEmpty(requiredEffectRef))
+        {
+            return false;
+        }
+
+        IdolCardData idol = battleManager.GetIdolCardFromExternal(slot.characterOwner) as IdolCardData;
+
+        if (idol == null || idol.passive == null)
+            return false;
+
+        foreach (EffectData passive in idol.passive)
+        {
+            if (passive == null)
+                continue;
+
+            if (!string.Equals(GetEffectRef(passive), requiredEffectRef, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string tag = GetStringParam(passive, "tag", "");
+
+            if (!string.IsNullOrEmpty(tag) &&
+                !CardHasHashtag(slot.characterCard, tag))
+            {
+                continue;
+            }
+
+            matchedEffect = passive;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool CardHasHashtag(BaseCardData card, string tag)
+    {
+        if (card == null || card.hashtags == null || string.IsNullOrEmpty(tag))
+            return false;
+
+        string normalizedTag = tag.Trim();
+
+        foreach (string hashtag in card.hashtags)
+        {
+            if (string.Equals(
+                hashtag != null ? hashtag.Trim() : "",
+                normalizedTag,
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private string RemoveAllLastingContentsOnBoard(BattleSlotOwner owner)

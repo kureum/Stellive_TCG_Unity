@@ -412,7 +412,8 @@ public class MovementManager : MonoBehaviour
 
         int currentTurn = battleManager.GetCurrentTurnCountFromExternal();
         if (fromSlot.faceUpSummonedTurn >= 0 &&
-            currentTurn <= fromSlot.faceUpSummonedTurn)
+            currentTurn <= fromSlot.faceUpSummonedTurn &&
+            !battleManager.CanIgnoreAppearTurnActionLimitFromExternal(fromSlot))
         {
             failReason = "앞면으로 출연한 턴에는 이동할 수 없습니다.";
             return false;

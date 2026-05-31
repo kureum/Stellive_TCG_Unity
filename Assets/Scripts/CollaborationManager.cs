@@ -396,7 +396,7 @@ public class CollaborationManager : MonoBehaviour
 
         // 2. 방어자가 생존하면 반격
         bool hostCanCounter =
-            !hostDefeated &&
+            (!hostDefeated || ShouldDeferZeroHpDuringCollab(hostSlot)) &&
             (context == null || !context.defenderWasFaceDownAtCollabStart);
 
         if (hostCanCounter)
@@ -453,6 +453,8 @@ public class CollaborationManager : MonoBehaviour
         };
 
         yield return WaitForResultPanelAndHide();
+
+        isResolvingCollaboration = false;
         yield return ResolveCollaborationResultRoutine(resolutionData);
         yield return RequestPostCollabEffectsRoutine(
             resolutionData.guestSlot,
@@ -462,7 +464,6 @@ public class CollaborationManager : MonoBehaviour
         ClearPendingCollaboration();
 
         battleManager.RefreshAllUIFromExternal();
-        isResolvingCollaboration = false;
         currentContext = null;
         battleManager.ResolveMyActionUsedFromExternal(resultMessage);
         battleManager.SetBattleBusyFromExternal(false);
@@ -545,11 +546,7 @@ public class CollaborationManager : MonoBehaviour
 
         if (data.hostDefeated)
         {
-            yield return SendCharacterToRestZoneRoutine(
-                data.hostOwner,
-                data.hostCard,
-                data.hostSlot
-            );
+            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(data.hostSlot);
 
             if (!data.guestDefeated)
             {
@@ -558,11 +555,7 @@ public class CollaborationManager : MonoBehaviour
             }
             else
             {
-                yield return SendCharacterToRestZoneRoutine(
-                    data.guestOwner,
-                    data.guestCard,
-                    data.guestSlot
-                );
+                yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(data.guestSlot);
             }
 
             yield break;
@@ -570,15 +563,17 @@ public class CollaborationManager : MonoBehaviour
 
         if (data.guestDefeated)
         {
-            yield return SendCharacterToRestZoneRoutine(
-                data.guestOwner,
-                data.guestCard,
-                data.guestSlot
-            );
+            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(data.guestSlot);
             yield break;
         }
 
         data.guestSlot.SetCharacterMovedThisTurn(true);
+    }
+
+    private bool ShouldDeferZeroHpDuringCollab(BattleFieldSlot slot)
+    {
+        return battleManager != null &&
+            battleManager.ShouldDeferZeroHpDuringCollabFromExternal(slot);
     }
 
     private IEnumerator SendCharacterToRestZoneRoutine(

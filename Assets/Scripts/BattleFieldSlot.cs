@@ -362,14 +362,14 @@ public class BattleFieldSlot : MonoBehaviour,
 
     public void SetCharacterBattleStats(int hp, int tension)
     {
-        currentCharacterHp = Mathf.Max(0, hp);
+        currentCharacterHp = hp;
         currentCharacterTension = Mathf.Max(0, tension);
     }
 
     public void ApplyCharacterDamage(int damage)
     {
         int safeDamage = Mathf.Max(0, damage);
-        currentCharacterHp = Mathf.Max(0, currentCharacterHp - safeDamage);
+        currentCharacterHp -= safeDamage;
     }
 
     public void SetContentCard(

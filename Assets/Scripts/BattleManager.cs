@@ -1655,6 +1655,94 @@ public class BattleManager : MonoBehaviour
         AddCardToRestZoneFromExternal(owner, card);
     }
 
+    public BaseCardData GetIdolCardFromExternal(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        return targetPlayer != null ? targetPlayer.idolCard : null;
+    }
+
+    public bool IsCollaborationResolvingFromExternal()
+    {
+        return collaborationManager != null &&
+            collaborationManager.IsResolvingCollaboration;
+    }
+
+    public bool ShouldDeferZeroHpDuringCollabFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            effectManager == null ||
+            !IsCollaborationResolvingFromExternal())
+        {
+            return false;
+        }
+
+        return effectManager.ShouldDeferZeroHpDuringCollab(slot);
+    }
+
+    public bool CanIgnoreAppearTurnActionLimitFromExternal(BattleFieldSlot slot)
+    {
+        return effectManager != null &&
+            effectManager.CanIgnoreAppearTurnActionLimit(slot);
+    }
+
+    public int ApplyCharacterDamageFromExternal(
+        BattleFieldSlot slot,
+        int damage,
+        bool resolveZeroHp = true)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return 0;
+
+        int safeDamage = Mathf.Max(0, damage);
+
+        if (safeDamage <= 0)
+            return 0;
+
+        int beforeHp = slot.currentCharacterHp;
+        slot.ApplyCharacterDamage(safeDamage);
+
+        if (resolveZeroHp && slot.currentCharacterHp <= 0)
+            StartCoroutine(ResolveZeroHpCharacterRoutineFromExternal(slot));
+
+        return beforeHp - slot.currentCharacterHp;
+    }
+
+    public IEnumerator ResolveZeroHpCharacterRoutineFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null ||
+            slot.currentCharacterHp > 0)
+        {
+            yield break;
+        }
+
+        if (ShouldDeferZeroHpDuringCollabFromExternal(slot))
+            yield break;
+
+        BattleSlotOwner owner = slot.characterOwner;
+        BaseCardData restedCard = slot.characterCard;
+
+        AddCharacterToRestZoneFromExternal(owner, restedCard);
+        slot.ClearCharacterCard();
+        RefreshAllUI();
+
+        bool effectComplete = false;
+        RequestOnRestEffectsFromExternal(
+            slot,
+            restedCard,
+            owner,
+            () => effectComplete = true
+        );
+
+        while (!effectComplete)
+            yield return null;
+    }
+
     public bool IsCardInHandFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
         BattlePlayerRuntime targetPlayer =
@@ -1921,6 +2009,9 @@ public class BattleManager : MonoBehaviour
         int modifier = 0;
         modifier += GetBroadcastCharacterTensionModifier(slot);
         modifier += GetInstalledContentCharacterTensionModifier(slot);
+        modifier += effectManager != null
+            ? effectManager.GetIdolPassiveCollabTensionModifier(slot)
+            : 0;
 
         return modifier;
     }
