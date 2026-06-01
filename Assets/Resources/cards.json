@@ -112,7 +112,20 @@
           }
         }
       ],
-      "active": []
+      "active": [
+        {
+          "id": "a1",
+          "timing": "Active",
+          "description": "[턴당 1회] 덱에서 #타비 카드 한 장을 패에 더한다. 혹은 자신 방송의 #뿡댕이 캐릭터 한 장을 퇴장시키고, #타비 카드와 #뿡댕이 카드를 한 장씩 패에 더할 수 있다.",
+          "ref": "idol.active.fetchTabiOrRestBoongAndFetchBoth",
+          "params": {
+            "tag": "#타비",
+            "bunnyTag": "#뿡댕이",
+            "maxCount": 1,
+            "oncePerTurn": true
+          }
+        }
+      ]
     }
   ],
   "broadcasts": [

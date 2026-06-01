@@ -92,11 +92,11 @@ public class BattleManager : MonoBehaviour
     public TMP_Text enemyViewerText;
 
     [Header("System Message Fade")]
+    [SerializeField] private SimpleMessagePanelController simpleMessagePanel;
     [SerializeField] private CanvasGroup systemMessageCanvasGroup;
-    [SerializeField] private float systemMessageVisibleTime = 3f;
+    [SerializeField] private float systemMessageVisibleTime = 2f;
+    [SerializeField] private float actionTransferMessageVisibleTime = 1.5f;
     [SerializeField] private float systemMessageFadeTime = 0.5f;
-
-    private Coroutine systemMessageFadeCoroutine;
 
     [Header("Fonts")]
     [SerializeField] private TMP_FontAsset runtimeLabelFont;
@@ -170,8 +170,13 @@ public class BattleManager : MonoBehaviour
     private const int VictoryViewerThreshold = 100000;
     private bool isGameOver = false;
     private bool isBusy = false;
+    private string battleBusyReason = "";
+    private float battleBusyStartedRealtime = -1f;
     private bool isBattleEnded = false;
     private bool isVictoryTiebreakerActive = false;
+    private bool myActionUsedThisActionTurn = false;
+    private bool isEndActionButtonFlow = false;
+    private readonly HashSet<BattleFieldSlot> resolvingRestSlots = new HashSet<BattleFieldSlot>();
 
     private bool enemyHasSummonedFaceDownThisTurn = false;
     private TestEnemy testEnemyController;
@@ -191,8 +196,7 @@ public class BattleManager : MonoBehaviour
 
     private void Start()
     {
-        if (systemMessageCanvasGroup == null && systemMessageText != null)
-            systemMessageCanvasGroup = systemMessageText.GetComponentInParent<CanvasGroup>();
+        ResolveSimpleMessagePanel();
 
         if (summonManager == null)
             summonManager = GetComponentInChildren<SummonManager>();
@@ -395,9 +399,10 @@ public class BattleManager : MonoBehaviour
         }
 
         isGameOver = false;
-        isBusy = false;
+        SetBattleBusy(false, "StartBattleSetup");
         isBattleEnded = false;
         isVictoryTiebreakerActive = false;
+        turnCount = 1;
 
         if (!LoadCardDatabase())
             return;
@@ -687,6 +692,11 @@ public class BattleManager : MonoBehaviour
         RefreshAllUI();
         RefreshBroadcastSetupButtons();
 
+        StartCoroutine(PlaySimplePanelMessageRoutine(
+            "방송 배치 시간",
+            SimpleMessageExitDirection.LeftToRight
+        ));
+
         SetSystemMessage(
             $"내 덱 불러오기 완료: {myDeckName}\n" +
             $"상대 덱 불러오기 완료: {enemyDeckName}\n" +
@@ -823,6 +833,27 @@ public class BattleManager : MonoBehaviour
 
         message = $"Cheat give: {card.id} -> {FormatCheatOwner(owner)} hand";
         return true;
+    }
+
+    public void DebugClearPendingAndBusyState()
+    {
+        ClearAllPendingInteractionStates("DebugClearPendingAndBusyState");
+        SetSystemMessage("처리 상태를 초기화했습니다.");
+    }
+
+    public void DebugPrintActionState(string reason)
+    {
+        Debug.Log(
+            $"[ActionState] {reason}\n" +
+            $"turn={turnCount}\n" +
+            $"currentActionSide={currentActionSide}\n" +
+            $"currentPhase={currentPhase}\n" +
+            $"battleBusy={IsBattleBusy()}\n" +
+            $"battleBusyReason={GetBattleBusyReason()}\n" +
+            $"isEndActionButtonFlow={isEndActionButtonFlow}\n" +
+            $"myActionUsedThisActionTurn={myActionUsedThisActionTurn}\n" +
+            $"pending={BuildPendingStateSummary()}"
+        );
     }
 
     public bool DebugSummonCharacterToSlot(
@@ -1292,6 +1323,8 @@ public class BattleManager : MonoBehaviour
 
         currentActionSide = firstPlayerSide;
         consecutivePassCount = 0;
+        myActionUsedThisActionTurn = false;
+        isEndActionButtonFlow = false;
         enemyHasSummonedFaceDownThisTurn = false;
 
         if (summonManager != null)
@@ -1315,6 +1348,8 @@ public class BattleManager : MonoBehaviour
             turnEndButton.interactable = true;
 
         RefreshAllUI();
+
+        StartCoroutine(PlayTurnIntroRoutine(turnCount));
 
         SetSystemMessage(
             $"{previousActionMessage}\n\n" +
@@ -1599,6 +1634,16 @@ public class BattleManager : MonoBehaviour
         return IsBattleBusy();
     }
 
+    public bool IsBattleBusyFromExternal()
+    {
+        return IsBattleBusy();
+    }
+
+    public string GetBattleBusyReasonFromExternal()
+    {
+        return GetBattleBusyReason();
+    }
+
     public Sprite LoadCardSpriteFromExternal(BaseCardData card)
     {
         return LoadCardSprite(card);
@@ -1724,8 +1769,28 @@ public class BattleManager : MonoBehaviour
         if (ShouldDeferZeroHpDuringCollabFromExternal(slot))
             yield break;
 
+        yield return SendFieldCharacterToRestZoneRoutine(slot);
+    }
+
+    public IEnumerator SendFieldCharacterToRestZoneRoutine(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null ||
+            resolvingRestSlots.Contains(slot))
+        {
+            yield break;
+        }
+
+        resolvingRestSlots.Add(slot);
+        bool wasBusy = isBusy;
+        string previousBusyReason = battleBusyReason;
+        SetBattleBusy(true, $"SendFieldCharacterToRestZoneRoutine:{slot.characterCard.id}");
+
         BattleSlotOwner owner = slot.characterOwner;
         BaseCardData restedCard = slot.characterCard;
+
+        yield return AnimateCharacterExitToRestZoneRoutine(slot);
 
         AddCharacterToRestZoneFromExternal(owner, restedCard);
         slot.ClearCharacterCard();
@@ -1739,8 +1804,62 @@ public class BattleManager : MonoBehaviour
             () => effectComplete = true
         );
 
+        float waitStartedAt = Time.realtimeSinceStartup;
+        const float effectWaitTimeout = 30f;
+
         while (!effectComplete)
+        {
+            if (Time.realtimeSinceStartup - waitStartedAt > effectWaitTimeout)
+            {
+                Debug.LogWarning($"OnRest 효과 처리 대기 시간이 초과되었습니다: {restedCard.id} / {restedCard.name}");
+                break;
+            }
+
             yield return null;
+        }
+
+        resolvingRestSlots.Remove(slot);
+        if (wasBusy)
+            SetBattleBusy(true, previousBusyReason);
+        else
+            SetBattleBusy(false, "SendFieldCharacterToRestZoneRoutine finished");
+    }
+
+    private IEnumerator AnimateCharacterExitToRestZoneRoutine(BattleFieldSlot slot)
+    {
+        if (slot == null || slot.characterCardImage == null)
+            yield break;
+
+        Image image = slot.characterCardImage;
+        RectTransform rect = image.rectTransform;
+        CanvasGroup canvasGroup = rect.GetComponent<CanvasGroup>();
+
+        if (canvasGroup == null)
+            canvasGroup = rect.gameObject.AddComponent<CanvasGroup>();
+
+        Color originalColor = image.color;
+        Vector3 originalScale = rect.localScale;
+        float originalAlpha = canvasGroup.alpha;
+        float duration = 0.35f;
+        float elapsed = 0f;
+
+        canvasGroup.blocksRaycasts = false;
+        canvasGroup.interactable = false;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            float easedT = Mathf.SmoothStep(0f, 1f, t);
+
+            canvasGroup.alpha = Mathf.Lerp(originalAlpha, 0f, easedT);
+            rect.localScale = Vector3.Lerp(originalScale, originalScale * 0.92f, easedT);
+            yield return null;
+        }
+
+        canvasGroup.alpha = originalAlpha;
+        rect.localScale = originalScale;
+        image.color = originalColor;
     }
 
     public bool IsCardInHandFromExternal(BattleSlotOwner owner, BaseCardData card)
@@ -1999,6 +2118,13 @@ public class BattleManager : MonoBehaviour
 
     public int GetSlotCharacterTensionModifierFromExternal(BattleFieldSlot slot)
     {
+        return GetSlotCharacterTensionModifierFromExternal(slot, slot);
+    }
+
+    public int GetSlotCharacterTensionModifierFromExternal(
+        BattleFieldSlot slot,
+        BattleFieldSlot effectLocationSlot)
+    {
         if (slot == null ||
             !slot.HasCharacter ||
             slot.characterCard == null)
@@ -2007,17 +2133,64 @@ public class BattleManager : MonoBehaviour
         }
 
         int modifier = 0;
-        modifier += GetBroadcastCharacterTensionModifier(slot);
-        modifier += GetInstalledContentCharacterTensionModifier(slot);
-        modifier += effectManager != null
-            ? effectManager.GetIdolPassiveCollabTensionModifier(slot)
-            : 0;
+        BattleFieldSlot locationSlot = effectLocationSlot != null ? effectLocationSlot : slot;
+        modifier += GetBroadcastCharacterTensionModifier(locationSlot, slot.characterCard);
+        modifier += GetInstalledContentCharacterTensionModifier(slot, locationSlot);
 
         return modifier;
+    }
+
+    public int GetEffectiveCollabTensionFromExternal(
+        BattleFieldSlot participantSlot,
+        BattleFieldSlot battleLocationSlot)
+    {
+        if (participantSlot == null ||
+            !participantSlot.HasCharacter ||
+            participantSlot.characterCard == null)
+        {
+            return 0;
+        }
+
+        BattleFieldSlot locationSlot = battleLocationSlot != null ? battleLocationSlot : participantSlot;
+        int tension = participantSlot.currentCharacterTension;
+        tension += GetSlotCharacterTensionModifierFromExternal(participantSlot, locationSlot);
+
+        if (effectManager != null)
+        {
+            EffectContext context = new EffectContext
+            {
+                battleManager = this,
+                collaborationManager = collaborationManager,
+                timing = EffectTiming.Passive,
+                attackerOriginalSlot = collaborationManager != null && collaborationManager.CurrentCollaborationContext != null
+                    ? collaborationManager.CurrentCollaborationContext.attackerOriginalSlot
+                    : participantSlot,
+                attackerSlot = collaborationManager != null && collaborationManager.CurrentCollaborationContext != null
+                    ? collaborationManager.CurrentCollaborationContext.attackerSlot
+                    : participantSlot,
+                defenderSlot = locationSlot,
+                battleLocationSlot = locationSlot,
+                sourceSlot = participantSlot,
+                sourceCard = participantSlot.characterCard,
+                actingOwner = participantSlot.characterOwner,
+                consumeAction = false
+            };
+
+            tension += effectManager.GetIdolPassiveCollabTensionModifier(participantSlot, context);
+        }
+
+        return Mathf.Max(0, tension);
     }
 
     public int GetSlotCharacterHpModifierFromExternal(BattleFieldSlot slot)
     {
+        return GetSlotCharacterHpModifierFromExternal(slot, slot);
+    }
+
+    public int GetSlotCharacterHpModifierFromExternal(
+        BattleFieldSlot slot,
+        BattleFieldSlot effectLocationSlot)
+    {
         if (slot == null ||
             !slot.HasCharacter ||
             slot.characterCard == null)
@@ -2026,18 +2199,23 @@ public class BattleManager : MonoBehaviour
         }
 
         int modifier = 0;
-        modifier += GetBroadcastCharacterHpModifier(slot);
-        modifier += GetInstalledContentCharacterHpModifier(slot);
+        BattleFieldSlot locationSlot = effectLocationSlot != null ? effectLocationSlot : slot;
+        modifier += GetBroadcastCharacterHpModifier(locationSlot, slot.characterCard);
+        modifier += GetInstalledContentCharacterHpModifier(slot, locationSlot);
 
         return modifier;
     }
 
-    private int GetBroadcastCharacterTensionModifier(BattleFieldSlot slot)
+    private int GetBroadcastCharacterTensionModifier(
+        BattleFieldSlot slot,
+        BaseCardData participantCard)
     {
         return 0;
     }
 
-    private int GetBroadcastCharacterHpModifier(BattleFieldSlot slot)
+    private int GetBroadcastCharacterHpModifier(
+        BattleFieldSlot slot,
+        BaseCardData participantCard)
     {
         if (slot == null || slot.broadcastCard == null)
             return 0;
@@ -2051,26 +2229,42 @@ public class BattleManager : MonoBehaviour
 
     private int GetInstalledContentCharacterTensionModifier(BattleFieldSlot slot)
     {
-        return GetInstalledContentCharacterStatModifier(slot, "tension");
+        return GetInstalledContentCharacterStatModifier(slot, slot, "tension");
     }
 
     private int GetInstalledContentCharacterHpModifier(BattleFieldSlot slot)
     {
-        return GetInstalledContentCharacterStatModifier(slot, "hp");
+        return GetInstalledContentCharacterStatModifier(slot, slot, "hp");
+    }
+
+    private int GetInstalledContentCharacterTensionModifier(
+        BattleFieldSlot participantSlot,
+        BattleFieldSlot effectLocationSlot)
+    {
+        return GetInstalledContentCharacterStatModifier(participantSlot, effectLocationSlot, "tension");
+    }
+
+    private int GetInstalledContentCharacterHpModifier(
+        BattleFieldSlot participantSlot,
+        BattleFieldSlot effectLocationSlot)
+    {
+        return GetInstalledContentCharacterStatModifier(participantSlot, effectLocationSlot, "hp");
     }
 
     private int GetInstalledContentCharacterStatModifier(
-        BattleFieldSlot slot,
+        BattleFieldSlot participantSlot,
+        BattleFieldSlot effectLocationSlot,
         string statKey)
     {
-        if (slot == null ||
-            slot.characterCard == null ||
-            slot.contentCard == null)
+        if (participantSlot == null ||
+            participantSlot.characterCard == null ||
+            effectLocationSlot == null ||
+            effectLocationSlot.contentCard == null)
         {
             return 0;
         }
 
-        ContentCardData content = slot.contentCard as ContentCardData;
+        ContentCardData content = effectLocationSlot.contentCard as ContentCardData;
 
         if (content == null || content.effects == null)
             return 0;
@@ -2087,7 +2281,7 @@ public class BattleManager : MonoBehaviour
 
             string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
 
-            if (!MatchesEffectTagOrSharedHashtag(slot.contentCard, slot.characterCard, tag))
+            if (!MatchesEffectTagOrSharedHashtag(effectLocationSlot.contentCard, participantSlot.characterCard, tag))
                 continue;
 
             modifier += GetEffectIntParamForBattleManager(effect, statKey, 0);
@@ -2316,48 +2510,63 @@ public class BattleManager : MonoBehaviour
         if (IsGameOver())
         {
             failReason = "이미 배틀이 종료되었습니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
         if (IsBattleBusy())
         {
-            failReason = "현재 다른 처리를 진행 중입니다.";
+            failReason = GetBattleBusyReason();
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
         if (questionPanel != null && questionPanel.IsOpen())
         {
             failReason = "이미 다른 선택창이 열려 있습니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
         if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
         {
             failReason = "이미 카드 선택창이 열려 있습니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
         if (movementManager != null && movementManager.HasPendingMoveChoice)
         {
             failReason = "이동 선택을 처리 중입니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
         if (collaborationManager != null && collaborationManager.HasPendingCollaborationChoice)
         {
             failReason = "합방 선택을 처리 중입니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
         if (currentPhase != BattlePhase.MainGame)
         {
             failReason = "아직 본게임 단계가 아닙니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
         if (currentActionSide != BattlePlayerSide.My)
         {
             failReason = "현재는 내 행동권이 아닙니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
+            return false;
+        }
+
+        if (myActionUsedThisActionTurn)
+        {
+            failReason = "이미 행동권을 사용했습니다.";
+            LogActionBlocked("CanUseMyAction", failReason);
             return false;
         }
 
@@ -2371,11 +2580,38 @@ public class BattleManager : MonoBehaviour
 
     private bool IsBattleBusy()
     {
+        RecoverExpiredBattleBusyIfNeeded();
+
         if (isBusy)
             return true;
 
         return collaborationManager != null &&
             collaborationManager.IsCollaborationSequenceRunning;
+    }
+
+    private void RecoverExpiredBattleBusyIfNeeded()
+    {
+        if (!isBusy || string.IsNullOrEmpty(battleBusyReason))
+            return;
+
+        float elapsed = battleBusyStartedRealtime >= 0f
+            ? Time.realtimeSinceStartup - battleBusyStartedRealtime
+            : 0f;
+
+        if (battleBusyReason.StartsWith("TransferActionSideRoutine", StringComparison.Ordinal) &&
+            elapsed > 5f)
+        {
+            Debug.LogWarning($"[BattleBusy Watchdog] action transfer busy expired. reason={battleBusyReason} elapsed={elapsed:F2}");
+            SetBattleBusy(false, "TransferActionSideRoutine watchdog");
+            return;
+        }
+
+        if (battleBusyReason.StartsWith("EndCurrentTurnAndStartNextTurnRoutine", StringComparison.Ordinal) &&
+            elapsed > 20f)
+        {
+            Debug.LogWarning($"[BattleBusy Watchdog] turn start busy expired. reason={battleBusyReason} elapsed={elapsed:F2}");
+            SetBattleBusy(false, "TurnStart watchdog");
+        }
     }
 
     private bool IsInputBlocked(out string failReason)
@@ -2385,38 +2621,90 @@ public class BattleManager : MonoBehaviour
         if (IsGameOver())
         {
             failReason = "이미 배틀이 종료되었습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
             return true;
         }
 
         if (IsBattleBusy())
         {
-            failReason = "현재 다른 처리를 진행 중입니다.";
+            failReason = GetBattleBusyReason();
+            LogActionBlocked("IsInputBlocked", failReason);
             return true;
         }
 
         if (questionPanel != null && questionPanel.IsOpen())
         {
             failReason = "이미 다른 선택창이 열려 있습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
             return true;
         }
 
         if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
         {
             failReason = "이미 카드 선택창이 열려 있습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
             return true;
         }
 
         return false;
     }
 
-    public void SetBattleBusyFromExternal(bool value)
+    private string GetBattleBusyReason()
+    {
+        if (collaborationManager != null &&
+            collaborationManager.IsCollaborationSequenceRunning)
+        {
+            return "합방 처리를 진행 중입니다.";
+        }
+
+        if (resolvingRestSlots.Count > 0)
+            return "퇴장 효과를 처리 중입니다.";
+
+        if (isBusy)
+            return !string.IsNullOrEmpty(battleBusyReason)
+                ? $"현재 다른 처리를 진행 중입니다. ({battleBusyReason})"
+                : "현재 다른 처리를 진행 중입니다.";
+
+        return "";
+    }
+
+    private void LogActionBlocked(string attempted, string reason)
+    {
+        Debug.Log($"[ActionBlocked] attempted={attempted} reason={reason} busy={GetBattleBusyReason()} turn={turnCount} owner={currentActionSide} pending={BuildPendingStateSummary()}");
+    }
+
+    public void SetBattleBusyFromExternal(bool value, string reason = "")
     {
         if (IsGameOver() && value)
             return;
 
+        SetBattleBusy(value, reason);
+    }
+
+    private void SetBattleBusy(bool value, string reason = "")
+    {
         isBusy = value;
+        battleBusyReason = value ? (string.IsNullOrWhiteSpace(reason) ? "Unspecified" : reason) : "";
+        battleBusyStartedRealtime = value ? Time.realtimeSinceStartup : -1f;
+
+        string owner = currentActionSide == BattlePlayerSide.My ? "My" : "Enemy";
+        string pendingSummary = BuildPendingStateSummary();
+        string stateText = value ? "ON" : "OFF";
+        Debug.Log($"[BattleBusy {stateText}] reason={battleBusyReason} turn={turnCount} owner={owner} pending={pendingSummary}");
 
         RefreshTurnEndButtonState();
+    }
+
+    private string BuildPendingStateSummary()
+    {
+        return
+            $"question={(questionPanel != null && questionPanel.IsOpen())}, " +
+            $"cardQuestion={(cardQuestionPanel != null && cardQuestionPanel.IsOpen())}, " +
+            $"summon={(summonManager != null && (summonManager.HasPendingSummonChoice || summonManager.HasPendingFlipChoice))}, " +
+            $"move={(movementManager != null && movementManager.HasPendingMoveChoice)}, " +
+            $"collab={(collaborationManager != null && collaborationManager.HasPendingCollaborationChoice)}, " +
+            $"resting={resolvingRestSlots.Count}, " +
+            $"drag={isDraggingHandCard}";
     }
 
     private void ClearAllPendingActions()
@@ -2433,7 +2721,7 @@ public class BattleManager : MonoBehaviour
         if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
             cardQuestionPanel.Hide();
 
-        isBusy = false;
+        SetBattleBusy(false, "ClearAllPendingActions");
 
         CloseRestZonePanel();
     }
@@ -2441,6 +2729,31 @@ public class BattleManager : MonoBehaviour
     private void ClearAllPendingBattleInteractions()
     {
         ClearAllPendingActions();
+    }
+
+    public void ClearAllPendingInteractionStates(string reason)
+    {
+        Debug.Log($"[ClearAllPendingInteractionStates] reason={reason} before={BuildPendingStateSummary()} busy={GetBattleBusyReason()}");
+
+        ClearPendingHandDragState();
+        ClearPendingSummonChoice();
+        ClearPendingContentChoice();
+        ClearPendingMoveChoice();
+        ClearPendingCollaborationChoice();
+
+        if (effectManager != null)
+            effectManager.ClearPendingEffectActivationFromExternal();
+
+        if (questionPanel != null && questionPanel.IsOpen())
+            questionPanel.Hide();
+
+        if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+            cardQuestionPanel.Hide();
+
+        resolvingRestSlots.Clear();
+        SetBattleBusy(false, reason);
+        CloseRestZonePanel();
+        RefreshAllUI();
     }
 
     private void ClearPendingHandDragState()
@@ -2681,8 +2994,10 @@ public class BattleManager : MonoBehaviour
             collaborationManager = collaborationManager,
             actingOwner = attackerSlot != null ? attackerSlot.characterOwner : BattleSlotOwner.My,
             timing = EffectTiming.PreCollab,
+            attackerOriginalSlot = attackerSlot,
             attackerSlot = attackerSlot,
             defenderSlot = defenderSlot,
+            battleLocationSlot = defenderSlot,
             sourceSlot = attackerSlot,
             targetSlot = defenderSlot,
             sourceCard = attackerSlot != null ? attackerSlot.characterCard : null,
@@ -2714,8 +3029,10 @@ public class BattleManager : MonoBehaviour
             collaborationManager = collaborationManager,
             actingOwner = attackerSlot != null ? attackerSlot.characterOwner : BattleSlotOwner.My,
             timing = EffectTiming.PostCollab,
+            attackerOriginalSlot = attackerSlot,
             attackerSlot = attackerSlot,
             defenderSlot = defenderSlot,
+            battleLocationSlot = defenderSlot,
             sourceSlot = attackerSlot,
             targetSlot = defenderSlot,
             sourceCard = attackerSlot != null ? attackerSlot.characterCard : null,
@@ -2828,39 +3145,49 @@ public class BattleManager : MonoBehaviour
         if (TryResolveVictory(actionMessage))
             return;
 
-        currentActionSide = BattlePlayerSide.Enemy;
-
+        myActionUsedThisActionTurn = true;
+        Debug.Log($"[ActionResolved] MyActionComplete / action owner remains My / message={actionMessage}");
         RefreshAllUI();
-
-        SetSystemMessage(
-            $"{actionMessage}\n" +
-            "상대 행동권입니다."
-        );
     }
 
-    private void ResolveMyActionPass()
+    private IEnumerator EndPlayerActionRoutine()
     {
         if (isBattleEnded)
-            return;
+            yield break;
 
         ClearAllPendingBattleInteractions();
 
-        consecutivePassCount++;
-
-        if (consecutivePassCount >= 2)
+        bool passedWithoutAction = !myActionUsedThisActionTurn;
+        if (passedWithoutAction)
         {
-            EndCurrentTurnAndStartNextTurn("양쪽 플레이어가 연속으로 행동하지 않았습니다.");
-            return;
+            consecutivePassCount++;
+
+            if (consecutivePassCount >= 2)
+            {
+                EndCurrentTurnAndStartNextTurn("양쪽 플레이어가 연속으로 행동하지 않았습니다.");
+                yield break;
+            }
+        }
+        else
+        {
+            consecutivePassCount = 0;
         }
 
-        currentActionSide = BattlePlayerSide.Enemy;
+        isEndActionButtonFlow = true;
 
-        RefreshAllUI();
-
-        SetSystemMessage(
-            "나는 행동하지 않았습니다.\n" +
-            "상대 행동권입니다."
-        );
+        try
+        {
+            yield return TransferActionSideRoutine(
+                BattlePlayerSide.Enemy,
+                "상대의 행동 차례입니다.",
+                SimpleMessageExitDirection.LeftToRight,
+                "EndActionButton"
+            );
+        }
+        finally
+        {
+            isEndActionButtonFlow = false;
+        }
     }
 
     private void ResolveEnemyActionUsed(string actionMessage)
@@ -2870,14 +3197,12 @@ public class BattleManager : MonoBehaviour
         if (TryResolveVictory(actionMessage))
             return;
 
-        currentActionSide = BattlePlayerSide.My;
-
-        RefreshAllUI();
-
-        SetSystemMessage(
-            $"{actionMessage}\n" +
-            "내 행동권입니다."
-        );
+        StartCoroutine(TransferActionSideRoutine(
+            BattlePlayerSide.My,
+            "당신의 행동 차례입니다.",
+            SimpleMessageExitDirection.RightToLeft,
+            "EnemyActionUsed"
+        ));
     }
 
     private void ResolveEnemyActionPass(string actionMessage)
@@ -2896,14 +3221,53 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        currentActionSide = BattlePlayerSide.My;
+        StartCoroutine(TransferActionSideRoutine(
+            BattlePlayerSide.My,
+            "당신의 행동 차례입니다.",
+            SimpleMessageExitDirection.RightToLeft,
+            "EnemyActionPass"
+        ));
+    }
+
+    private IEnumerator TransferActionSideRoutine(
+        BattlePlayerSide nextSide,
+        string message,
+        SimpleMessageExitDirection exitDirection,
+        string reason)
+    {
+        if (IsGameOver())
+            yield break;
+
+        if (nextSide == BattlePlayerSide.Enemy && !isEndActionButtonFlow)
+        {
+            Debug.LogError($"[ActionTransfer BLOCKED] reason={reason} / currentOwner={currentActionSide}");
+            yield break;
+        }
+
+        BattlePlayerSide previousSide = currentActionSide;
+        SetBattleBusy(true, $"TransferActionSideRoutine:{nextSide}:{reason}");
+        currentActionSide = nextSide;
+
+        if (nextSide == BattlePlayerSide.My)
+            myActionUsedThisActionTurn = false;
+        else if (nextSide == BattlePlayerSide.Enemy)
+            myActionUsedThisActionTurn = false;
+
+        Debug.Log($"[ActionTransfer] {previousSide} -> {nextSide} / reason={reason}");
 
         RefreshAllUI();
 
-        SetSystemMessage(
-            $"{actionMessage}\n" +
-            "내 행동권입니다."
-        );
+        bool shouldClearBusy = true;
+
+        try
+        {
+            yield return PlaySystemMessageRoutine(message, exitDirection);
+        }
+        finally
+        {
+            if (shouldClearBusy)
+                SetBattleBusy(false, "TransferActionSideRoutine finished");
+        }
     }
 
     private bool TryResolveVictory(string previousMessage)
@@ -2957,7 +3321,7 @@ public class BattleManager : MonoBehaviour
     {
         isGameOver = true;
         isBattleEnded = true;
-        isBusy = false;
+        SetBattleBusy(false, "ResolveVictory");
         currentPhase = BattlePhase.None;
         consecutivePassCount = 0;
 
@@ -3009,15 +3373,18 @@ public class BattleManager : MonoBehaviour
             yield break;
 
         ClearAllPendingBattleInteractions();
-        isBusy = true;
-        RefreshTurnEndButtonState();
+        SetBattleBusy(true, "EndCurrentTurnAndStartNextTurnRoutine");
 
         turnCount++;
 
         consecutivePassCount = 0;
         currentActionSide = firstPlayerSide;
+        myActionUsedThisActionTurn = false;
+        isEndActionButtonFlow = false;
 
         ResetTurnLimitedFlags();
+
+        yield return PlayTurnIntroRoutine(turnCount);
 
         int myDrawnCount = 0;
         int enemyDrawnCount = 0;
@@ -3037,7 +3404,7 @@ public class BattleManager : MonoBehaviour
         int myGainedViewers = GainPrepViewers(BattleSlotOwner.My);
         int enemyGainedViewers = GainPrepViewers(BattleSlotOwner.Enemy);
 
-        isBusy = false;
+        SetBattleBusy(false, "EndCurrentTurnAndStartNextTurnRoutine finished");
         RefreshAllUI();
 
         string turnStartMessage =
@@ -3912,7 +4279,7 @@ public class BattleManager : MonoBehaviour
                 doubleClickAction: selected => OnDoubleClickHandCard(selected, handIndex)
             );
 
-            bool canDrag = CanStartHandCardDrag(card);
+            bool canDrag = CanPotentiallyDragHandCard(card);
 
             cardItemUI.SetDragActions(
                 canDrag,
@@ -4524,6 +4891,14 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
+    private bool CanPotentiallyDragHandCard(BaseCardData card)
+    {
+        if (card == null)
+            return false;
+
+        return IsCharacterCardKind(card) || IsLastingContentCard(card);
+    }
+
     private void OnBeginDragHandCard(
         DeckCardItemUI cardItemUI,
         BaseCardData card,
@@ -4844,7 +5219,7 @@ public class BattleManager : MonoBehaviour
             cardDetailPanel.ShowCard(card);
 
         RefreshHandSelectionHighlights();
-        SetSystemMessage($"선택 카드: {card.name}");
+        Debug.Log($"선택 카드: {card.name}");
     }
 
     private void ClearSelectedHandCard()
@@ -4868,7 +5243,7 @@ public class BattleManager : MonoBehaviour
             cardDetailPanel.ShowFieldCharacter(slot);
 
         RefreshHandSelectionHighlights();
-        SetSystemMessage($"선택 카드: {slot.characterCard.name}");
+        Debug.Log($"선택 카드: {slot.characterCard.name}");
     }
 
     private void ShowCardQuestionDetailPreview(BaseCardData card, BattleFieldSlot linkedSlot)
@@ -5065,7 +5440,7 @@ public class BattleManager : MonoBehaviour
 
     private void ConfirmTurnEnd()
     {
-        ResolveMyActionPass();
+        StartCoroutine(EndPlayerActionRoutine());
     }
 
     private void CancelTurnEnd()
@@ -5208,45 +5583,251 @@ public class BattleManager : MonoBehaviour
 
     private void SetSystemMessage(string message)
     {
-        if (systemMessageText != null)
-            systemMessageText.text = message;
-
         Debug.Log(message);
 
-        ShowSystemMessageWithFade();
-    }
+        string displayMessage = BuildShortSystemMessage(message);
 
-    private void ShowSystemMessageWithFade()
-    {
-        if (systemMessageCanvasGroup == null)
+        if (string.IsNullOrEmpty(displayMessage))
             return;
 
-        if (systemMessageFadeCoroutine != null)
-            StopCoroutine(systemMessageFadeCoroutine);
-
-        systemMessageFadeCoroutine = StartCoroutine(SystemMessageFadeRoutine());
+        if (simpleMessagePanel != null)
+        {
+            simpleMessagePanel.Show(displayMessage);
+            return;
+        }
     }
 
-    private IEnumerator SystemMessageFadeRoutine()
+    private IEnumerator PlaySystemMessageRoutine(
+        string message,
+        SimpleMessageExitDirection exitDirection)
     {
-        systemMessageCanvasGroup.alpha = 1f;
+        Debug.Log(message);
 
-        if (systemMessageVisibleTime > 0f)
-            yield return new WaitForSeconds(systemMessageVisibleTime);
+        string displayMessage = BuildShortSystemMessage(message);
 
-        float elapsed = 0f;
-        float fadeDuration = Mathf.Max(0.01f, systemMessageFadeTime);
+        if (string.IsNullOrEmpty(displayMessage))
+            yield break;
 
-        while (elapsed < fadeDuration)
+        if (simpleMessagePanel != null)
         {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / fadeDuration);
-            systemMessageCanvasGroup.alpha = Mathf.Lerp(1f, 0f, t);
-            yield return null;
+            float visibleTime = exitDirection == SimpleMessageExitDirection.None
+                ? systemMessageVisibleTime
+                : actionTransferMessageVisibleTime;
+
+            bool nonInterruptible = exitDirection != SimpleMessageExitDirection.None;
+            simpleMessagePanel.Play(displayMessage, exitDirection, visibleTime, nonInterruptible);
+            yield return WaitForSimpleMessageDuration(visibleTime);
+            yield break;
+        }
+    }
+
+    private IEnumerator PlayTurnIntroRoutine(int turnNumber)
+    {
+        yield return PlaySimplePanelMessageRoutine(
+            $"Turn {Mathf.Max(1, turnNumber)}",
+            SimpleMessageExitDirection.LeftToRight
+        );
+    }
+
+    private IEnumerator PlaySimplePanelMessageRoutine(
+        string message,
+        SimpleMessageExitDirection exitDirection)
+    {
+        Debug.Log(message);
+
+        if (string.IsNullOrWhiteSpace(message))
+            yield break;
+
+        if (simpleMessagePanel == null)
+            yield break;
+
+        simpleMessagePanel.Play(
+            message,
+            exitDirection,
+            actionTransferMessageVisibleTime,
+            true
+        );
+
+        yield return WaitForSimpleMessageDuration(actionTransferMessageVisibleTime);
+    }
+
+    private IEnumerator WaitForSimpleMessageDuration(float visibleTime)
+    {
+        float totalTime =
+            Mathf.Max(0f, systemMessageFadeTime) +
+            Mathf.Max(0f, visibleTime) +
+            Mathf.Max(0f, systemMessageFadeTime) +
+            0.1f;
+
+        if (totalTime > 0f)
+            yield return new WaitForSecondsRealtime(totalTime);
+    }
+
+    private void ResolveSimpleMessagePanel()
+    {
+        GameObject simplePanelObject = null;
+
+        if (simpleMessagePanel != null)
+            simplePanelObject = simpleMessagePanel.gameObject;
+
+        if (simplePanelObject == null)
+            simplePanelObject = FindSceneGameObjectByName("SimpleMessagePanel");
+
+        if (simplePanelObject == null)
+        {
+            Debug.LogWarning("SimpleMessagePanel을 찾지 못했습니다. 화면 메시지는 Debug.Log에만 출력됩니다.");
+            return;
         }
 
-        systemMessageCanvasGroup.alpha = 0f;
-        systemMessageFadeCoroutine = null;
+        CanvasGroup simpleCanvasGroup = simplePanelObject.GetComponent<CanvasGroup>();
+
+        if (simpleCanvasGroup == null)
+            simpleCanvasGroup = simplePanelObject.AddComponent<CanvasGroup>();
+
+        if (simpleMessagePanel == null)
+            simpleMessagePanel = simplePanelObject.GetComponent<SimpleMessagePanelController>();
+
+        if (simpleMessagePanel == null)
+            simpleMessagePanel = simplePanelObject.AddComponent<SimpleMessagePanelController>();
+
+        if (simpleMessagePanel != null)
+        {
+            simpleMessagePanel.Configure(null, simpleCanvasGroup);
+            simpleMessagePanel.SetTimings(
+                systemMessageFadeTime,
+                systemMessageVisibleTime,
+                systemMessageFadeTime
+            );
+        }
+    }
+
+    private string BuildShortSystemMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return "";
+
+        string firstLine = message
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(firstLine))
+            return "";
+
+        firstLine = firstLine.Trim();
+
+        if (firstLine == "상대의 행동 차례입니다." ||
+            firstLine == "당신의 행동 차례입니다.")
+        {
+            return firstLine;
+        }
+
+        if (ContainsAny(
+            firstLine,
+            "선택 카드:",
+            "카드 확인:",
+            "행동 종료를 확인",
+            "행동 종료를 취소",
+            "행동을 취소",
+            "카드를 드래그",
+            "드래그 중",
+            "연결되어 있지",
+            "미구현",
+            "TODO",
+            "테스트",
+            "Debug",
+            "Cheat"))
+        {
+            return "";
+        }
+
+        if (firstLine.Contains("시청자가 부족"))
+            return "시청자가 부족합니다.";
+
+        if (ContainsAny(
+            firstLine,
+            "대상을 찾지",
+            "대상이 없습니다",
+            "대상이 없",
+            "대상 카드 정보가 없습니다",
+            "대상 슬롯이 없습니다",
+            "슬롯 정보가 없습니다",
+            "카드 정보가 없습니다",
+            "캐릭터 정보가 없습니다",
+            "캐릭터 카드가 없습니다",
+            "발동 가능한 콘텐츠 카드가 없습니다"))
+        {
+            return "대상이 없습니다.";
+        }
+
+        if (firstLine.Contains("이번 턴에는 이미 뒷면 출연"))
+            return "이번 턴에는 이미 뒷면 출연했습니다.";
+
+        if (ContainsAny(firstLine, "이미 앞면 상태", "이미 캐릭터가", "이미 아군 캐릭터", "이미 방송 카드"))
+            return "이미 사용 중인 자리입니다.";
+
+        if (firstLine.Contains("이미 다른 선택창"))
+            return "선택창이 열려 있습니다.";
+
+        if (firstLine.Contains("이미 카드 선택창"))
+            return "카드 선택창이 열려 있습니다.";
+
+        if (firstLine.Contains("이미 배틀이 종료"))
+            return "이미 배틀이 종료되었습니다.";
+
+        if (firstLine.Contains("현재 다른 처리를"))
+            return "처리 중입니다.";
+
+        if (firstLine.Contains("처리 상태를 초기화"))
+            return "처리 상태를 초기화했습니다.";
+
+        if (firstLine.Contains("퇴장 효과를 처리"))
+            return "퇴장 효과 처리 중입니다.";
+
+        if (firstLine.Contains("합방 처리를 진행"))
+            return "합방 처리 중입니다.";
+
+        if (firstLine.Contains("현재는 내 행동권"))
+            return "내 행동권이 아닙니다.";
+
+        if (firstLine.Contains("아직 본게임"))
+            return "아직 본게임이 아닙니다.";
+
+        if (firstLine.Contains("아직 배틀 준비"))
+            return "아직 배틀 준비 중입니다.";
+
+        if (firstLine.Contains("뒷면 출연한 턴"))
+            return "출연한 턴에는 할 수 없습니다.";
+
+        if (ContainsAny(firstLine, "출연한 턴에는", "이번 턴에 더 이상"))
+            return "이번 턴에는 할 수 없습니다.";
+
+        if (firstLine.Contains("상대의 뒷면 캐릭터"))
+            return "상대의 뒷면 카드입니다.";
+
+        if (firstLine.Contains("카드 이미지를 찾"))
+            return "카드 이미지를 찾지 못했습니다.";
+
+        if (ContainsAny(firstLine, "할 수 없습니다", "할 수 없", "불가능"))
+            return "할 수 없는 행동입니다.";
+
+        if (ContainsAny(firstLine, "없습니다", "아닙니다"))
+            return "";
+
+        return "";
+    }
+
+    private bool ContainsAny(string value, params string[] patterns)
+    {
+        if (string.IsNullOrEmpty(value) || patterns == null)
+            return false;
+
+        foreach (string pattern in patterns)
+        {
+            if (!string.IsNullOrEmpty(pattern) && value.Contains(pattern))
+                return true;
+        }
+
+        return false;
     }
 
     private string GetKoreanKind(string kind)

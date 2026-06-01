@@ -33,8 +33,10 @@ public class EffectContext
     public EffectTiming timing = EffectTiming.None;
     public BattleFieldSlot sourceSlot;
     public BattleFieldSlot targetSlot;
+    public BattleFieldSlot attackerOriginalSlot;
     public BattleFieldSlot attackerSlot;
     public BattleFieldSlot defenderSlot;
+    public BattleFieldSlot battleLocationSlot;
     public BattleFieldSlot defeatedSlot;
     public BattleFieldSlot restedSlot;
     public BaseCardData sourceCard;
@@ -85,6 +87,43 @@ public class EffectManager : MonoBehaviour
             battleManager = GetComponentInParent<BattleManager>();
     }
 
+    public void ClearPendingEffectActivationFromExternal()
+    {
+        CardQuestionPanel panel = battleManager != null
+            ? battleManager.BattleCardQuestionPanel
+            : null;
+
+        if (panel != null && panel.IsOpen())
+            panel.Hide();
+    }
+
+    public bool IsEffectRefImplementedFromExternal(string effectRef)
+    {
+        return IsEffectRefImplemented(effectRef);
+    }
+
+    private bool IsEffectRefImplemented(string effectRef)
+    {
+        if (string.IsNullOrWhiteSpace(effectRef))
+            return true;
+
+        switch (effectRef.Trim())
+        {
+            case "idol.passive.collabNoKOByTag":
+            case "idol.passive.collabTensionByCurrentHpForTag":
+            case "idol.passive.allowActionOnAppearByTag":
+            case "character.rest.gainViewers":
+            case "character.rest.loseViewers":
+            case "content.postCollabHealOwnParticipant":
+            case "content.removeAllLastingContentsOnBoard":
+            case "content.lasting.buffTagTensionAndHp":
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
     public bool ShouldDeferZeroHpDuringCollab(BattleFieldSlot slot)
     {
         return HasIdolPassiveForSlot(
@@ -96,6 +135,28 @@ public class EffectManager : MonoBehaviour
 
     public int GetIdolPassiveCollabTensionModifier(BattleFieldSlot slot)
     {
+        EffectContext context = new EffectContext
+        {
+            battleManager = battleManager,
+            collaborationManager = battleManager != null ? battleManager.collaborationManager : null,
+            timing = EffectTiming.Passive,
+            sourceSlot = slot,
+            sourceCard = slot != null ? slot.characterCard : null,
+            attackerOriginalSlot = slot,
+            attackerSlot = slot,
+            defenderSlot = slot,
+            battleLocationSlot = slot,
+            actingOwner = slot != null ? slot.characterOwner : BattleSlotOwner.My,
+            consumeAction = false
+        };
+
+        return GetIdolPassiveCollabTensionModifier(slot, context);
+    }
+
+    public int GetIdolPassiveCollabTensionModifier(
+        BattleFieldSlot slot,
+        EffectContext context)
+    {
         if (slot == null ||
             !slot.HasCharacter ||
             slot.characterCard == null ||
@@ -104,18 +165,48 @@ public class EffectManager : MonoBehaviour
             return 0;
         }
 
-        if (slot.owner != slot.characterOwner)
-            return 0;
-
+        EffectContext safeContext = NormalizeContext(context, EffectTiming.Passive);
+        bool onOwnBroadcastSlot = IsCharacterCollabingOnOwnBroadcastSlot(slot.characterOwner, safeContext);
         if (!HasIdolPassiveForSlot(
             slot,
             "idol.passive.collabTensionByCurrentHpForTag",
             out _))
         {
+            LogRinPassiveCheck(slot, safeContext, false);
             return 0;
         }
 
+        if (!onOwnBroadcastSlot)
+        {
+            LogRinPassiveCheck(slot, safeContext, false);
+            return 0;
+        }
+
+        LogRinPassiveCheck(slot, safeContext, true);
         return Mathf.Max(0, slot.currentCharacterHp);
+    }
+
+    public BattleFieldSlot GetCollaborationBattleLocationSlot(EffectContext context)
+    {
+        if (context != null && context.battleLocationSlot != null)
+            return context.battleLocationSlot;
+
+        if (context != null && context.defenderSlot != null)
+            return context.defenderSlot;
+
+        return null;
+    }
+
+    public bool IsCharacterCollabingOnOwnBroadcastSlot(
+        BattleSlotOwner characterOwner,
+        EffectContext context)
+    {
+        BattleFieldSlot battleSlot = GetCollaborationBattleLocationSlot(context);
+
+        if (battleSlot == null)
+            return false;
+
+        return battleSlot.owner == characterOwner;
     }
 
     public bool CanIgnoreAppearTurnActionLimit(BattleFieldSlot slot)
@@ -185,57 +276,75 @@ public class EffectManager : MonoBehaviour
         EffectContext context,
         Action onComplete)
     {
-        EffectContext safeContext = NormalizeContext(context, timing);
-        List<EffectCandidate> candidates = GetPlayableEffects(timing, safeContext);
-
-        if (candidates.Count == 0)
+        bool completed = false;
+        Action completeOnce = () =>
         {
+            if (completed)
+                return;
+
+            completed = true;
             onComplete?.Invoke();
-            return;
-        }
+        };
 
-        CardQuestionPanel panel = battleManager != null
-            ? battleManager.BattleCardQuestionPanel
-            : null;
-
-        if (panel == null)
+        try
         {
-            battleManager?.SetSystemMessageFromExternal("발동 가능한 카드가 있지만 CardQuestionPanel이 연결되어 있지 않습니다.");
-            Debug.LogWarning($"EffectManager: {timing} 후보 {candidates.Count}장을 감지했지만 CardQuestionPanel이 없습니다.");
-            onComplete?.Invoke();
-            return;
-        }
+            EffectContext safeContext = NormalizeContext(context, timing);
+            List<EffectCandidate> candidates = GetPlayableEffects(timing, safeContext);
 
-        if (panel.IsOpen())
-        {
-            battleManager?.SetSystemMessageFromExternal("이미 카드 선택창이 열려 있습니다.");
-            onComplete?.Invoke();
-            return;
-        }
-
-        List<CardQuestionOption> options = BuildOptionsFromCandidates(candidates);
-        bool opened = panel.TryShowOptions(
-            GetOptionalEffectQuestionMessage(timing),
-            options,
-            CanCancelEffectActivation(timing, candidates),
-            selectedOption =>
+            if (candidates.Count == 0)
             {
-                EffectCandidate selectedCandidate = selectedOption != null
-                    ? selectedOption.linkedCandidate
-                    : null;
-                ResolveEffect(selectedCandidate, safeContext, onComplete);
-            },
-            () =>
-            {
-                battleManager?.SetSystemMessageFromExternal(GetOptionalEffectCancelMessage(timing));
-                onComplete?.Invoke();
+                completeOnce();
+                return;
             }
-        );
 
-        if (!opened)
+            CardQuestionPanel panel = battleManager != null
+                ? battleManager.BattleCardQuestionPanel
+                : null;
+
+            if (panel == null)
+            {
+                battleManager?.SetSystemMessageFromExternal("발동 가능한 카드가 있지만 CardQuestionPanel이 연결되어 있지 않습니다.");
+                Debug.LogWarning($"EffectManager: {timing} 후보 {candidates.Count}장을 감지했지만 CardQuestionPanel이 없습니다.");
+                completeOnce();
+                return;
+            }
+
+            if (panel.IsOpen())
+            {
+                battleManager?.SetSystemMessageFromExternal("이미 카드 선택창이 열려 있습니다.");
+                completeOnce();
+                return;
+            }
+
+            List<CardQuestionOption> options = BuildOptionsFromCandidates(candidates);
+            bool opened = panel.TryShowOptions(
+                GetOptionalEffectQuestionMessage(timing),
+                options,
+                CanCancelEffectActivation(timing, candidates),
+                selectedOption =>
+                {
+                    EffectCandidate selectedCandidate = selectedOption != null
+                        ? selectedOption.linkedCandidate
+                        : null;
+                    ResolveEffect(selectedCandidate, safeContext, completeOnce);
+                },
+                () =>
+                {
+                    battleManager?.SetSystemMessageFromExternal(GetOptionalEffectCancelMessage(timing));
+                    completeOnce();
+                }
+            );
+
+            if (!opened)
+            {
+                battleManager?.SetSystemMessageFromExternal("카드 선택창을 열 수 없습니다.");
+                completeOnce();
+            }
+        }
+        catch (Exception exception)
         {
-            battleManager?.SetSystemMessageFromExternal("카드 선택창을 열 수 없습니다.");
-            onComplete?.Invoke();
+            Debug.LogException(exception);
+            completeOnce();
         }
     }
 
@@ -1039,8 +1148,17 @@ public class EffectManager : MonoBehaviour
         if (safeContext.battleManager == null)
             safeContext.battleManager = battleManager;
 
+        if (safeContext.collaborationManager == null && battleManager != null)
+            safeContext.collaborationManager = battleManager.collaborationManager;
+
         if (safeContext.timing == EffectTiming.None)
             safeContext.timing = timing;
+
+        if (safeContext.attackerOriginalSlot == null)
+            safeContext.attackerOriginalSlot = safeContext.attackerSlot;
+
+        if (safeContext.battleLocationSlot == null)
+            safeContext.battleLocationSlot = safeContext.defenderSlot;
 
         if (safeContext.sourceCard == null)
         {
@@ -1194,6 +1312,31 @@ public class EffectManager : MonoBehaviour
         }
 
         return false;
+    }
+
+    private void LogRinPassiveCheck(
+        BattleFieldSlot participantSlot,
+        EffectContext context,
+        bool applied)
+    {
+        if (participantSlot == null ||
+            participantSlot.characterCard == null)
+        {
+            return;
+        }
+
+        BattleFieldSlot battleLocationSlot = GetCollaborationBattleLocationSlot(context);
+        BattleFieldSlot attackerOriginalSlot = context != null
+            ? context.attackerOriginalSlot
+            : null;
+
+        Debug.Log(
+            $"[RinPassiveCheck] participant={participantSlot.characterCard.name}, " +
+            $"participantOwner={participantSlot.characterOwner}, " +
+            $"battleLocationOwner={(battleLocationSlot != null ? battleLocationSlot.owner.ToString() : "None")}, " +
+            $"attackerOriginalOwner={(attackerOriginalSlot != null ? attackerOriginalSlot.owner.ToString() : "None")}, " +
+            $"applied={applied}"
+        );
     }
 
     private bool CardHasHashtag(BaseCardData card, string tag)

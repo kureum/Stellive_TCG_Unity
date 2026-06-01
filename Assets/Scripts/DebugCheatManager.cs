@@ -8,6 +8,7 @@ public class DebugCheatManager : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private BattleManager battleManager;
+    [SerializeField] private CardFunctionAuditManager cardFunctionAuditManager;
 
     [Header("Cheat Panel")]
     [SerializeField] private GameObject cheatPanelRoot;
@@ -49,6 +50,9 @@ public class DebugCheatManager : MonoBehaviour
     {
         if (battleManager == null)
             battleManager = FindAnyObjectByType<BattleManager>();
+
+        if (cardFunctionAuditManager == null)
+            cardFunctionAuditManager = FindAnyObjectByType<CardFunctionAuditManager>();
 
         SetupCheatPanel();
     }
@@ -217,12 +221,6 @@ public class DebugCheatManager : MonoBehaviour
 
     private void ExecuteCheat(string rawCommand)
     {
-        if (battleManager == null)
-        {
-            PublishCheatMessage("Cheat failed: BattleManager not found");
-            return;
-        }
-
         string command = rawCommand != null ? rawCommand.Trim() : "";
 
         if (string.IsNullOrEmpty(command))
@@ -248,6 +246,23 @@ public class DebugCheatManager : MonoBehaviour
 
         switch (verb)
         {
+            case "audit":
+            case "cards":
+            case "effectcheck":
+                success = ExecuteCardFunctionAuditCheat(out message);
+                break;
+
+            case "unbusy":
+            case "resetbusy":
+            case "clearpending":
+                success = ExecuteClearPendingCheat(out message);
+                break;
+
+            case "actionstate":
+            case "turnstate":
+                success = ExecuteActionStateCheat(out message);
+                break;
+
             case "summon":
                 success = ExecuteSummonCheat(parts, out message);
                 break;
@@ -269,6 +284,12 @@ public class DebugCheatManager : MonoBehaviour
 
     private bool ExecuteSummonCheat(string[] parts, out string message)
     {
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
         if (parts == null || parts.Length != 4)
         {
             message = GetUsageMessage();
@@ -291,6 +312,12 @@ public class DebugCheatManager : MonoBehaviour
 
     private bool ExecuteGiveCheat(string[] parts, out string message)
     {
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
         if (parts == null || parts.Length != 3)
         {
             message = GetUsageMessage();
@@ -308,6 +335,45 @@ public class DebugCheatManager : MonoBehaviour
             parts[2],
             out message
         );
+    }
+
+    private bool ExecuteCardFunctionAuditCheat(out string message)
+    {
+        if (cardFunctionAuditManager == null)
+            cardFunctionAuditManager = FindAnyObjectByType<CardFunctionAuditManager>();
+
+        if (cardFunctionAuditManager == null)
+            cardFunctionAuditManager = gameObject.AddComponent<CardFunctionAuditManager>();
+
+        cardFunctionAuditManager.PrintCardFunctionAudit();
+        message = "카드 기능 현황을 로그로 출력했습니다.";
+        return true;
+    }
+
+    private bool ExecuteClearPendingCheat(out string message)
+    {
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
+        battleManager.DebugClearPendingAndBusyState();
+        message = "처리 상태를 초기화했습니다.";
+        return true;
+    }
+
+    private bool ExecuteActionStateCheat(out string message)
+    {
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
+        battleManager.DebugPrintActionState("DebugCheat");
+        message = "행동권 상태를 로그로 출력했습니다.";
+        return true;
     }
 
     private bool TryParseTargetOwner(string value, out BattleSlotOwner owner)
@@ -345,7 +411,10 @@ public class DebugCheatManager : MonoBehaviour
             "summon me 11 CARD-ID\n" +
             "summon enemy 23 CARD-ID\n" +
             "give me CARD-ID\n" +
-            "give enemy CARD-ID";
+            "give enemy CARD-ID\n" +
+            "audit\n" +
+            "unbusy\n" +
+            "actionstate";
     }
 
     private void ExecuteBroadcastAutoSetupCheat()

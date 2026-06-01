@@ -5,12 +5,21 @@ using UnityEngine.UI;
 
 public class CollaborationContext
 {
+    public BattleFieldSlot attackerOriginalSlot;
     public BattleFieldSlot attackerSlot;
     public BattleFieldSlot defenderSlot;
+    public BattleFieldSlot battleLocationSlot;
+    public BattleSlotOwner attackerOwner;
+    public BattleSlotOwner defenderOwner;
     public bool attackerWasFaceDownAtCollabStart;
     public bool defenderWasFaceDownAtCollabStart;
     public bool attackerEffectsBlockedThisCollab;
     public bool defenderEffectsBlockedThisCollab;
+
+    public BattleFieldSlot GetBattleLocationSlot()
+    {
+        return battleLocationSlot != null ? battleLocationSlot : defenderSlot;
+    }
 }
 
 public class CollaborationManager : MonoBehaviour
@@ -179,7 +188,7 @@ public class CollaborationManager : MonoBehaviour
             return;
         }
 
-        battleManager.SetBattleBusyFromExternal(true);
+        battleManager.SetBattleBusyFromExternal(true, "CollaborationManager.ExecutePendingCollaboration");
         isResolvingCollaboration = true;
         StartCoroutine(ExecuteBasicCollaborationRoutine(
             pendingGuestSlot,
@@ -218,7 +227,7 @@ public class CollaborationManager : MonoBehaviour
         CleanupWinnerMoveVisual();
 
         if (battleManager != null)
-            battleManager.SetBattleBusyFromExternal(false);
+            battleManager.SetBattleBusyFromExternal(false, "CollaborationManager.CancelCollaborationStateFromExternal");
     }
 
     private bool ValidateCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
@@ -281,8 +290,12 @@ public class CollaborationManager : MonoBehaviour
         BattleFieldSlot hostSlot)
     {
         CollaborationContext context = new CollaborationContext();
+        context.attackerOriginalSlot = guestSlot;
         context.attackerSlot = guestSlot;
         context.defenderSlot = hostSlot;
+        context.battleLocationSlot = hostSlot;
+        context.attackerOwner = guestSlot != null ? guestSlot.characterOwner : BattleSlotOwner.My;
+        context.defenderOwner = hostSlot != null ? hostSlot.characterOwner : BattleSlotOwner.Enemy;
         context.attackerWasFaceDownAtCollabStart =
             guestSlot != null && guestSlot.isCharacterFaceDown;
         context.defenderWasFaceDownAtCollabStart =
@@ -333,14 +346,14 @@ public class CollaborationManager : MonoBehaviour
 
         SetGuestView(
             guestSlot.characterCard,
-            GetEffectiveCollabTension(guestSlot),
-            GetEffectiveCharacterHp(guestSlot)
+            GetEffectiveCollabTension(guestSlot, hostSlot),
+            GetEffectiveCharacterHp(guestSlot, hostSlot)
         );
 
         SetHostView(
             hostSlot.characterCard,
-            GetEffectiveCollabTension(hostSlot),
-            GetEffectiveCharacterHp(hostSlot)
+            GetEffectiveCollabTension(hostSlot, hostSlot),
+            GetEffectiveCharacterHp(hostSlot, hostSlot)
         );
     }
 
@@ -363,8 +376,12 @@ public class CollaborationManager : MonoBehaviour
         Sprite guestSprite = guestSlot.GetCurrentCharacterSprite();
         Sprite hostSprite = hostSlot.GetCurrentCharacterSprite();
 
-        int guestTension = GetEffectiveCollabTension(guestSlot);
-        int hostTension = GetEffectiveCollabTension(hostSlot);
+        BattleFieldSlot battleLocationSlot = context != null
+            ? context.GetBattleLocationSlot()
+            : hostSlot;
+
+        int guestTension = GetEffectiveCollabTension(guestSlot, battleLocationSlot);
+        int hostTension = GetEffectiveCollabTension(hostSlot, battleLocationSlot);
         int hostDamage = CalculateCollaborationDamage(
             guestTension,
             context != null && context.defenderWasFaceDownAtCollabStart
@@ -375,8 +392,8 @@ public class CollaborationManager : MonoBehaviour
         );
 
         // 초기 표시
-        SetGuestView(guestCard, guestTension, GetEffectiveCharacterHp(guestSlot));
-        SetHostView(hostCard, hostTension, GetEffectiveCharacterHp(hostSlot));
+        SetGuestView(guestCard, guestTension, GetEffectiveCharacterHp(guestSlot, battleLocationSlot));
+        SetHostView(hostCard, hostTension, GetEffectiveCharacterHp(hostSlot, battleLocationSlot));
 
         RectTransform guestRect = GetCharacterRect(guestCharacterItemUI);
         RectTransform hostRect = GetCharacterRect(hostCharacterItemUI);
@@ -391,7 +408,7 @@ public class CollaborationManager : MonoBehaviour
             hostDamage
         );
 
-        bool hostDefeated = GetEffectiveCharacterHp(hostSlot) <= 0;
+        bool hostDefeated = GetEffectiveCharacterHp(hostSlot, battleLocationSlot) <= 0;
         bool guestDefeated = false;
 
         // 2. 방어자가 생존하면 반격
@@ -412,7 +429,7 @@ public class CollaborationManager : MonoBehaviour
                 guestDamage
             );
 
-            guestDefeated = GetEffectiveCharacterHp(guestSlot) <= 0;
+            guestDefeated = GetEffectiveCharacterHp(guestSlot, battleLocationSlot) <= 0;
         }
 
         int guestFinalHp = guestSlot.currentCharacterHp;
@@ -465,8 +482,8 @@ public class CollaborationManager : MonoBehaviour
 
         battleManager.RefreshAllUIFromExternal();
         currentContext = null;
+        battleManager.SetBattleBusyFromExternal(false, "CollaborationManager.ExecuteBasicCollaborationRoutine finished");
         battleManager.ResolveMyActionUsedFromExternal(resultMessage);
-        battleManager.SetBattleBusyFromExternal(false);
     }
 
     private int CalculateCollaborationDamage(int baseDamage, bool targetWasFaceDownAtCollabStart)
@@ -479,20 +496,22 @@ public class CollaborationManager : MonoBehaviour
         return safeDamage;
     }
 
-    private int GetEffectiveCollabTension(BattleFieldSlot slot)
+    private int GetEffectiveCollabTension(
+        BattleFieldSlot participantSlot,
+        BattleFieldSlot battleLocationSlot)
     {
-        if (slot == null)
+        if (participantSlot == null)
             return 0;
 
-        int tension = slot.currentCharacterTension;
-
         if (battleManager != null)
-            tension += battleManager.GetSlotCharacterTensionModifierFromExternal(slot);
+            return battleManager.GetEffectiveCollabTensionFromExternal(participantSlot, battleLocationSlot);
 
-        return Mathf.Max(0, tension);
+        return Mathf.Max(0, participantSlot.currentCharacterTension);
     }
 
-    private int GetEffectiveCharacterHp(BattleFieldSlot slot)
+    private int GetEffectiveCharacterHp(
+        BattleFieldSlot slot,
+        BattleFieldSlot battleLocationSlot = null)
     {
         if (slot == null)
             return 0;
@@ -503,7 +522,7 @@ public class CollaborationManager : MonoBehaviour
         int hp = slot.currentCharacterHp;
 
         if (battleManager != null)
-            hp += battleManager.GetSlotCharacterHpModifierFromExternal(slot);
+            hp += battleManager.GetSlotCharacterHpModifierFromExternal(slot, battleLocationSlot);
 
         return Mathf.Max(0, hp);
     }
@@ -581,26 +600,10 @@ public class CollaborationManager : MonoBehaviour
         BaseCardData card,
         BattleFieldSlot sourceSlot)
     {
-        if (card == null)
+        if (card == null || sourceSlot == null || battleManager == null)
             yield break;
 
-        battleManager.AddCharacterToRestZoneFromExternal(owner, card);
-
-        if (sourceSlot != null)
-            sourceSlot.ClearCharacterCard();
-
-        battleManager.RefreshAllUIFromExternal();
-
-        bool effectComplete = false;
-        battleManager.RequestOnRestEffectsFromExternal(
-            sourceSlot,
-            card,
-            owner,
-            () => effectComplete = true
-        );
-
-        while (!effectComplete)
-            yield return null;
+        yield return battleManager.SendFieldCharacterToRestZoneRoutine(sourceSlot);
     }
 
     private IEnumerator RequestPostCollabEffectsRoutine(
@@ -752,7 +755,7 @@ public class CollaborationManager : MonoBehaviour
 
         for (int i = 0; i < safeDamage; i++)
         {
-            if (GetEffectiveCharacterHp(targetSlot) <= 0)
+            if (GetEffectiveCharacterHp(targetSlot, GetCurrentBattleLocationSlot()) <= 0)
                 break;
 
             ApplyEffectiveCharacterDamage(targetSlot, 1);
@@ -761,16 +764,16 @@ public class CollaborationManager : MonoBehaviour
             {
                 SetGuestView(
                     targetCard,
-                    GetEffectiveCollabTension(targetSlot),
-                    GetEffectiveCharacterHp(targetSlot)
+                    GetEffectiveCollabTension(targetSlot, GetCurrentBattleLocationSlot()),
+                    GetEffectiveCharacterHp(targetSlot, GetCurrentBattleLocationSlot())
                 );
             }
             else
             {
                 SetHostView(
                     targetCard,
-                    GetEffectiveCollabTension(targetSlot),
-                    GetEffectiveCharacterHp(targetSlot)
+                    GetEffectiveCollabTension(targetSlot, GetCurrentBattleLocationSlot()),
+                    GetEffectiveCharacterHp(targetSlot, GetCurrentBattleLocationSlot())
                 );
             }
 
@@ -789,7 +792,7 @@ public class CollaborationManager : MonoBehaviour
             return;
 
         int hpModifier = battleManager != null
-            ? battleManager.GetSlotCharacterHpModifierFromExternal(targetSlot)
+            ? battleManager.GetSlotCharacterHpModifierFromExternal(targetSlot, GetCurrentBattleLocationSlot())
             : 0;
         int effectiveHp = targetSlot.currentCharacterHp > 0
             ? Mathf.Max(0, targetSlot.currentCharacterHp + hpModifier)
@@ -801,6 +804,27 @@ public class CollaborationManager : MonoBehaviour
             nextBaseHp,
             targetSlot.currentCharacterTension
         );
+    }
+
+    private BattleFieldSlot GetOpposingCollabSlot(BattleFieldSlot slot)
+    {
+        if (currentContext == null || slot == null)
+            return null;
+
+        if (slot == currentContext.attackerSlot)
+            return currentContext.defenderSlot;
+
+        if (slot == currentContext.defenderSlot)
+            return currentContext.attackerSlot;
+
+        return null;
+    }
+
+    private BattleFieldSlot GetCurrentBattleLocationSlot()
+    {
+        return currentContext != null
+            ? currentContext.GetBattleLocationSlot()
+            : null;
     }
 
     private IEnumerator AnimateDefeatFade(RectTransform rect)
