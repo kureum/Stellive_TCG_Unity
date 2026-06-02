@@ -249,7 +249,7 @@ public class DebugCheatManager : MonoBehaviour
             case "audit":
             case "cards":
             case "effectcheck":
-                success = ExecuteCardFunctionAuditCheat(out message);
+                success = ExecuteCardFunctionAuditCheat(parts, out message);
                 break;
 
             case "unbusy":
@@ -337,7 +337,7 @@ public class DebugCheatManager : MonoBehaviour
         );
     }
 
-    private bool ExecuteCardFunctionAuditCheat(out string message)
+    private bool ExecuteCardFunctionAuditCheat(string[] parts, out string message)
     {
         if (cardFunctionAuditManager == null)
             cardFunctionAuditManager = FindAnyObjectByType<CardFunctionAuditManager>();
@@ -345,8 +345,21 @@ public class DebugCheatManager : MonoBehaviour
         if (cardFunctionAuditManager == null)
             cardFunctionAuditManager = gameObject.AddComponent<CardFunctionAuditManager>();
 
-        cardFunctionAuditManager.PrintCardFunctionAudit();
-        message = "카드 기능 현황을 로그로 출력했습니다.";
+        bool printDetail = parts != null &&
+            parts.Length > 1 &&
+            parts[1].Equals("detail", StringComparison.OrdinalIgnoreCase);
+
+        if (printDetail)
+        {
+            cardFunctionAuditManager.PrintEffectAuditDetail();
+            message = "카드 효과 상세 감사 결과를 로그로 출력했습니다.";
+        }
+        else
+        {
+            cardFunctionAuditManager.PrintEffectAuditSummary();
+            message = "카드 효과 감사 요약을 로그로 출력했습니다.";
+        }
+
         return true;
     }
 
@@ -413,6 +426,7 @@ public class DebugCheatManager : MonoBehaviour
             "give me CARD-ID\n" +
             "give enemy CARD-ID\n" +
             "audit\n" +
+            "audit detail\n" +
             "unbusy\n" +
             "actionstate";
     }

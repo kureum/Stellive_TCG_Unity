@@ -114,9 +114,13 @@ public class EffectManager : MonoBehaviour
             case "idol.passive.allowActionOnAppearByTag":
             case "character.rest.gainViewers":
             case "character.rest.loseViewers":
+            case "character.fetchCardsToHandByTags":
+            case "character.active.peekTopAndTakeTaggedContents":
+            case "content.drawThenDiscard":
             case "content.postCollabHealOwnParticipant":
             case "content.removeAllLastingContentsOnBoard":
             case "content.lasting.buffTagTensionAndHp":
+            case "content.peekTopAndTakeTaggedCharacterOrBottom":
                 return true;
 
             default:
@@ -207,6 +211,83 @@ public class EffectManager : MonoBehaviour
             return false;
 
         return battleSlot.owner == characterOwner;
+    }
+
+    public List<EffectTargetCandidate> BuildTargetCandidates(
+        TargetSelector selector,
+        EffectContext context)
+    {
+        EffectContext safeContext = context ?? new EffectContext();
+
+        if (safeContext.battleManager == null)
+            safeContext.battleManager = battleManager;
+
+        if (safeContext.collaborationManager == null && battleManager != null)
+            safeContext.collaborationManager = battleManager.collaborationManager;
+
+        return EffectTargetingService.BuildTargetCandidates(selector, safeContext);
+    }
+
+    public ZoneMoveResult MoveCardBetweenZones(
+        ZoneMoveRequest request,
+        EffectContext context)
+    {
+        EffectContext safeContext = context ?? new EffectContext();
+
+        if (safeContext.battleManager == null)
+            safeContext.battleManager = battleManager;
+
+        if (safeContext.collaborationManager == null && battleManager != null)
+            safeContext.collaborationManager = battleManager.collaborationManager;
+
+        return EffectZoneMoveService.MoveCardBetweenZones(request, safeContext);
+    }
+
+    public List<ZoneMoveResult> MoveCardsBetweenZones(
+        List<ZoneMoveRequest> requests,
+        EffectContext context)
+    {
+        EffectContext safeContext = context ?? new EffectContext();
+
+        if (safeContext.battleManager == null)
+            safeContext.battleManager = battleManager;
+
+        if (safeContext.collaborationManager == null && battleManager != null)
+            safeContext.collaborationManager = battleManager.collaborationManager;
+
+        return EffectZoneMoveService.MoveCardsBetweenZones(requests, safeContext);
+    }
+
+    public void PeekTopSelectToHand(
+        PeekTopSelectRequest request,
+        EffectContext context,
+        Action<PeekTopSelectResult> onComplete)
+    {
+        EffectContext safeContext = context ?? new EffectContext();
+
+        if (safeContext.battleManager == null)
+            safeContext.battleManager = battleManager;
+
+        if (safeContext.collaborationManager == null && battleManager != null)
+            safeContext.collaborationManager = battleManager.collaborationManager;
+
+        EffectDeckPeekService.PeekTopSelectToHand(request, safeContext, onComplete);
+    }
+
+    public void SearchDeckSelectToHand(
+        SearchDeckSelectRequest request,
+        EffectContext context,
+        Action<SearchDeckSelectResult> onComplete)
+    {
+        EffectContext safeContext = context ?? new EffectContext();
+
+        if (safeContext.battleManager == null)
+            safeContext.battleManager = battleManager;
+
+        if (safeContext.collaborationManager == null && battleManager != null)
+            safeContext.collaborationManager = battleManager.collaborationManager;
+
+        EffectDeckPeekService.SearchDeckSelectToHand(request, safeContext, onComplete);
     }
 
     public bool CanIgnoreAppearTurnActionLimit(BattleFieldSlot slot)
@@ -380,6 +461,18 @@ public class EffectManager : MonoBehaviour
         EffectContext context,
         Action onComplete)
     {
+        if (candidate != null && IsSearchDeckSelectToHandEffect(candidate, context))
+        {
+            ResolveSearchDeckSelectToHandEffect(candidate, context, onComplete);
+            return;
+        }
+
+        if (candidate != null && IsPeekTopSelectToHandEffect(candidate, context))
+        {
+            ResolvePeekTopSelectToHandEffect(candidate, context, onComplete);
+            return;
+        }
+
         if (candidate != null && IsDrawThenDiscardEffect(candidate, context))
         {
             ResolveDrawThenDiscardEffect(candidate, context, onComplete);
@@ -427,6 +520,18 @@ public class EffectManager : MonoBehaviour
         if (IsDrawThenDiscardEffect(candidate, context))
         {
             ResolveDrawThenDiscardEffect(candidate, context, null);
+            return true;
+        }
+
+        if (IsSearchDeckSelectToHandEffect(candidate, context))
+        {
+            ResolveSearchDeckSelectToHandEffect(candidate, context, null);
+            return true;
+        }
+
+        if (IsPeekTopSelectToHandEffect(candidate, context))
+        {
+            ResolvePeekTopSelectToHandEffect(candidate, context, null);
             return true;
         }
 
@@ -749,7 +854,7 @@ public class EffectManager : MonoBehaviour
         }
 
         if (candidate.sourceZone == EffectSourceZone.Hand &&
-            !battleManager.MoveHandCardAtIndexToRestZoneFromExternal(candidate.owner, candidate.handIndex, candidate.card))
+            !MoveSourceHandCardToRestZone(candidate, context).success)
         {
             failReason = "효과 발동 카드를 손패에서 휴식존으로 이동할 수 없습니다.";
             return false;
@@ -766,6 +871,27 @@ public class EffectManager : MonoBehaviour
         return true;
     }
 
+    private ZoneMoveResult MoveSourceHandCardToRestZone(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        if (candidate == null)
+            return ZoneMoveResult.Fail(null, "효과 후보 정보가 없습니다.");
+
+        return MoveCardBetweenZones(
+            new ZoneMoveRequest
+            {
+                owner = candidate.owner,
+                fromZone = EffectZone.Hand,
+                toZone = EffectZone.Rest,
+                card = candidate.card,
+                handIndex = candidate.handIndex,
+                reason = ZoneMoveReason.ContentUsed
+            },
+            context
+        );
+    }
+
     private bool IsDrawThenDiscardEffect(
         EffectCandidate candidate,
         EffectContext context)
@@ -778,6 +904,252 @@ public class EffectManager : MonoBehaviour
             : GetPrimaryEffectRef(candidate.card, context != null ? context.timing : candidate.timing);
 
         return effectRef == "content.drawThenDiscard";
+    }
+
+    private bool IsPeekTopSelectToHandEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        if (candidate == null)
+            return false;
+
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetPrimaryEffectRef(candidate.card, context != null ? context.timing : candidate.timing);
+
+        return effectRef == "content.peekTopAndTakeTaggedCharacterOrBottom" ||
+            effectRef == "character.active.peekTopAndTakeTaggedContents";
+    }
+
+    private bool IsSearchDeckSelectToHandEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        if (candidate == null)
+            return false;
+
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetPrimaryEffectRef(candidate.card, context != null ? context.timing : candidate.timing);
+
+        return effectRef == "character.fetchCardsToHandByTags";
+    }
+
+    private void ResolvePeekTopSelectToHandEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action onComplete)
+    {
+        if (!CanActivateEffect(candidate, context, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke();
+            return;
+        }
+
+        int cost = GetActivationCost(candidate.card);
+
+        if (cost > 0 &&
+            !battleManager.TryPayViewerCostFromExternal(candidate.owner, cost))
+        {
+            battleManager?.SetSystemMessageFromExternal("시청자가 부족하여 효과를 발동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        if (candidate.sourceZone == EffectSourceZone.Hand &&
+            !MoveSourceHandCardToRestZone(candidate, context).success)
+        {
+            battleManager?.SetSystemMessageFromExternal("효과 발동 카드를 손패에서 휴식존으로 이동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext safeContext = NormalizeContext(context, candidate.timing);
+        if (safeContext.sourceEffect == null)
+            safeContext.sourceEffect = candidate.sourceEffect;
+
+        PeekTopSelectRequest request = BuildPeekTopSelectRequest(candidate, safeContext);
+        bool consumeAction = ShouldConsumeAction(candidate, context);
+
+        PeekTopSelectToHand(
+            request,
+            safeContext,
+            result =>
+            {
+                string message = $"{candidate.card.name} 발동: {result?.message ?? "덱 공개 처리를 완료했습니다."}";
+
+                if (cost > 0)
+                    message += $"\n시청자 -{cost}";
+
+                CompleteEffectResolution(message, consumeAction, onComplete);
+            }
+        );
+    }
+
+    private void ResolveSearchDeckSelectToHandEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action onComplete)
+    {
+        if (!CanActivateEffect(candidate, context, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke();
+            return;
+        }
+
+        int cost = GetActivationCost(candidate.card);
+
+        if (cost > 0 &&
+            !battleManager.TryPayViewerCostFromExternal(candidate.owner, cost))
+        {
+            battleManager?.SetSystemMessageFromExternal("시청자가 부족하여 효과를 발동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        if (candidate.sourceZone == EffectSourceZone.Hand &&
+            !MoveSourceHandCardToRestZone(candidate, context).success)
+        {
+            battleManager?.SetSystemMessageFromExternal("효과 발동 카드를 손패에서 휴식존으로 이동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext safeContext = NormalizeContext(context, candidate.timing);
+        if (safeContext.sourceEffect == null)
+            safeContext.sourceEffect = candidate.sourceEffect;
+
+        SearchDeckSelectRequest request = BuildSearchDeckSelectRequest(candidate, safeContext);
+        bool consumeAction = ShouldConsumeAction(candidate, context);
+
+        SearchDeckSelectToHand(
+            request,
+            safeContext,
+            result =>
+            {
+                string message = $"{candidate.card.name} 발동: {result?.message ?? "덱 서치를 완료했습니다."}";
+
+                if (cost > 0)
+                    message += $"\n시청자 -{cost}";
+
+                CompleteEffectResolution(message, consumeAction, onComplete);
+            }
+        );
+    }
+
+    private PeekTopSelectRequest BuildPeekTopSelectRequest(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        EffectData effect = context != null && context.sourceEffect != null
+            ? context.sourceEffect
+            : candidate.sourceEffect;
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetEffectRef(effect);
+        EffectCardKind defaultKind = effectRef == "character.active.peekTopAndTakeTaggedContents"
+            ? EffectCardKind.Content
+            : EffectCardKind.Any;
+        CardFilter filter = BuildCardFilterFromParams(effect, defaultKind);
+        int maxTake = ResolveMaxTake(effect);
+
+        return new PeekTopSelectRequest
+        {
+            owner = candidate.owner,
+            revealCount = Mathf.Max(0, GetIntParam(effect, "reveal", 0)),
+            maxTake = Mathf.Min(1, Mathf.Max(1, maxTake)),
+            minTake = 0,
+            filter = filter,
+            restPolicy = PeekRestPolicy.KeepOrderToBottom,
+            reason = ZoneMoveReason.Effect,
+            sourceEffectRef = effectRef,
+            sourceCard = candidate.card,
+            requireSelection = false,
+            selectionCostPerCard = Mathf.Max(0, GetIntParam(effect, "extraCostPer", 0))
+        };
+    }
+
+    private SearchDeckSelectRequest BuildSearchDeckSelectRequest(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        EffectData effect = context != null && context.sourceEffect != null
+            ? context.sourceEffect
+            : candidate.sourceEffect;
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetEffectRef(effect);
+        CardFilter filter = BuildCardFilterFromParams(effect, EffectCardKind.Any);
+        int maxTake = ResolveMaxTake(effect);
+
+        return new SearchDeckSelectRequest
+        {
+            owner = candidate.owner,
+            maxTake = Mathf.Min(1, Mathf.Max(1, maxTake)),
+            minTake = 0,
+            filter = filter,
+            reason = ZoneMoveReason.Effect,
+            sourceEffectRef = effectRef,
+            sourceCard = candidate.card,
+            requireSelection = false,
+            shuffleDeckAfterSearch = false,
+            selectionCostPerCard = Mathf.Max(0, GetIntParam(effect, "extraCostPer", 0))
+        };
+    }
+
+    private CardFilter BuildCardFilterFromParams(
+        EffectData effect,
+        EffectCardKind defaultKind)
+    {
+        string tag = GetStringParam(effect, "tag", "");
+        string kind = GetStringParam(effect, "kind", "");
+        CardFilter filter = new CardFilter
+        {
+            kind = !string.IsNullOrWhiteSpace(kind)
+                ? ParseEffectCardKind(kind)
+                : defaultKind,
+            owner = EffectTargetOwner.Any,
+            faceState = EffectFaceState.Any
+        };
+
+        if (!string.IsNullOrWhiteSpace(tag))
+            filter.anyTags.Add(tag);
+
+        string[] allTags = GetStringListParam(effect, "allTags");
+        if (allTags != null)
+        {
+            foreach (string requiredTag in allTags)
+            {
+                if (!string.IsNullOrWhiteSpace(requiredTag))
+                    filter.allTags.Add(requiredTag);
+            }
+        }
+
+        return filter;
+    }
+
+    private int ResolveMaxTake(EffectData effect)
+    {
+        int max = GetIntParam(effect, "max", 0);
+
+        if (max > 0)
+            return max;
+
+        int maxCount = GetIntParam(effect, "maxCount", 0);
+        return maxCount > 0 ? maxCount : 1;
+    }
+
+    private EffectCardKind ParseEffectCardKind(string kind)
+    {
+        if (string.IsNullOrWhiteSpace(kind))
+            return EffectCardKind.Any;
+
+        if (Enum.TryParse(kind.Trim(), true, out EffectCardKind parsedKind))
+            return parsedKind;
+
+        return EffectCardKind.Any;
     }
 
     private void ResolveDrawThenDiscardEffect(
@@ -803,7 +1175,7 @@ public class EffectManager : MonoBehaviour
         }
 
         if (candidate.sourceZone == EffectSourceZone.Hand &&
-            !battleManager.MoveHandCardAtIndexToRestZoneFromExternal(candidate.owner, candidate.handIndex, candidate.card))
+            !MoveSourceHandCardToRestZone(candidate, context).success)
         {
             battleManager?.SetSystemMessageFromExternal("효과 발동 카드를 손패에서 휴식존으로 이동할 수 없습니다.");
             onComplete?.Invoke();
@@ -907,11 +1279,23 @@ public class EffectManager : MonoBehaviour
                     ? selectedOption.linkedCandidate.handIndex
                     : battleManager.FindHandCardIndexFromExternal(owner, discardCard);
 
-                if (discardCard == null ||
-                    !battleManager.MoveHandCardAtIndexToRestZoneFromExternal(owner, handIndex, discardCard))
+                ZoneMoveResult discardMoveResult = MoveCardBetweenZones(
+                    new ZoneMoveRequest
+                    {
+                        owner = owner,
+                        fromZone = EffectZone.Hand,
+                        toZone = EffectZone.Rest,
+                        card = discardCard,
+                        handIndex = handIndex,
+                        reason = ZoneMoveReason.Cost
+                    },
+                    null
+                );
+
+                if (discardCard == null || !discardMoveResult.success)
                 {
                     CompleteEffectResolution(
-                        $"{accumulatedMessage}\n선택한 카드를 버릴 수 없습니다.",
+                        $"{accumulatedMessage}\n선택한 카드를 버릴 수 없습니다: {discardMoveResult.message}",
                         consumeAction,
                         onComplete
                     );

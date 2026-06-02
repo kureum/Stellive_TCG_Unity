@@ -1943,6 +1943,201 @@ public class BattleManager : MonoBehaviour
         return removed;
     }
 
+    public bool RemoveHandCardAtIndexFromExternal(
+        BattleSlotOwner owner,
+        int handIndex,
+        BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null || card == null)
+            return false;
+
+        if (handIndex < 0 || handIndex >= targetPlayer.hand.Count)
+            return false;
+
+        if (targetPlayer.hand[handIndex] != card)
+            return false;
+
+        targetPlayer.hand.RemoveAt(handIndex);
+
+        if (owner == BattleSlotOwner.My)
+        {
+            if (handIndex == selectedHandCardIndex)
+                ClearSelectedHandCard();
+            else if (handIndex < selectedHandCardIndex)
+                selectedHandCardIndex--;
+        }
+
+        return true;
+    }
+
+    public bool IsCardInRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.restZone == null || card == null)
+            return false;
+
+        return targetPlayer.restZone.Contains(card);
+    }
+
+    public bool RemoveCardFromRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.restZone == null || card == null)
+            return false;
+
+        return targetPlayer.restZone.Remove(card);
+    }
+
+    public void AddCardToMainDeckFromExternal(
+        BattleSlotOwner owner,
+        BaseCardData card,
+        DeckInsertPosition insertPosition,
+        bool shuffleAfterMove)
+    {
+        if (card == null)
+            return;
+
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null)
+            return;
+
+        switch (insertPosition)
+        {
+            case DeckInsertPosition.Top:
+                targetPlayer.mainDeck.Insert(0, card);
+                break;
+            case DeckInsertPosition.Shuffle:
+            case DeckInsertPosition.Bottom:
+            default:
+                targetPlayer.mainDeck.Add(card);
+                break;
+        }
+
+        if (shuffleAfterMove || insertPosition == DeckInsertPosition.Shuffle)
+            Shuffle(targetPlayer.mainDeck);
+    }
+
+    public IReadOnlyList<BaseCardData> PeekTopMainDeckCardsFromExternal(
+        BattleSlotOwner owner,
+        int count)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null)
+            return Array.Empty<BaseCardData>();
+
+        int safeCount = Mathf.Clamp(count, 0, targetPlayer.mainDeck.Count);
+        List<BaseCardData> cards = new List<BaseCardData>();
+
+        for (int i = 0; i < safeCount; i++)
+            cards.Add(targetPlayer.mainDeck[i]);
+
+        return cards;
+    }
+
+    public IReadOnlyList<BaseCardData> GetMainDeckCardsFromExternal(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null)
+            return Array.Empty<BaseCardData>();
+
+        return new List<BaseCardData>(targetPlayer.mainDeck);
+    }
+
+    public bool RemoveCardFromMainDeckFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null || card == null)
+            return false;
+
+        return targetPlayer.mainDeck.Remove(card);
+    }
+
+    public void AddCardToHandFromExternal(BattleSlotOwner owner, BaseCardData card)
+    {
+        if (card == null)
+            return;
+
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.hand == null)
+            return;
+
+        targetPlayer.hand.Add(card);
+    }
+
+    public void MoveMainDeckCardsToBottomFromExternal(
+        BattleSlotOwner owner,
+        IReadOnlyList<BaseCardData> cards,
+        bool reverseOrder)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null || cards == null)
+            return;
+
+        List<BaseCardData> orderedCards = new List<BaseCardData>(cards);
+
+        if (reverseOrder)
+            orderedCards.Reverse();
+
+        foreach (BaseCardData card in orderedCards)
+        {
+            if (card == null)
+                continue;
+
+            if (targetPlayer.mainDeck.Remove(card))
+                targetPlayer.mainDeck.Add(card);
+        }
+    }
+
+    public void ShuffleMainDeckFromExternal(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null)
+            return;
+
+        Shuffle(targetPlayer.mainDeck);
+    }
+
     public bool CanPayViewerCostFromExternal(BattleSlotOwner owner, int cost)
     {
         BattlePlayerRuntime targetPlayer =
