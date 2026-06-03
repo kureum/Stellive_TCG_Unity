@@ -244,7 +244,11 @@ public class DebugCheatManager : MonoBehaviour
         bool success = false;
         string message;
 
-        switch (verb)
+        if (string.Equals(command, "show me the money", StringComparison.OrdinalIgnoreCase))
+        {
+            success = ExecuteShowMeTheMoneyCheat(out message);
+        }
+        else switch (verb)
         {
             case "audit":
             case "cards":
@@ -337,6 +341,24 @@ public class DebugCheatManager : MonoBehaviour
         );
     }
 
+    private bool ExecuteShowMeTheMoneyCheat(out string message)
+    {
+        const int viewerAmount = 100000;
+
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
+        battleManager.ModifyViewersFromExternal(BattleSlotOwner.My, viewerAmount);
+        battleManager.RefreshAllUIFromExternal();
+
+        message = "치트 적용: 내 시청자 +100,000";
+        Debug.Log("[Cheat] show me the money: my viewers +100000");
+        return true;
+    }
+
     private bool ExecuteCardFunctionAuditCheat(string[] parts, out string message)
     {
         if (cardFunctionAuditManager == null)
@@ -425,6 +447,7 @@ public class DebugCheatManager : MonoBehaviour
             "summon enemy 23 CARD-ID\n" +
             "give me CARD-ID\n" +
             "give enemy CARD-ID\n" +
+            "show me the money\n" +
             "audit\n" +
             "audit detail\n" +
             "unbusy\n" +

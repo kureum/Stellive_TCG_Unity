@@ -191,7 +191,7 @@ public static class EffectStatService
             if (delta == null)
                 continue;
 
-            ApplyDelta(context, target, delta, result);
+            ApplyDelta(request, context, target, delta, result);
         }
     }
 
@@ -268,6 +268,7 @@ public static class EffectStatService
     }
 
     private static void ApplyDelta(
+        ModifyCharacterStatsRequest request,
         EffectContext context,
         EffectTargetCandidate target,
         StatDelta delta,
@@ -320,6 +321,15 @@ public static class EffectStatService
             beforeValue = beforeValue,
             afterValue = afterValue
         });
+
+        Debug.Log(
+            $"[ModifyCharacterStats.ApplyDelta] ref={request.sourceEffectRef}, " +
+            $"source={request.sourceCard?.name}, target={target.card?.name}, " +
+            $"stat={delta.statType}, duration={delta.duration}, amount={delta.amount}, " +
+            $"before={beforeValue}, after={afterValue}, " +
+            $"currentHp={slot.currentCharacterHp}, currentMaxHp={slot.currentCharacterMaxHp}, " +
+            $"currentTension={slot.currentCharacterTension}"
+        );
 
         RegisterTemporaryStatModifierIfNeeded(context, target, delta);
     }

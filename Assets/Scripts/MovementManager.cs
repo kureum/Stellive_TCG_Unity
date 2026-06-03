@@ -324,10 +324,12 @@ public class MovementManager : MonoBehaviour
         int currentHp = fromSlot.currentCharacterHp;
         int currentMaxHp = fromSlot.currentCharacterMaxHp;
         int currentTension = fromSlot.currentCharacterTension;
+        bool activeUsedThisTurn = fromSlot.characterActiveUsedThisTurn;
 
         toSlot.SetCharacterCard(card, currentSprite, wasFaceDown, movingCardOwner);
         toSlot.SetCharacterBattleStats(currentHp, currentMaxHp, currentTension);
         toSlot.SetCharacterMovedThisTurn(true);
+        toSlot.SetCharacterActiveUsedThisTurn(activeUsedThisTurn);
 
         fromSlot.ClearCharacterCard();
 

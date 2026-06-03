@@ -49,6 +49,7 @@ public class SearchDeckSelectRequest
     public bool requireSelection;
     public bool shuffleDeckAfterSearch;
     public int selectionCostPerCard;
+    public string questionMessage;
 }
 
 public class SearchDeckSelectResult
@@ -106,9 +107,7 @@ public static class EffectDeckPeekService
 
         if (result.selectableCards.Count == 0)
         {
-            MoveRemainingRevealedCards(request, battleManager, result, result.revealedCards);
-            battleManager.RefreshAllUIFromExternal();
-            Complete(result, false, "선택 가능한 카드가 없습니다.", onComplete);
+            ShowNoSelectablePeekConfirmation(request, context, battleManager, result, onComplete);
             return;
         }
 
@@ -277,6 +276,47 @@ public static class EffectDeckPeekService
             selectedMessage += $"\n추가 시청자 -{request.selectionCostPerCard}";
 
         Complete(result, true, selectedMessage, onComplete);
+    }
+
+    private static void ShowNoSelectablePeekConfirmation(
+        PeekTopSelectRequest request,
+        EffectContext context,
+        BattleManager battleManager,
+        PeekTopSelectResult result,
+        Action<PeekTopSelectResult> onComplete)
+    {
+        CardQuestionPanel panel = battleManager.BattleCardQuestionPanel;
+
+        if (panel == null || panel.IsOpen())
+        {
+            MoveRemainingRevealedCards(request, battleManager, result, result.revealedCards);
+            battleManager.RefreshAllUIFromExternal();
+            Complete(result, false, "공개된 카드 중 선택할 수 있는 카드가 없습니다.", onComplete);
+            return;
+        }
+
+        battleManager.SetSystemMessageFromExternal("대상 카드가 없습니다.");
+
+        List<BaseCardData> revealedCards = new List<BaseCardData>(result.revealedCards);
+        string message = BuildNoSelectableConfirmationMessage(request, result);
+
+        bool opened = panel.TryShowCardsForConfirmation(
+            message,
+            revealedCards,
+            () =>
+            {
+                MoveRemainingRevealedCards(request, battleManager, result, result.revealedCards);
+                battleManager.RefreshAllUIFromExternal();
+                Complete(result, false, "공개된 카드 중 선택할 수 있는 카드가 없습니다.", onComplete);
+            }
+        );
+
+        if (!opened)
+        {
+            MoveRemainingRevealedCards(request, battleManager, result, result.revealedCards);
+            battleManager.RefreshAllUIFromExternal();
+            Complete(result, false, "카드 확인창을 열 수 없어 공개 카드를 처리했습니다.", onComplete);
+        }
     }
 
     private static void ResolveSearchSelection(
@@ -492,10 +532,26 @@ public static class EffectDeckPeekService
             $"공개 {result.revealedCards.Count}장 / 선택 가능 {result.selectableCards.Count}장";
     }
 
+    private static string BuildNoSelectableConfirmationMessage(
+        PeekTopSelectRequest request,
+        PeekTopSelectResult result)
+    {
+        string sourceName = request.sourceCard != null
+            ? request.sourceCard.name
+            : "카드 효과";
+
+        return
+            $"{sourceName}: 공개된 카드 중 선택할 수 있는 카드가 없습니다.\n" +
+            $"공개 {result.revealedCards.Count}장 / 선택 가능 0장";
+    }
+
     private static string BuildSearchQuestionMessage(
         SearchDeckSelectRequest request,
         SearchDeckSelectResult result)
     {
+        if (request != null && !string.IsNullOrWhiteSpace(request.questionMessage))
+            return request.questionMessage;
+
         string sourceName = request.sourceCard != null
             ? request.sourceCard.name
             : "카드 효과";

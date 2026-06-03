@@ -33,10 +33,12 @@ public class CardQuestionPanel : MonoBehaviour
     private Action<BaseCardData> onSelectedAction;
     private Action<CardQuestionOption> onOptionSelectedAction;
     private Action onCancelAction;
+    private Action onConfirmOnlyAction;
     private Action<string> systemMessageAction;
     private Action<BaseCardData, BattleFieldSlot> detailPreviewAction;
     private bool isOpen;
     private bool canCancel;
+    private bool isConfirmOnlyMode;
 
     private void Awake()
     {
@@ -170,6 +172,52 @@ public class CardQuestionPanel : MonoBehaviour
         return true;
     }
 
+    public bool TryShowCardsForConfirmation(
+        string message,
+        List<BaseCardData> cards,
+        Action onConfirm)
+    {
+        if (isOpen)
+            return false;
+
+        if (cards == null || cards.Count == 0)
+        {
+            SendSystemMessage("확인할 카드가 없습니다.");
+            Hide();
+            return false;
+        }
+
+        isOpen = true;
+        canCancel = true;
+        isConfirmOnlyMode = true;
+        selectedQuestionCard = null;
+        selectedQuestionOption = null;
+        selectedQuestionOutline = null;
+        onSelectedAction = null;
+        onOptionSelectedAction = null;
+        onCancelAction = onConfirm;
+        onConfirmOnlyAction = onConfirm;
+
+        if (panelRoot != null)
+            panelRoot.SetActive(true);
+
+        if (requestText != null)
+            requestText.text = message;
+
+        ClearCardItems();
+        SetupButtons();
+
+        foreach (BaseCardData card in cards)
+        {
+            if (card == null)
+                continue;
+
+            CreateCardItem(card);
+        }
+
+        return true;
+    }
+
     public void Hide()
     {
         isOpen = false;
@@ -180,6 +228,8 @@ public class CardQuestionPanel : MonoBehaviour
         onSelectedAction = null;
         onOptionSelectedAction = null;
         onCancelAction = null;
+        onConfirmOnlyAction = null;
+        isConfirmOnlyMode = false;
 
         ClearLinkedSlotHighlights();
         ClearCardItems();
@@ -201,9 +251,9 @@ public class CardQuestionPanel : MonoBehaviour
         if (cancelButton != null)
         {
             cancelButton.onClick.RemoveAllListeners();
-            cancelButton.interactable = canCancel;
+            cancelButton.interactable = canCancel || isConfirmOnlyMode;
 
-            if (canCancel)
+            if (canCancel || isConfirmOnlyMode)
                 cancelButton.onClick.AddListener(Cancel);
         }
     }
@@ -248,9 +298,9 @@ public class CardQuestionPanel : MonoBehaviour
 
         cardItemUI.SetCard(
             card,
-            leftClickAction: selectedCard => SelectQuestionCard(selectedCard, outline),
+            leftClickAction: selectedCard => SelectOrPreviewQuestionCard(selectedCard, outline),
             rightClickAction: null,
-            doubleClickAction: selectedCard => ConfirmCardByDoubleClick(selectedCard, outline)
+            doubleClickAction: selectedCard => SelectOrPreviewQuestionCard(selectedCard, outline)
         );
 
         cardItemUI.SetDragActions(false);
@@ -346,6 +396,19 @@ public class CardQuestionPanel : MonoBehaviour
         SendSystemMessage($"선택 카드: {card.name}");
     }
 
+    private void SelectOrPreviewQuestionCard(BaseCardData card, Outline outline)
+    {
+        if (isConfirmOnlyMode)
+        {
+            ShowDetailPreview(card, null);
+            if (card != null)
+                SendSystemMessage($"공개 카드 확인: {card.name}");
+            return;
+        }
+
+        SelectQuestionCard(card, outline);
+    }
+
     private void ConfirmCardByDoubleClick(BaseCardData card, Outline outline)
     {
         if (card == null)
@@ -390,6 +453,14 @@ public class CardQuestionPanel : MonoBehaviour
 
     private void ConfirmCurrentSelection()
     {
+        if (isConfirmOnlyMode)
+        {
+            Action confirmAction = onConfirmOnlyAction;
+            Hide();
+            confirmAction?.Invoke();
+            return;
+        }
+
         if (selectedQuestionCard == null)
         {
             SendSystemMessage("카드를 선택하세요.");
@@ -411,10 +482,12 @@ public class CardQuestionPanel : MonoBehaviour
 
     private void Cancel()
     {
-        if (!canCancel)
+        if (!canCancel && !isConfirmOnlyMode)
             return;
 
-        Action cancelAction = onCancelAction;
+        Action cancelAction = isConfirmOnlyMode
+            ? onConfirmOnlyAction
+            : onCancelAction;
 
         Hide();
         cancelAction?.Invoke();

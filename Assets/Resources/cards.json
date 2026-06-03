@@ -21,7 +21,7 @@
       "active": [
         {
           "id": "a1",
-          "timing": "Active",
+          "timing": "IdolActive",
           "description": "[턴당 1회] 휴식 존의 #리코 캐릭터를 1장 자신 방송 카드 위에 출연시킨다. 그 후 해당 캐릭터 카드의 요구 코스트 절반만큼의 시청자를 상대에게 넘긴다.",
           "ref": "idol.active.callFromRestByTagThenDonateViewers",
           "params": {
@@ -74,8 +74,8 @@
       "active": [
         {
           "id": "a1",
-          "timing": "Active",
-          "description": "[턴당 1회]자신 채널의 캐릭터 1체의 체력을 즉시 완전 회복한다.",
+          "timing": "IdolActive",
+          "description": "[턴당 1회]자신 방송의 캐릭터 1체의 체력을 즉시 완전 회복한다.",
           "ref": "idol.active.fullHealOneControlled",
           "params": {
             "oncePerTurn": true
@@ -115,7 +115,7 @@
       "active": [
         {
           "id": "a1",
-          "timing": "Active",
+          "timing": "IdolActive",
           "description": "[턴당 1회] 덱에서 #타비 카드 한 장을 패에 더한다. 혹은 자신 방송의 #뿡댕이 캐릭터 한 장을 퇴장시키고, #타비 카드와 #뿡댕이 카드를 한 장씩 패에 더할 수 있다.",
           "ref": "idol.active.fetchTabiOrRestBoongAndFetchBoth",
           "params": {
@@ -324,7 +324,7 @@
       "effects": [
         {
           "id": "c1",
-          "timing": "Active",
+          "timing": "CharacterActive",
           "description": "[한 턴에 한번]이 캐릭터와 인접한 #타비 캐릭터의 체력을 2 감소시키고 영구적으로 합방텐션을 2 증가시킨다.",
           "ref": "character.active.adjacentHpDownAndTensionUpForTag",
           "params": {
@@ -474,13 +474,16 @@
       "effects": [
         {
           "id": "c1",
-          "timing": "Active",
+          "timing": "CharacterActive",
           "description": "[한 턴에 한번]방송 중인 #린 캐릭터 1체의 합방 텐션을 영구적으로 2 감소시키고, 체력을 영구적으로 4 증가시킵니다.",
           "ref": "character.active.modifyTaggedOnBoard",
           "params": {
             "tag": "#린",
+            "targetOwner": "Any",
+            "targetScope": "FieldCharacters",
             "tensionDelta": -2,
             "hpMaxDelta": 4,
+            "max": 1,
             "oncePerTurn": true
           }
         }
@@ -635,7 +638,7 @@
       "effects": [
         {
           "id": "c1",
-          "timing": "Content",
+          "timing": "CharacterActive",
           "description": "[한 턴에 한번] 덱에서 카드 5장을 뒤집습니다. 그 중, #린, #말버릇 콘텐츠 카드가 있는 경우 1장당 1000의 시청자를 추가로 지불하고 패에 더할 수 있습니다. 확인한 카드들은 원하는 순서로 덱의 가장 아래에 넣는다.",
           "ref": "character.active.peekTopAndTakeTaggedContents",
           "params": {
@@ -702,7 +705,7 @@
       "effects": [
         {
           "id": "c1",
-          "timing": "Content",
+          "timing": "CharacterActive",
           "description": "[한 턴에 한번]효과 발동 시에, 이 카드와 인접해 있는 모든 상대 캐릭터의 합방텐션을 이번 턴 동안 1 감소시킵니다.",
           "ref": "character.active.adjacentOppCollabTensionDeltaThisTurn",
           "params": {
@@ -734,7 +737,7 @@
       "effects": [
         {
           "id": "c1",
-          "timing": "Content",
+          "timing": "CharacterActive",
           "description": "[한 턴에 한번]패를 한장 버린다. 덱에서 #음악 콘텐츠 카드 한장을 패에 넣는다",
           "ref": "character.active.discardOneThenFetchContentByTagFromDeck",
           "params": {
@@ -766,7 +769,7 @@
       "effects": [
         {
           "id": "c1",
-          "timing": "Content",
+          "timing": "CharacterActive",
           "description": "[한 턴에 한번] 상대 방송에 출연 중인 캐릭터 1체를 이 카드가 출연 중인 방송으로 이동시킵니다.",
           "ref": "character.active.forceBattleTargetAnywhere",
           "params": {

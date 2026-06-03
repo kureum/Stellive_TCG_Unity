@@ -45,6 +45,9 @@ public class EffectParams
     public int hpMaxDelta;
     public int max;
     public int maxCount;
+    public int count;
+    public int discardCount;
+    public int searchCount;
     public int range;
     public int reveal;
     public int extraCostPer;
@@ -53,9 +56,15 @@ public class EffectParams
     public string tabiTag;
     public string bunnyTag;
     public string kind;
+    public string targetOwner;
+    public string ownerScope;
+    public string targetScope;
+    public string scope;
+    public string deckInsertPosition;
     public string[] allTags;
     public bool oncePerTurn;
     public bool faceUp;
+    public bool shuffleDeckAfterMove;
 }
 
 [Serializable]

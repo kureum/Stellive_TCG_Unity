@@ -378,6 +378,8 @@ private string GetKoreanTiming(string timing)
             return "상시";
 
         case "Active":
+        case "IdolActive":
+        case "CharacterActive":
             return "액티브";
 
         case "Content":
@@ -387,6 +389,7 @@ private string GetKoreanTiming(string timing)
             return "출연";
 
         case "Rest":
+        case "OnRest":
             return "휴식";
 
         case "Always":

@@ -3,12 +3,19 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
+public enum CollaborationStartReason
+{
+    Normal,
+    ForceBattleTargetAnywhere
+}
+
 public class CollaborationContext
 {
     public BattleFieldSlot attackerOriginalSlot;
     public BattleFieldSlot attackerSlot;
     public BattleFieldSlot defenderSlot;
     public BattleFieldSlot battleLocationSlot;
+    public CollaborationStartReason startReason = CollaborationStartReason.Normal;
     public BattleSlotOwner attackerOwner;
     public BattleSlotOwner defenderOwner;
     public bool attackerWasFaceDownAtCollabStart;
@@ -101,6 +108,22 @@ public class CollaborationManager : MonoBehaviour
 
     public void StartCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
     {
+        StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.Normal);
+    }
+
+    public void StartForcedIncomingCollaboration(
+        BattleFieldSlot forcedAttackerSlot,
+        BattleFieldSlot defenderSlot,
+        CollaborationStartReason reason = CollaborationStartReason.ForceBattleTargetAnywhere)
+    {
+        StartCollaborationInternal(forcedAttackerSlot, defenderSlot, reason);
+    }
+
+    private void StartCollaborationInternal(
+        BattleFieldSlot guestSlot,
+        BattleFieldSlot hostSlot,
+        CollaborationStartReason reason)
+    {
         if (battleManager == null)
             return;
 
@@ -117,6 +140,9 @@ public class CollaborationManager : MonoBehaviour
         currentHostCard = hostSlot.characterCard;
         pendingGuestSlot = guestSlot;
         pendingHostSlot = hostSlot;
+        pendingContext = CreateCollaborationContext(pendingGuestSlot, pendingHostSlot, reason);
+
+        LogCollaborationStart(pendingContext);
 
         if (!HasHiddenParticipant(guestSlot, hostSlot))
             ShowPanelBeforeResult(guestSlot, hostSlot);
@@ -179,7 +205,10 @@ public class CollaborationManager : MonoBehaviour
             return;
         }
 
-        pendingContext = CreateCollaborationContext(pendingGuestSlot, pendingHostSlot);
+        pendingContext = pendingContext ?? CreateCollaborationContext(
+            pendingGuestSlot,
+            pendingHostSlot,
+            CollaborationStartReason.Normal);
 
         if (!RevealFaceDownParticipants(pendingGuestSlot, pendingHostSlot))
         {
@@ -287,13 +316,15 @@ public class CollaborationManager : MonoBehaviour
 
     private CollaborationContext CreateCollaborationContext(
         BattleFieldSlot guestSlot,
-        BattleFieldSlot hostSlot)
+        BattleFieldSlot hostSlot,
+        CollaborationStartReason reason)
     {
         CollaborationContext context = new CollaborationContext();
         context.attackerOriginalSlot = guestSlot;
         context.attackerSlot = guestSlot;
         context.defenderSlot = hostSlot;
         context.battleLocationSlot = hostSlot;
+        context.startReason = reason;
         context.attackerOwner = guestSlot != null ? guestSlot.characterOwner : BattleSlotOwner.My;
         context.defenderOwner = hostSlot != null ? hostSlot.characterOwner : BattleSlotOwner.Enemy;
         context.attackerWasFaceDownAtCollabStart =
@@ -306,6 +337,27 @@ public class CollaborationManager : MonoBehaviour
             context.defenderWasFaceDownAtCollabStart;
 
         return context;
+    }
+
+    private void LogCollaborationStart(CollaborationContext context)
+    {
+        if (context == null)
+            return;
+
+        string attackerName = context.attackerSlot != null && context.attackerSlot.characterCard != null
+            ? context.attackerSlot.characterCard.name
+            : "none";
+        string defenderName = context.defenderSlot != null && context.defenderSlot.characterCard != null
+            ? context.defenderSlot.characterCard.name
+            : "none";
+
+        Debug.Log(
+            $"[CollaborationStart] reason={context.startReason}, " +
+            $"forcedAttacker={attackerName}, attackerOwner={context.attackerOwner}, " +
+            $"attackerOriginalSlot={FormatSlot(context.attackerOriginalSlot)}, " +
+            $"defender={defenderName}, defenderOwner={context.defenderOwner}, " +
+            $"defenderSlot={FormatSlot(context.defenderSlot)}, " +
+            $"battleLocationSlot={FormatSlot(context.GetBattleLocationSlot())}");
     }
 
     private bool RevealFaceDownCharacter(BattleFieldSlot slot)
@@ -442,7 +494,10 @@ public class CollaborationManager : MonoBehaviour
         if (guestDefeated)
             yield return AnimateDefeatFade(guestRect);
 
-        string resultMessage = BuildResultMessage(hostDefeated, guestDefeated);
+        string resultMessage = BuildResultMessage(
+            hostDefeated,
+            guestDefeated,
+            context != null ? context.startReason : CollaborationStartReason.Normal);
 
         if (!guestDefeated)
             ResetUiAlpha(guestRect);
@@ -466,7 +521,10 @@ public class CollaborationManager : MonoBehaviour
             guestFinalHp = guestFinalHp,
             hostFinalHp = hostFinalHp,
             hostDefeated = hostDefeated,
-            guestDefeated = guestDefeated
+            guestDefeated = guestDefeated,
+            startReason = context != null
+                ? context.startReason
+                : CollaborationStartReason.Normal
         };
 
         yield return WaitForResultPanelAndHide();
@@ -542,10 +600,28 @@ public class CollaborationManager : MonoBehaviour
         public int hostFinalHp;
         public bool hostDefeated;
         public bool guestDefeated;
+        public CollaborationStartReason startReason = CollaborationStartReason.Normal;
     }
 
-    private string BuildResultMessage(bool hostDefeated, bool guestDefeated)
+    private string BuildResultMessage(
+        bool hostDefeated,
+        bool guestDefeated,
+        CollaborationStartReason reason = CollaborationStartReason.Normal)
     {
+        if (reason == CollaborationStartReason.ForceBattleTargetAnywhere)
+        {
+            if (hostDefeated && !guestDefeated)
+                return "내 카드가 졌습니다.";
+
+            if (!hostDefeated && guestDefeated)
+                return "내 카드가 이겼습니다.";
+
+            if (hostDefeated && guestDefeated)
+                return "양쪽 캐릭터가 모두 퇴장했습니다.";
+
+            return "합방이 종료되었습니다.";
+        }
+
         if (hostDefeated && !guestDefeated)
             return "내 카드가 이겼습니다.";
 
@@ -562,6 +638,12 @@ public class CollaborationManager : MonoBehaviour
     {
         if (data == null)
             yield break;
+
+        if (data.startReason == CollaborationStartReason.ForceBattleTargetAnywhere)
+        {
+            yield return ResolveForcedIncomingCollaborationResultRoutine(data);
+            yield break;
+        }
 
         if (data.hostDefeated)
         {
@@ -598,12 +680,71 @@ public class CollaborationManager : MonoBehaviour
         data.guestSlot.SetCharacterMovedThisTurn(true);
     }
 
+    private IEnumerator ResolveForcedIncomingCollaborationResultRoutine(
+        CollaborationResolutionData data)
+    {
+        if (data == null)
+            yield break;
+
+        Debug.Log(
+            $"[CollaborationResult] reason={data.startReason}, " +
+            $"forcedAttacker={data.guestCard?.name}, attackerOwner={data.guestOwner}, " +
+            $"attackerOriginalSlot={FormatSlot(data.guestSlot)}, " +
+            $"defender={data.hostCard?.name}, defenderOwner={data.hostOwner}, " +
+            $"defenderSlot={FormatSlot(data.hostSlot)}, " +
+            $"battleLocationSlot={FormatSlot(GetCollaborationBattleLocationSlot(data))}, " +
+            $"attackerDefeated={data.guestDefeated}, defenderDefeated={data.hostDefeated}, " +
+            "resultRule=defender stays on win; surviving forced attacker moves to defender slot only if defender is defeated.");
+
+        if (data.hostDefeated)
+        {
+            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(
+                data.hostSlot,
+                GetCollaborationBattleLocationSlot(data)
+            );
+
+            if (!data.guestDefeated)
+            {
+                yield return AnimateWinnerMoveToTargetSlot(data);
+                MoveGuestToHostSlot(data);
+            }
+            else
+            {
+                yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(
+                    data.guestSlot,
+                    GetCollaborationBattleLocationSlot(data)
+                );
+            }
+
+            yield break;
+        }
+
+        if (data.guestDefeated)
+        {
+            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(
+                data.guestSlot,
+                GetCollaborationBattleLocationSlot(data)
+            );
+            yield break;
+        }
+
+        // Forced incoming collaboration does not spend or mark normal movement when both survive.
+    }
+
     private BattleFieldSlot GetCollaborationBattleLocationSlot(CollaborationResolutionData data)
     {
         if (data == null)
             return null;
 
         return data.hostSlot;
+    }
+
+    private string FormatSlot(BattleFieldSlot slot)
+    {
+        if (slot == null)
+            return "null";
+
+        return $"({slot.owner}, x={slot.x}, y={slot.y})";
     }
 
     private bool ShouldDeferZeroHpDuringCollab(BattleFieldSlot slot)
@@ -650,6 +791,7 @@ public class CollaborationManager : MonoBehaviour
 
         bool guestWasFaceDown = data.guestSlot.isCharacterFaceDown;
         int guestMaxHp = data.guestSlot.currentCharacterMaxHp;
+        bool guestActiveUsedThisTurn = data.guestSlot.characterActiveUsedThisTurn;
 
         data.hostSlot.SetCharacterCard(
             data.guestCard,
@@ -665,6 +807,7 @@ public class CollaborationManager : MonoBehaviour
         );
 
         data.hostSlot.SetCharacterMovedThisTurn(true);
+        data.hostSlot.SetCharacterActiveUsedThisTurn(guestActiveUsedThisTurn);
         data.guestSlot.ClearCharacterCard();
     }
 

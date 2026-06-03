@@ -177,6 +177,9 @@ public class BattleManager : MonoBehaviour
     private bool isVictoryTiebreakerActive = false;
     private bool myActionUsedThisActionTurn = false;
     private bool isEndActionButtonFlow = false;
+    private bool hasUsedMyIdolActiveThisTurn = false;
+    private bool hasUsedEnemyIdolActiveThisTurn = false;
+    private float lastIdolClickTime = -10f;
     private readonly HashSet<BattleFieldSlot> resolvingRestSlots = new HashSet<BattleFieldSlot>();
 
     private bool enemyHasSummonedFaceDownThisTurn = false;
@@ -643,6 +646,7 @@ public class BattleManager : MonoBehaviour
                 OnDragFieldCharacter,
                 OnEndDragFieldCharacter
             );
+            slot.SetCharacterDoubleClickAction(OnDoubleClickCharacterCardOnField);
 
             slot.ClearAllCards();
             slot.SetSetupButtonVisible(false);
@@ -663,6 +667,7 @@ public class BattleManager : MonoBehaviour
                 OnDragFieldCharacter,
                 OnEndDragFieldCharacter
             );
+            slot.SetCharacterDoubleClickAction(OnDoubleClickCharacterCardOnField);
 
             slot.ClearAllCards();
             slot.SetSetupButtonVisible(false);
@@ -2038,6 +2043,19 @@ public class BattleManager : MonoBehaviour
         return targetPlayer.restZone.Contains(card);
     }
 
+    public IReadOnlyList<BaseCardData> GetRestZoneCardsFromExternal(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.restZone == null)
+            return Array.Empty<BaseCardData>();
+
+        return new List<BaseCardData>(targetPlayer.restZone);
+    }
+
     public bool RemoveCardFromRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
         BattlePlayerRuntime targetPlayer =
@@ -2585,10 +2603,12 @@ public class BattleManager : MonoBehaviour
         if (effect == null)
             return "";
 
-        if (!string.IsNullOrEmpty(effect.refName))
-            return effect.refName;
+        if (!string.IsNullOrWhiteSpace(effect.@ref))
+            return effect.@ref;
 
-        return effect.@ref;
+        return !string.IsNullOrWhiteSpace(effect.refName)
+            ? effect.refName
+            : "";
     }
 
     private bool CardHasHashtag(BaseCardData card, string tag)
@@ -3053,12 +3073,34 @@ public class BattleManager : MonoBehaviour
     private void ResetTurnLimitedFlags()
     {
         enemyHasSummonedFaceDownThisTurn = false;
+        hasUsedMyIdolActiveThisTurn = false;
+        hasUsedEnemyIdolActiveThisTurn = false;
 
         if (summonManager != null)
             summonManager.ResetTurnLimitedFlagsForNewTurn();
 
         if (movementManager != null)
             movementManager.ResetAllCharacterMoveFlagsForNewTurn();
+
+        ResetAllCharacterActiveFlagsForNewTurn();
+    }
+
+    private void ResetAllCharacterActiveFlagsForNewTurn()
+    {
+        ResetCharacterActiveFlags(myBattleSlots);
+        ResetCharacterActiveFlags(enemyBattleSlots);
+    }
+
+    private void ResetCharacterActiveFlags(IEnumerable<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot != null)
+                slot.SetCharacterActiveUsedThisTurn(false);
+        }
     }
 
     private int RemoveLastingContentsFromSlots(IEnumerable<BattleFieldSlot> slots)
@@ -4031,6 +4073,415 @@ public class BattleManager : MonoBehaviour
         }
     }
 
+    private void OnDoubleClickCharacterCardOnField(BattleFieldSlot slot, BaseCardData card)
+    {
+        RequestCharacterActiveFromSlot(slot);
+    }
+
+    public void RequestCharacterActiveFromSlot(BattleFieldSlot slot)
+    {
+        if (!CanUseCharacterActive(slot, out string failReason))
+        {
+            SetSystemMessage(failReason);
+            return;
+        }
+
+        BaseCardData card = slot.characterCard;
+        string message = $"{card.name}의 액티브 효과를 발동하시겠습니까?";
+
+        if (questionPanel == null ||
+            !questionPanel.TryShowYesNoQuestion(
+                message,
+                () => ConfirmCharacterActive(slot),
+                () => SetSystemMessage($"{card.name} 액티브 효과 발동을 취소했습니다."),
+                () => SetSystemMessage($"{card.name} 액티브 효과 발동을 취소했습니다.")
+            ))
+        {
+            SetSystemMessage("액티브 효과 질문창을 열 수 없습니다.");
+        }
+    }
+
+    private bool CanUseCharacterActive(BattleFieldSlot slot, out string failReason)
+    {
+        failReason = "";
+
+        if (slot == null || slot.characterCard == null)
+        {
+            failReason = "효과를 발동할 캐릭터가 없습니다.";
+            return false;
+        }
+
+        if (slot.characterOwner != BattleSlotOwner.My)
+        {
+            failReason = "상대 캐릭터의 효과는 발동할 수 없습니다.";
+            return false;
+        }
+
+        if (slot.isCharacterFaceDown)
+        {
+            failReason = "뒷면 캐릭터는 효과를 발동할 수 없습니다.";
+            return false;
+        }
+
+        if (!HasActiveEffect(slot.characterCard))
+        {
+            failReason = "발동 가능한 액티브 효과가 없습니다.";
+            return false;
+        }
+
+        if (slot.characterActiveUsedThisTurn)
+        {
+            failReason = "이미 이번 턴에 액티브 효과를 사용했습니다.";
+            return false;
+        }
+
+        if (!CanUseMyAction(out failReason))
+            return false;
+
+        int cost = GetActiveCost(slot.characterCard);
+        if (!CanPayViewerCostFromExternal(BattleSlotOwner.My, cost))
+        {
+            failReason = "시청자가 부족합니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ConfirmCharacterActive(BattleFieldSlot slot)
+    {
+        if (!CanUseCharacterActive(slot, out string failReason))
+        {
+            SetSystemMessage(failReason);
+            return;
+        }
+
+        bool waitForEffectCompletion = IsCharacterActiveEffectRef(
+            slot.characterCard,
+            "character.active.discardOneThenFetchContentByTagFromDeck") ||
+            IsCharacterActiveEffectRef(
+                slot.characterCard,
+                "character.active.forceBattleTargetAnywhere") ||
+            IsCharacterActiveEffectRef(
+                slot.characterCard,
+                "character.active.modifyTaggedOnBoard");
+
+        EffectActivationRequest request = new EffectActivationRequest
+        {
+            sourceCard = slot.characterCard,
+            owner = BattleSlotOwner.My,
+            timing = EffectTiming.CharacterActive,
+            sourceSlot = slot,
+            targetSlot = null,
+            handIndex = -1,
+            consumeAction = true,
+            onComplete = waitForEffectCompletion
+                ? (Action<bool>)(success =>
+                {
+                    if (!success)
+                    {
+                        RefreshAllUI();
+                        return;
+                    }
+
+                    slot.SetCharacterActiveUsedThisTurn(true);
+                    RefreshAllUI();
+                })
+                : null
+        };
+
+        if (effectManager != null && effectManager.TryActivateEffect(request))
+        {
+            if (!waitForEffectCompletion)
+            {
+                slot.SetCharacterActiveUsedThisTurn(true);
+                RefreshAllUI();
+            }
+
+            return;
+        }
+
+        SetSystemMessage("효과를 발동할 수 없습니다.");
+    }
+
+    public void RequestIdolActive(BattleSlotOwner owner)
+    {
+        if (!CanUseIdolActive(owner, out string failReason))
+        {
+            SetSystemMessage(failReason);
+            return;
+        }
+
+        BaseCardData idolCard = GetIdolCardFromExternal(owner);
+        string message = $"{idolCard.name}의 액티브 효과를 발동하시겠습니까?";
+
+        if (questionPanel == null ||
+            !questionPanel.TryShowYesNoQuestion(
+                message,
+                () => ConfirmIdolActive(owner),
+                () => SetSystemMessage($"{idolCard.name} 액티브 효과 발동을 취소했습니다."),
+                () => SetSystemMessage($"{idolCard.name} 액티브 효과 발동을 취소했습니다.")
+            ))
+        {
+            SetSystemMessage("아이돌 액티브 효과 질문창을 열 수 없습니다.");
+        }
+    }
+
+    private bool CanUseIdolActive(BattleSlotOwner owner, out string failReason)
+    {
+        failReason = "";
+
+        if (owner != BattleSlotOwner.My)
+        {
+            failReason = "상대 아이돌의 효과는 발동할 수 없습니다.";
+            return false;
+        }
+
+        BaseCardData idolCard = GetIdolCardFromExternal(owner);
+
+        if (idolCard == null)
+        {
+            failReason = "아이돌 카드가 없습니다.";
+            return false;
+        }
+
+        if (!HasActiveEffect(idolCard))
+        {
+            failReason = "발동 가능한 아이돌 액티브 효과가 없습니다.";
+            return false;
+        }
+
+        if (HasUsedIdolActiveThisTurn(owner))
+        {
+            failReason = "이미 이번 턴에 아이돌 액티브 효과를 사용했습니다.";
+            return false;
+        }
+
+        if (!CanUseMyAction(out failReason))
+            return false;
+
+        int cost = GetActiveCost(idolCard);
+        if (!CanPayViewerCostFromExternal(owner, cost))
+        {
+            failReason = "시청자가 부족합니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private void ConfirmIdolActive(BattleSlotOwner owner)
+    {
+        if (!CanUseIdolActive(owner, out string failReason))
+        {
+            SetSystemMessage(failReason);
+            return;
+        }
+
+        BaseCardData idolCard = GetIdolCardFromExternal(owner);
+        bool waitForEffectCompletion = IsIdolActiveEffectRef(
+            idolCard,
+            "idol.active.fullHealOneControlled");
+
+        EffectActivationRequest request = new EffectActivationRequest
+        {
+            sourceCard = idolCard,
+            owner = owner,
+            timing = EffectTiming.IdolActive,
+            sourceSlot = null,
+            targetSlot = null,
+            handIndex = -1,
+            consumeAction = true,
+            onComplete = waitForEffectCompletion
+                ? (Action<bool>)(success =>
+                {
+                    if (!success)
+                    {
+                        RefreshAllUI();
+                        return;
+                    }
+
+                    SetIdolActiveUsedThisTurn(owner, true);
+                    RefreshAllUI();
+                })
+                : null
+        };
+
+        if (effectManager != null && effectManager.TryActivateEffect(request))
+        {
+            if (!waitForEffectCompletion)
+            {
+                SetIdolActiveUsedThisTurn(owner, true);
+                RefreshAllUI();
+            }
+
+            return;
+        }
+
+        SetSystemMessage("효과를 발동할 수 없습니다.");
+    }
+
+    private bool HasUsedIdolActiveThisTurn(BattleSlotOwner owner)
+    {
+        return owner == BattleSlotOwner.My
+            ? hasUsedMyIdolActiveThisTurn
+            : hasUsedEnemyIdolActiveThisTurn;
+    }
+
+    private void SetIdolActiveUsedThisTurn(BattleSlotOwner owner, bool value)
+    {
+        if (owner == BattleSlotOwner.My)
+            hasUsedMyIdolActiveThisTurn = value;
+        else
+            hasUsedEnemyIdolActiveThisTurn = value;
+    }
+
+    private bool HasActiveEffect(BaseCardData card)
+    {
+        if (card is CharacterCardData character)
+            return HasEffectAtTiming(character.effects, EffectTiming.CharacterActive);
+
+        if (card is IdolCardData idol)
+            return idol.active != null && idol.active.Length > 0 && HasAnyEffectRef(idol.active);
+
+        return false;
+    }
+
+    private bool HasEffectAtTiming(EffectData[] effects, EffectTiming timing)
+    {
+        if (effects == null)
+            return false;
+
+        foreach (EffectData effect in effects)
+        {
+            if (effect == null || string.IsNullOrEmpty(effect.timing))
+                continue;
+
+            if (TryParseEffectTimingForBattleManager(effect.timing, out EffectTiming effectTiming) &&
+                effectTiming == timing &&
+                !string.IsNullOrWhiteSpace(GetEffectRefForBattleManager(effect)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsCharacterActiveEffectRef(BaseCardData card, string effectRef)
+    {
+        if (!(card is CharacterCardData character) ||
+            character.effects == null ||
+            string.IsNullOrWhiteSpace(effectRef))
+        {
+            return false;
+        }
+
+        foreach (EffectData effect in character.effects)
+        {
+            if (effect == null ||
+                !TryParseEffectTimingForBattleManager(effect.timing, out EffectTiming timing) ||
+                timing != EffectTiming.CharacterActive)
+            {
+                continue;
+            }
+
+            string refId = !string.IsNullOrWhiteSpace(effect.@ref)
+                ? effect.@ref
+                : effect.refName;
+
+            if (string.Equals(refId, effectRef, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool IsIdolActiveEffectRef(BaseCardData card, string effectRef)
+    {
+        if (!(card is IdolCardData idol) ||
+            idol.active == null ||
+            string.IsNullOrWhiteSpace(effectRef))
+        {
+            return false;
+        }
+
+        foreach (EffectData effect in idol.active)
+        {
+            if (effect == null ||
+                !TryParseEffectTimingForBattleManager(effect.timing, out EffectTiming timing) ||
+                timing != EffectTiming.IdolActive)
+            {
+                continue;
+            }
+
+            string refId = !string.IsNullOrWhiteSpace(effect.@ref)
+                ? effect.@ref
+                : effect.refName;
+
+            if (string.Equals(refId, effectRef, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool HasAnyEffectRef(EffectData[] effects)
+    {
+        if (effects == null)
+            return false;
+
+        foreach (EffectData effect in effects)
+        {
+            if (!string.IsNullOrWhiteSpace(GetEffectRefForBattleManager(effect)))
+                return true;
+        }
+
+        return false;
+    }
+
+    private int GetActiveCost(BaseCardData card)
+    {
+        if (card is CharacterCardData character)
+            return Mathf.Max(0, character.activeCost);
+
+        if (card is IdolCardData idol)
+            return Mathf.Max(0, idol.activeCost);
+
+        return 0;
+    }
+
+    private bool TryParseEffectTimingForBattleManager(string value, out EffectTiming timing)
+    {
+        timing = EffectTiming.None;
+
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        string normalized = value
+            .Trim()
+            .Replace("_", "")
+            .Replace("-", "")
+            .Replace(" ", "")
+            .ToLowerInvariant();
+
+        switch (normalized)
+        {
+            case "idolactive":
+                timing = EffectTiming.IdolActive;
+                return true;
+
+            case "characteractive":
+            case "characteract":
+            case "active":
+                timing = EffectTiming.CharacterActive;
+                return true;
+
+            default:
+                return Enum.TryParse(value, true, out timing);
+        }
+    }
+
     private void OnClickContentCardOnField(BattleFieldSlot slot, BaseCardData card)
     {
         string inputFailReason;
@@ -4419,7 +4870,14 @@ public class BattleManager : MonoBehaviour
     {
         if (myPlayer == null || enemyPlayer == null) return;
 
-        SetZoneCardVisual(myIdolSlot, myPlayer.idolCard, false, cardToSelect => SelectCard(cardToSelect), false);
+        SetZoneCardVisual(
+            myIdolSlot,
+            myPlayer.idolCard,
+            false,
+            cardToSelect => SelectCard(cardToSelect),
+            false,
+            cardToActivate => RequestIdolActive(BattleSlotOwner.My)
+        );
         SetZoneCardVisual(enemyIdolSlot, enemyPlayer.idolCard, false, cardToSelect => SelectCard(cardToSelect), true);
 
         SetZoneCardVisual(myDeckSlot, null, true);
@@ -5530,7 +5988,8 @@ public class BattleManager : MonoBehaviour
         BaseCardData card,
         bool faceDown,
         Action<BaseCardData> clickAction = null,
-        bool rotate180 = false)
+        bool rotate180 = false,
+        Action<BaseCardData> doubleClickAction = null)
     {
         if (zone == null) return;
 
@@ -5557,7 +6016,7 @@ public class BattleManager : MonoBehaviour
 
         if (!faceDown && card != null && clickAction != null)
         {
-            SetRuntimeImageButton(cardImage, card, clickAction);
+            SetRuntimeImageButton(cardImage, card, clickAction, doubleClickAction);
         }
         else
         {
@@ -5601,7 +6060,8 @@ public class BattleManager : MonoBehaviour
     private void SetRuntimeImageButton(
         Image image,
         BaseCardData card,
-        Action<BaseCardData> clickAction)
+        Action<BaseCardData> clickAction,
+        Action<BaseCardData> doubleClickAction = null)
     {
         if (image == null)
             return;
@@ -5620,7 +6080,24 @@ public class BattleManager : MonoBehaviour
             image.raycastTarget = true;
             button.enabled = true;
             button.interactable = true;
-            button.onClick.AddListener(() => clickAction(capturedCard));
+            button.onClick.AddListener(() =>
+            {
+                if (doubleClickAction == null)
+                {
+                    clickAction(capturedCard);
+                    return;
+                }
+
+                if (Time.unscaledTime - lastIdolClickTime <= 0.32f)
+                {
+                    lastIdolClickTime = -10f;
+                    doubleClickAction(capturedCard);
+                    return;
+                }
+
+                lastIdolClickTime = Time.unscaledTime;
+                clickAction(capturedCard);
+            });
         }
         else
         {

@@ -48,6 +48,7 @@ public class BattleFieldSlot : MonoBehaviour,
     [Header("Runtime States")]
     public bool isCharacterFaceDown = false;
     public bool characterMovedThisTurn { get; private set; }
+    public bool characterActiveUsedThisTurn { get; private set; }
     public BattleSlotOwner characterOwner { get; private set; }
     public BattleSlotOwner contentOwner { get; private set; }
     public int faceDownSummonedTurn = -1;
@@ -58,6 +59,7 @@ public class BattleFieldSlot : MonoBehaviour,
     private Action<BattleFieldSlot> onSetupButtonClick;
     private Action<BattleFieldSlot, BaseCardData> onBroadcastCardClick;
     private Action<BattleFieldSlot, BaseCardData> onCharacterCardClick;
+    private Action<BattleFieldSlot, BaseCardData> onCharacterCardDoubleClick;
     private Action<BattleFieldSlot, BaseCardData> onContentCardClick;
 
     private Action<BattleFieldSlot, PointerEventData> onCardDropped;
@@ -68,6 +70,8 @@ public class BattleFieldSlot : MonoBehaviour,
 
     private Image rootRaycastImage;
     private Color normalRootColor = new Color(1f, 1f, 1f, 0.01f);
+    private const float DoubleClickInterval = 0.32f;
+    private float lastCharacterClickTime = -10f;
     private bool isMoveHighlightVisible;
     private bool isQuestionTargetHighlightVisible;
     private Coroutine contentFadeCoroutine;
@@ -90,6 +94,7 @@ public class BattleFieldSlot : MonoBehaviour,
         onSetupButtonClick = setupClickAction;
         onBroadcastCardClick = broadcastClickAction;
         onCharacterCardClick = characterClickAction;
+        onCharacterCardDoubleClick = null;
         onContentCardClick = contentClickAction;
         onCardDropped = dropAction;
 
@@ -307,6 +312,7 @@ public class BattleFieldSlot : MonoBehaviour,
         characterOwner = cardOwner;
         isCharacterFaceDown = faceDown;
         characterMovedThisTurn = false;
+        characterActiveUsedThisTurn = false;
 
         if (!faceDown)
             faceDownSummonedTurn = -1;
@@ -442,6 +448,7 @@ public class BattleFieldSlot : MonoBehaviour,
         faceDownSummonedTurn = -1;
         faceUpSummonedTurn = -1;
         characterMovedThisTurn = false;
+        characterActiveUsedThisTurn = false;
         currentCharacterHp = 0;
         currentCharacterMaxHp = 0;
         currentCharacterTension = 0;
@@ -580,6 +587,8 @@ public class BattleFieldSlot : MonoBehaviour,
         contentOwner = BattleSlotOwner.My;
         faceDownSummonedTurn = -1;
         faceUpSummonedTurn = -1;
+        characterMovedThisTurn = false;
+        characterActiveUsedThisTurn = false;
 
         isCharacterFaceDown = false;
 
@@ -700,6 +709,16 @@ public class BattleFieldSlot : MonoBehaviour,
         if (characterCard == null)
             return;
 
+        float now = Time.unscaledTime;
+        bool isDoubleClick = now - lastCharacterClickTime <= DoubleClickInterval;
+        lastCharacterClickTime = now;
+
+        if (isDoubleClick && onCharacterCardDoubleClick != null)
+        {
+            onCharacterCardDoubleClick.Invoke(this, characterCard);
+            return;
+        }
+
         onCharacterCardClick?.Invoke(this, characterCard);
     }
 
@@ -722,5 +741,15 @@ public class BattleFieldSlot : MonoBehaviour,
     public void SetCharacterMovedThisTurn(bool value)
     {
         characterMovedThisTurn = value;
+    }
+
+    public void SetCharacterActiveUsedThisTurn(bool value)
+    {
+        characterActiveUsedThisTurn = value;
+    }
+
+    public void SetCharacterDoubleClickAction(Action<BattleFieldSlot, BaseCardData> doubleClickAction)
+    {
+        onCharacterCardDoubleClick = doubleClickAction;
     }
 }
