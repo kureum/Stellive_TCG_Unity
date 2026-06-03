@@ -116,6 +116,9 @@ public class EffectManager : MonoBehaviour
             case "character.rest.loseViewers":
             case "character.fetchCardsToHandByTags":
             case "character.active.peekTopAndTakeTaggedContents":
+            case "character.active.adjacentHpDownAndTensionUpForTag":
+            case "character.onAppear.adjacentOppCollabTensionDeltaThisTurn":
+            case "character.active.adjacentOppCollabTensionDeltaThisTurn":
             case "content.drawThenDiscard":
             case "content.postCollabHealOwnParticipant":
             case "content.removeAllLastingContentsOnBoard":
@@ -290,6 +293,22 @@ public class EffectManager : MonoBehaviour
         EffectDeckPeekService.SearchDeckSelectToHand(request, safeContext, onComplete);
     }
 
+    public void ModifyCharacterStats(
+        ModifyCharacterStatsRequest request,
+        EffectContext context,
+        Action<ModifyCharacterStatsResult> onComplete)
+    {
+        EffectContext safeContext = context ?? new EffectContext();
+
+        if (safeContext.battleManager == null)
+            safeContext.battleManager = battleManager;
+
+        if (safeContext.collaborationManager == null && battleManager != null)
+            safeContext.collaborationManager = battleManager.collaborationManager;
+
+        EffectStatService.ModifyCharacterStats(request, safeContext, onComplete);
+    }
+
     public bool CanIgnoreAppearTurnActionLimit(BattleFieldSlot slot)
     {
         return HasIdolPassiveForSlot(
@@ -378,6 +397,12 @@ public class EffectManager : MonoBehaviour
                 return;
             }
 
+            if (AreAllMandatoryEffectActivations(timing, candidates))
+            {
+                ResolveCandidatesSequentially(candidates, safeContext, 0, completeOnce);
+                return;
+            }
+
             CardQuestionPanel panel = battleManager != null
                 ? battleManager.BattleCardQuestionPanel
                 : null;
@@ -445,6 +470,22 @@ public class EffectManager : MonoBehaviour
         return true;
     }
 
+    private bool AreAllMandatoryEffectActivations(
+        EffectTiming timing,
+        List<EffectCandidate> candidates)
+    {
+        if (candidates == null || candidates.Count == 0)
+            return false;
+
+        foreach (EffectCandidate candidate in candidates)
+        {
+            if (!IsMandatoryEffectActivation(timing, candidate))
+                return false;
+        }
+
+        return true;
+    }
+
     private bool IsMandatoryEffectActivation(
         EffectTiming timing,
         EffectCandidate candidate)
@@ -454,6 +495,25 @@ public class EffectManager : MonoBehaviour
 
         return timing == EffectTiming.OnRest &&
             candidate.card is CharacterCardData;
+    }
+
+    private void ResolveCandidatesSequentially(
+        List<EffectCandidate> candidates,
+        EffectContext context,
+        int index,
+        Action onComplete)
+    {
+        if (candidates == null || index >= candidates.Count)
+        {
+            onComplete?.Invoke();
+            return;
+        }
+
+        ResolveEffect(
+            candidates[index],
+            context,
+            () => ResolveCandidatesSequentially(candidates, context, index + 1, onComplete)
+        );
     }
 
     public void ResolveEffect(
@@ -470,6 +530,12 @@ public class EffectManager : MonoBehaviour
         if (candidate != null && IsPeekTopSelectToHandEffect(candidate, context))
         {
             ResolvePeekTopSelectToHandEffect(candidate, context, onComplete);
+            return;
+        }
+
+        if (candidate != null && IsModifyCharacterStatsEffect(candidate, context))
+        {
+            ResolveModifyCharacterStatsEffect(candidate, context, onComplete);
             return;
         }
 
@@ -532,6 +598,12 @@ public class EffectManager : MonoBehaviour
         if (IsPeekTopSelectToHandEffect(candidate, context))
         {
             ResolvePeekTopSelectToHandEffect(candidate, context, null);
+            return true;
+        }
+
+        if (IsModifyCharacterStatsEffect(candidate, context))
+        {
+            ResolveModifyCharacterStatsEffect(candidate, context, null);
             return true;
         }
 
@@ -935,6 +1007,30 @@ public class EffectManager : MonoBehaviour
         return effectRef == "character.fetchCardsToHandByTags";
     }
 
+    private bool IsModifyCharacterStatsEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        if (candidate == null)
+            return false;
+
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetPrimaryEffectRef(candidate.card, context != null ? context.timing : candidate.timing);
+
+        switch (effectRef)
+        {
+            case "content.postCollabHealOwnParticipant":
+            case "character.active.adjacentHpDownAndTensionUpForTag":
+            case "character.onAppear.adjacentOppCollabTensionDeltaThisTurn":
+            case "character.active.adjacentOppCollabTensionDeltaThisTurn":
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
     private void ResolvePeekTopSelectToHandEffect(
         EffectCandidate candidate,
         EffectContext context,
@@ -1037,6 +1133,215 @@ public class EffectManager : MonoBehaviour
                 CompleteEffectResolution(message, consumeAction, onComplete);
             }
         );
+    }
+
+    private void ResolveModifyCharacterStatsEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action onComplete)
+    {
+        if (!CanActivateEffect(candidate, context, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke();
+            return;
+        }
+
+        int cost = GetActivationCost(candidate.card);
+
+        if (cost > 0 &&
+            !battleManager.TryPayViewerCostFromExternal(candidate.owner, cost))
+        {
+            battleManager?.SetSystemMessageFromExternal("시청자가 부족하여 효과를 발동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        if (candidate.sourceZone == EffectSourceZone.Hand &&
+            !MoveSourceHandCardToRestZone(candidate, context).success)
+        {
+            battleManager?.SetSystemMessageFromExternal("효과 발동 카드를 손패에서 휴식존으로 이동할 수 없습니다.");
+            onComplete?.Invoke();
+            return;
+        }
+
+        EffectContext safeContext = NormalizeContext(context, candidate.timing);
+        if (safeContext.sourceEffect == null)
+            safeContext.sourceEffect = candidate.sourceEffect;
+
+        ModifyCharacterStatsRequest request = BuildModifyCharacterStatsRequest(candidate, safeContext);
+        bool consumeAction = ShouldConsumeAction(candidate, context);
+
+        ModifyCharacterStats(
+            request,
+            safeContext,
+            result =>
+            {
+                string message = $"{candidate.card.name} 발동: {result?.message ?? "스탯 변경을 완료했습니다."}";
+
+                if (cost > 0)
+                    message += $"\n시청자 -{cost}";
+
+                CompleteEffectResolution(message, consumeAction, onComplete);
+            }
+        );
+    }
+
+    private ModifyCharacterStatsRequest BuildModifyCharacterStatsRequest(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        EffectData effect = context != null && context.sourceEffect != null
+            ? context.sourceEffect
+            : candidate.sourceEffect;
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetEffectRef(effect);
+
+        if (effectRef == "character.active.adjacentHpDownAndTensionUpForTag")
+            return BuildAdjacentHpDownAndTensionUpRequest(candidate, context, effect, effectRef);
+
+        if (IsAdjacentOpponentThisTurnTensionEffect(effectRef))
+            return BuildAdjacentOpponentThisTurnTensionRequest(candidate, context, effect, effectRef);
+
+        TargetSelector selector = new TargetSelector
+        {
+            scope = TargetSelectorScope.CollabParticipants,
+            owner = EffectTargetOwner.ActingOwner,
+            filter = new CardFilter
+            {
+                kind = EffectCardKind.Character,
+                owner = EffectTargetOwner.ActingOwner,
+                faceState = EffectFaceState.FaceUpOnly
+            }
+        };
+
+        return new ModifyCharacterStatsRequest
+        {
+            owner = candidate.owner,
+            selector = selector,
+            deltas = new List<StatDelta>
+            {
+                new StatDelta
+                {
+                    statType = EffectStatType.CurrentHp,
+                    amount = Mathf.Max(0, GetIntParam(effect, "amount", 0)),
+                    duration = EffectStatDuration.Instant,
+                    clampHpToMax = true,
+                    allowBelowZero = false
+                }
+            },
+            sourceCard = candidate.card,
+            sourceEffectRef = effectRef,
+            requireTargetSelection = false,
+            maxTargets = 1
+        };
+    }
+
+    private ModifyCharacterStatsRequest BuildAdjacentHpDownAndTensionUpRequest(
+        EffectCandidate candidate,
+        EffectContext context,
+        EffectData effect,
+        string effectRef)
+    {
+        CardFilter filter = BuildCardFilterFromParams(effect, EffectCardKind.Character);
+        filter.faceState = EffectFaceState.FaceUpOnly;
+
+        TargetSelector selector = new TargetSelector
+        {
+            scope = TargetSelectorScope.AdjacentToSource,
+            owner = EffectTargetOwner.Any,
+            filter = filter
+        };
+
+        int hpDown = Mathf.Abs(GetIntParam(effect, "hp", 0));
+        int tensionDelta = GetIntParam(effect, "tensionDelta", 0);
+
+        List<StatDelta> deltas = new List<StatDelta>();
+
+        if (hpDown > 0)
+        {
+            deltas.Add(new StatDelta
+            {
+                statType = EffectStatType.CurrentHp,
+                amount = -hpDown,
+                duration = EffectStatDuration.Instant,
+                clampHpToMax = true,
+                allowBelowZero = false
+            });
+        }
+
+        if (tensionDelta != 0)
+        {
+            deltas.Add(new StatDelta
+            {
+                statType = EffectStatType.CurrentTension,
+                amount = tensionDelta,
+                duration = EffectStatDuration.Permanent,
+                clampHpToMax = false,
+                allowBelowZero = false
+            });
+        }
+
+        return new ModifyCharacterStatsRequest
+        {
+            owner = candidate.owner,
+            selector = selector,
+            deltas = deltas,
+            sourceCard = candidate.card,
+            sourceEffectRef = effectRef,
+            requireTargetSelection = false,
+            maxTargets = 0
+        };
+    }
+
+    private bool IsAdjacentOpponentThisTurnTensionEffect(string effectRef)
+    {
+        return effectRef == "character.onAppear.adjacentOppCollabTensionDeltaThisTurn" ||
+            effectRef == "character.active.adjacentOppCollabTensionDeltaThisTurn";
+    }
+
+    private ModifyCharacterStatsRequest BuildAdjacentOpponentThisTurnTensionRequest(
+        EffectCandidate candidate,
+        EffectContext context,
+        EffectData effect,
+        string effectRef)
+    {
+        CardFilter filter = BuildCardFilterFromParams(effect, EffectCardKind.Character);
+        filter.owner = EffectTargetOwner.OpponentOfActingOwner;
+        filter.faceState = EffectFaceState.FaceUpOnly;
+
+        TargetSelector selector = new TargetSelector
+        {
+            scope = TargetSelectorScope.AdjacentToSource,
+            owner = EffectTargetOwner.Any,
+            filter = filter
+        };
+
+        int amount = GetIntParam(effect, "tensionDelta", 0);
+        if (amount == 0)
+            amount = GetIntParam(effect, "amount", 0);
+
+        return new ModifyCharacterStatsRequest
+        {
+            owner = candidate.owner,
+            selector = selector,
+            deltas = new List<StatDelta>
+            {
+                new StatDelta
+                {
+                    statType = EffectStatType.CurrentTension,
+                    amount = amount,
+                    duration = EffectStatDuration.ThisTurn,
+                    clampHpToMax = false,
+                    allowBelowZero = false
+                }
+            },
+            sourceCard = candidate.card,
+            sourceEffectRef = effectRef,
+            requireTargetSelection = false,
+            maxTargets = 0
+        };
     }
 
     private PeekTopSelectRequest BuildPeekTopSelectRequest(

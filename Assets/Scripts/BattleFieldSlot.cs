@@ -54,6 +54,7 @@ public class BattleFieldSlot : MonoBehaviour,
     public int faceUpSummonedTurn = -1;
     public int currentCharacterTension { get; private set; }
     public int currentCharacterHp { get; private set; }
+    public int currentCharacterMaxHp { get; private set; }
     private Action<BattleFieldSlot> onSetupButtonClick;
     private Action<BattleFieldSlot, BaseCardData> onBroadcastCardClick;
     private Action<BattleFieldSlot, BaseCardData> onCharacterCardClick;
@@ -297,6 +298,7 @@ public class BattleFieldSlot : MonoBehaviour,
     {
         BaseCardData previousCard = characterCard;
         int previousHp = currentCharacterHp;
+        int previousMaxHp = currentCharacterMaxHp;
         int previousTension = currentCharacterTension;
 
         bool isSameCharacter = previousCard != null && previousCard == card;
@@ -314,11 +316,13 @@ public class BattleFieldSlot : MonoBehaviour,
         if (card == null)
         {
             currentCharacterHp = 0;
+            currentCharacterMaxHp = 0;
             currentCharacterTension = 0;
         }
         else if (isSameCharacter && previousHp > 0)
         {
             currentCharacterHp = previousHp;
+            currentCharacterMaxHp = previousMaxHp;
             currentCharacterTension = previousTension;
         }
         else
@@ -352,18 +356,37 @@ public class BattleFieldSlot : MonoBehaviour,
         if (character == null)
         {
             currentCharacterHp = 0;
+            currentCharacterMaxHp = 0;
             currentCharacterTension = 0;
             return;
         }
 
-        currentCharacterHp = Mathf.Max(0, character.hpMax);
+        currentCharacterMaxHp = Mathf.Max(1, character.hpMax);
+        currentCharacterHp = currentCharacterMaxHp;
         currentCharacterTension = Mathf.Max(0, character.tension);
     }
 
     public void SetCharacterBattleStats(int hp, int tension)
     {
-        currentCharacterHp = hp;
+        SetCharacterBattleStats(hp, currentCharacterMaxHp, tension);
+    }
+
+    public void SetCharacterBattleStats(int hp, int maxHp, int tension)
+    {
+        currentCharacterMaxHp = Mathf.Max(1, maxHp);
+        currentCharacterHp = Mathf.Min(hp, currentCharacterMaxHp);
         currentCharacterTension = Mathf.Max(0, tension);
+    }
+
+    public void ModifyCharacterMaxHp(int amount)
+    {
+        int nextMaxHp = Mathf.Max(1, currentCharacterMaxHp + amount);
+        currentCharacterMaxHp = nextMaxHp;
+
+        if (currentCharacterHp > currentCharacterMaxHp)
+            currentCharacterHp = currentCharacterMaxHp;
+
+        // TODO: 카드별 정책이 필요하면 max HP 증가 시 현재 HP도 함께 회복하는 옵션을 params로 분리한다.
     }
 
     public void ApplyCharacterDamage(int damage)
@@ -420,6 +443,7 @@ public class BattleFieldSlot : MonoBehaviour,
         faceUpSummonedTurn = -1;
         characterMovedThisTurn = false;
         currentCharacterHp = 0;
+        currentCharacterMaxHp = 0;
         currentCharacterTension = 0;
 
         if (characterCardImage != null)

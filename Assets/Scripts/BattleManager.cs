@@ -167,6 +167,7 @@ public class BattleManager : MonoBehaviour
     private BattlePlayerSide currentActionSide;
     private int consecutivePassCount = 0;
     private bool isRestZonePanelOpen = false;
+    private BattlePlayerSide openRestZoneSide = BattlePlayerSide.My;
     private const int VictoryViewerThreshold = 100000;
     private bool isGameOver = false;
     private bool isBusy = false;
@@ -1425,14 +1426,9 @@ public class BattleManager : MonoBehaviour
         if (targetPanel == broadcastSelectPanel)
             CloseBroadcastSelectPanel();
 
-        ClearChildren(targetContent);
-
-        foreach (BaseCardData card in player.restZone)
-        {
-            CreateRestZoneCardItem(card, targetContent);
-        }
-
+        RefreshRestZonePanelContent(side);
         isRestZonePanelOpen = true;
+        openRestZoneSide = side;
         targetPanel.SetActive(true);
 
         SetSystemMessage(
@@ -1453,6 +1449,28 @@ public class BattleManager : MonoBehaviour
             ClearChildren(targetContent);
 
         isRestZonePanelOpen = false;
+    }
+
+    private void RefreshOpenRestZonePanelIfNeeded()
+    {
+        if (!isRestZonePanelOpen)
+            return;
+
+        RefreshRestZonePanelContent(openRestZoneSide);
+    }
+
+    private void RefreshRestZonePanelContent(BattlePlayerSide side)
+    {
+        BattlePlayerRuntime player = GetPlayer(side);
+        Transform targetContent = GetRestZoneContent();
+
+        if (player == null || targetContent == null)
+            return;
+
+        ClearChildren(targetContent);
+
+        foreach (BaseCardData card in player.restZone)
+            CreateRestZoneCardItem(card, targetContent);
     }
 
     private GameObject GetRestZonePanel()
@@ -1681,11 +1699,16 @@ public class BattleManager : MonoBehaviour
 
     public void AddCardToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
+        AddToRestZoneFromExternal(card, owner);
+    }
+
+    public void AddToRestZoneFromExternal(BaseCardData card, BattleSlotOwner cardOwner)
+    {
         if (card == null)
             return;
 
         BattlePlayerRuntime targetPlayer =
-            owner == BattleSlotOwner.My
+            cardOwner == BattleSlotOwner.My
                 ? myPlayer
                 : enemyPlayer;
 
@@ -1697,7 +1720,15 @@ public class BattleManager : MonoBehaviour
 
     public void AddCharacterToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
-        AddCardToRestZoneFromExternal(owner, card);
+        AddToRestZoneFromExternal(card, owner);
+    }
+
+    public void AddFieldCharacterToRestZoneFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter || slot.characterCard == null)
+            return;
+
+        AddToRestZoneFromExternal(slot.characterCard, slot.characterOwner);
     }
 
     public BaseCardData GetIdolCardFromExternal(BattleSlotOwner owner)
@@ -1750,24 +1781,43 @@ public class BattleManager : MonoBehaviour
         int beforeHp = slot.currentCharacterHp;
         slot.ApplyCharacterDamage(safeDamage);
 
-        if (resolveZeroHp && slot.currentCharacterHp <= 0)
+        if (resolveZeroHp && GetEffectiveCharacterHpFromExternal(slot, slot) <= 0)
             StartCoroutine(ResolveZeroHpCharacterRoutineFromExternal(slot));
 
         return beforeHp - slot.currentCharacterHp;
     }
 
+    public void RequestResolveZeroHpCharacterFromExternal(
+        BattleFieldSlot slot,
+        BattleFieldSlot effectLocationSlot = null)
+    {
+        StartCoroutine(ResolveZeroHpCharacterRoutineFromExternal(slot, effectLocationSlot));
+    }
+
     public IEnumerator ResolveZeroHpCharacterRoutineFromExternal(BattleFieldSlot slot)
+    {
+        yield return ResolveZeroHpCharacterRoutineFromExternal(slot, slot);
+    }
+
+    public IEnumerator ResolveZeroHpCharacterRoutineFromExternal(
+        BattleFieldSlot slot,
+        BattleFieldSlot effectLocationSlot)
     {
         if (slot == null ||
             !slot.HasCharacter ||
-            slot.characterCard == null ||
-            slot.currentCharacterHp > 0)
+            slot.characterCard == null)
         {
             yield break;
         }
 
+        if (GetEffectiveCharacterHpFromExternal(slot, effectLocationSlot) > 0)
+            yield break;
+
         if (ShouldDeferZeroHpDuringCollabFromExternal(slot))
             yield break;
+
+        if (slot.currentCharacterHp > 0)
+            slot.SetCharacterBattleStats(0, slot.currentCharacterTension);
 
         yield return SendFieldCharacterToRestZoneRoutine(slot);
     }
@@ -1787,12 +1837,12 @@ public class BattleManager : MonoBehaviour
         string previousBusyReason = battleBusyReason;
         SetBattleBusy(true, $"SendFieldCharacterToRestZoneRoutine:{slot.characterCard.id}");
 
-        BattleSlotOwner owner = slot.characterOwner;
         BaseCardData restedCard = slot.characterCard;
+        BattleSlotOwner owner = slot.characterOwner;
 
         yield return AnimateCharacterExitToRestZoneRoutine(slot);
 
-        AddCharacterToRestZoneFromExternal(owner, restedCard);
+        AddFieldCharacterToRestZoneFromExternal(slot);
         slot.ClearCharacterCard();
         RefreshAllUI();
 
@@ -2210,12 +2260,7 @@ public class BattleManager : MonoBehaviour
         if (slot == null || !slot.HasCharacter || slot.characterCard == null)
             return 0;
 
-        CharacterCardData character = slot.characterCard as CharacterCardData;
-
-        if (character == null)
-            return 0;
-
-        int maxHp = Mathf.Max(0, character.hpMax);
+        int maxHp = Mathf.Max(1, slot.currentCharacterMaxHp);
         int beforeHp = slot.currentCharacterHp;
         int afterHp = Mathf.Min(maxHp, beforeHp + Mathf.Max(0, amount));
 
@@ -2229,12 +2274,7 @@ public class BattleManager : MonoBehaviour
         if (slot == null || !slot.HasCharacter || slot.characterCard == null)
             return 0;
 
-        CharacterCardData character = slot.characterCard as CharacterCardData;
-
-        if (character == null)
-            return 0;
-
-        return HealCharacterFromExternal(slot, Mathf.Max(0, character.hpMax));
+        return HealCharacterFromExternal(slot, Mathf.Max(1, slot.currentCharacterMaxHp));
     }
 
     public bool MoveCardFromHandToRestZoneFromExternal(BattleSlotOwner owner, BaseCardData card)
@@ -2399,6 +2439,24 @@ public class BattleManager : MonoBehaviour
         modifier += GetInstalledContentCharacterHpModifier(slot, locationSlot);
 
         return modifier;
+    }
+
+    public int GetEffectiveCharacterHpFromExternal(
+        BattleFieldSlot slot,
+        BattleFieldSlot effectLocationSlot = null)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null ||
+            slot.currentCharacterHp <= 0)
+        {
+            return 0;
+        }
+
+        return Mathf.Max(
+            0,
+            slot.currentCharacterHp + GetSlotCharacterHpModifierFromExternal(slot, effectLocationSlot)
+        );
     }
 
     private int GetBroadcastCharacterTensionModifier(
@@ -3571,6 +3629,7 @@ public class BattleManager : MonoBehaviour
         SetBattleBusy(true, "EndCurrentTurnAndStartNextTurnRoutine");
 
         turnCount++;
+        EffectStatService.ExpireTurnEndModifiers(this, turnCount);
 
         consecutivePassCount = 0;
         currentActionSide = firstPlayerSide;
@@ -4264,6 +4323,7 @@ public class BattleManager : MonoBehaviour
         RefreshZoneTexts();
         RefreshHandUI();
         RefreshEnemyHandUI();
+        RefreshOpenRestZonePanelIfNeeded();
 
         if (currentPhase == BattlePhase.BroadcastSetup)
             RefreshBroadcastSetupButtons();

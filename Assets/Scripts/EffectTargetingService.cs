@@ -177,14 +177,42 @@ public static class EffectTargetingService
             if (slot == null || slot == sourceSlot)
                 continue;
 
-            if (slot.owner != sourceSlot.owner)
-                continue;
-
-            int distance = Mathf.Abs(slot.x - sourceSlot.x) + Mathf.Abs(slot.y - sourceSlot.y);
-
-            if (distance == 1)
+            if (AreSlotsAdjacent(sourceSlot, slot))
                 AddSlotCharacterCandidate(candidates, slot);
         }
+    }
+
+    private static bool AreSlotsAdjacent(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        if (sourceSlot == null || targetSlot == null || sourceSlot == targetSlot)
+            return false;
+
+        if (sourceSlot.owner == targetSlot.owner)
+        {
+            int distance =
+                Mathf.Abs(sourceSlot.x - targetSlot.x) +
+                Mathf.Abs(sourceSlot.y - targetSlot.y);
+
+            return distance == 1;
+        }
+
+        return IsAdjacentAcrossFields(sourceSlot, targetSlot);
+    }
+
+    private static bool IsAdjacentAcrossFields(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        if (sourceSlot == null || targetSlot == null)
+            return false;
+
+        if (sourceSlot.owner == targetSlot.owner)
+            return false;
+
+        int mirroredX = 4 - sourceSlot.x;
+        bool isFrontRowConnected =
+            sourceSlot.y == 2 &&
+            targetSlot.y == 2;
+
+        return targetSlot.x == mirroredX && isFrontRowConnected;
     }
 
     private static void AddEmptyBroadcastSlotCandidates(

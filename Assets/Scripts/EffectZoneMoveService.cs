@@ -237,7 +237,7 @@ public static class EffectZoneMoveService
         request.card = card;
         request.owner = fromSlot.characterOwner;
 
-        battleManager.AddCharacterToRestZoneFromExternal(request.owner, card);
+        battleManager.AddFieldCharacterToRestZoneFromExternal(fromSlot);
         fromSlot.ClearCharacterCard();
         battleManager.RefreshAllUIFromExternal();
 

@@ -159,8 +159,11 @@ public class CardDetailPanel : MonoBehaviour
             int? currentHp = fieldSlot != null
                 ? GetDisplayedCharacterHp(fieldSlot)
                 : null;
+            int? currentMaxHp = fieldSlot != null
+                ? GetDisplayedCharacterMaxHp(fieldSlot)
+                : null;
             sb.AppendLine(FormatRuntimeStat("합방 텐션", character.tension, currentTension));
-            sb.AppendLine(FormatRuntimeStat("체력", character.hpMax, currentHp));
+            sb.AppendLine(FormatHpRuntimeStat(character.hpMax, currentHp, currentMaxHp));
             sb.AppendLine();
 
             AppendEffects(sb, "[캐릭터 효과]", character.effects);
@@ -184,6 +187,23 @@ public class CardDetailPanel : MonoBehaviour
             return $"{label}: {baseValue}";
 
         return $"{label}: {baseValue} (현재 {currentValue.Value})";
+    }
+
+    private string FormatHpRuntimeStat(int baseMaxHp, int? currentHp, int? currentMaxHp)
+    {
+        if (!currentHp.HasValue && !currentMaxHp.HasValue)
+            return $"체력: {baseMaxHp}";
+
+        int shownCurrentHp = currentHp ?? baseMaxHp;
+        int shownMaxHp = currentMaxHp ?? baseMaxHp;
+
+        if (shownCurrentHp == baseMaxHp && shownMaxHp == baseMaxHp)
+            return $"체력: {baseMaxHp}";
+
+        if (shownMaxHp == baseMaxHp)
+            return $"체력: {baseMaxHp} (현재 {shownCurrentHp})";
+
+        return $"체력: {baseMaxHp} (현재 {shownCurrentHp} / 최대 {shownMaxHp})";
     }
 
     private int GetDisplayedCharacterTension(BattleFieldSlot slot)
@@ -213,6 +233,14 @@ public class CardDetailPanel : MonoBehaviour
             value += battleManager.GetSlotCharacterHpModifierFromExternal(slot);
 
         return Mathf.Max(0, value);
+    }
+
+    private int GetDisplayedCharacterMaxHp(BattleFieldSlot slot)
+    {
+        if (slot == null)
+            return 0;
+
+        return Mathf.Max(0, slot.currentCharacterMaxHp);
     }
 
     private void AppendEffects(StringBuilder sb, string title, EffectData[] effects)

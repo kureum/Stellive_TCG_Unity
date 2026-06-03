@@ -522,7 +522,7 @@ public class CollaborationManager : MonoBehaviour
         int hp = slot.currentCharacterHp;
 
         if (battleManager != null)
-            hp += battleManager.GetSlotCharacterHpModifierFromExternal(slot, battleLocationSlot);
+            return battleManager.GetEffectiveCharacterHpFromExternal(slot, battleLocationSlot);
 
         return Mathf.Max(0, hp);
     }
@@ -565,7 +565,10 @@ public class CollaborationManager : MonoBehaviour
 
         if (data.hostDefeated)
         {
-            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(data.hostSlot);
+            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(
+                data.hostSlot,
+                GetCollaborationBattleLocationSlot(data)
+            );
 
             if (!data.guestDefeated)
             {
@@ -574,7 +577,10 @@ public class CollaborationManager : MonoBehaviour
             }
             else
             {
-                yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(data.guestSlot);
+                yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(
+                    data.guestSlot,
+                    GetCollaborationBattleLocationSlot(data)
+                );
             }
 
             yield break;
@@ -582,11 +588,22 @@ public class CollaborationManager : MonoBehaviour
 
         if (data.guestDefeated)
         {
-            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(data.guestSlot);
+            yield return battleManager.ResolveZeroHpCharacterRoutineFromExternal(
+                data.guestSlot,
+                GetCollaborationBattleLocationSlot(data)
+            );
             yield break;
         }
 
         data.guestSlot.SetCharacterMovedThisTurn(true);
+    }
+
+    private BattleFieldSlot GetCollaborationBattleLocationSlot(CollaborationResolutionData data)
+    {
+        if (data == null)
+            return null;
+
+        return data.hostSlot;
     }
 
     private bool ShouldDeferZeroHpDuringCollab(BattleFieldSlot slot)
@@ -632,6 +649,7 @@ public class CollaborationManager : MonoBehaviour
         }
 
         bool guestWasFaceDown = data.guestSlot.isCharacterFaceDown;
+        int guestMaxHp = data.guestSlot.currentCharacterMaxHp;
 
         data.hostSlot.SetCharacterCard(
             data.guestCard,
@@ -642,6 +660,7 @@ public class CollaborationManager : MonoBehaviour
 
         data.hostSlot.SetCharacterBattleStats(
             data.guestFinalHp,
+            guestMaxHp,
             data.guestTension
         );
 

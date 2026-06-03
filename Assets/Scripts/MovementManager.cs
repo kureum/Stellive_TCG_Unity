@@ -322,10 +322,11 @@ public class MovementManager : MonoBehaviour
 
         BattleSlotOwner movingCardOwner = fromSlot.characterOwner;
         int currentHp = fromSlot.currentCharacterHp;
+        int currentMaxHp = fromSlot.currentCharacterMaxHp;
         int currentTension = fromSlot.currentCharacterTension;
 
         toSlot.SetCharacterCard(card, currentSprite, wasFaceDown, movingCardOwner);
-        toSlot.SetCharacterBattleStats(currentHp, currentTension);
+        toSlot.SetCharacterBattleStats(currentHp, currentMaxHp, currentTension);
         toSlot.SetCharacterMovedThisTurn(true);
 
         fromSlot.ClearCharacterCard();
