@@ -237,6 +237,7 @@ public static class EffectZoneMoveService
         request.card = card;
         request.owner = fromSlot.characterOwner;
 
+        battleManager.ApplyBroadcastLeaveEffectsFromExternal(fromSlot);
         battleManager.AddFieldCharacterToRestZoneFromExternal(fromSlot);
         fromSlot.ClearCharacterCard();
         battleManager.RefreshAllUIFromExternal();
@@ -282,6 +283,7 @@ public static class EffectZoneMoveService
             sprite,
             request.faceDown,
             request.owner);
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(request.toSlot, false);
 
         int turn = battleManager.GetCurrentTurnCountFromExternal();
         if (request.faceDown)

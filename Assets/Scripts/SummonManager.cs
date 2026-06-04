@@ -97,6 +97,13 @@ public class SummonManager : MonoBehaviour
         string backsideFailReason;
         bool canSummonBackside = CanSummonBackside(card, out backsideFailReason);
 
+        if (canSummonBackside &&
+            battleManager.IsFaceDownSummonForbiddenByBroadcastFromExternal(slot, out string broadcastBacksideFailReason))
+        {
+            canSummonBackside = false;
+            backsideFailReason = broadcastBacksideFailReason;
+        }
+
         if (!canSummonFront && !canSummonBackside)
         {
             ClearPendingSummonChoice();
@@ -327,6 +334,14 @@ public class SummonManager : MonoBehaviour
             return;
         }
 
+        if (battleManager.IsFaceDownSummonForbiddenByBroadcastFromExternal(targetSlot, out string broadcastBacksideFailReason))
+        {
+            ClearPendingSummonChoice();
+            battleManager.ClearDraggingHandCardFromExternal();
+            battleManager.SetSystemMessageFromExternal(broadcastBacksideFailReason);
+            return;
+        }
+
         string failReason;
         if (!CanOpenSummonQuestion(targetSlot, targetCard, out failReason))
         {
@@ -404,12 +419,20 @@ public class SummonManager : MonoBehaviour
             return;
         }
 
+        if (battleManager.IsFaceDownSummonForbiddenByBroadcastFromExternal(targetSlot, out string broadcastBacksideFailReason))
+        {
+            ClearPendingSummonChoice();
+            battleManager.SetSystemMessageFromExternal(broadcastBacksideFailReason);
+            return;
+        }
+
         targetSlot.SetCharacterCard(
             characterCard,
             battleManager.GetCardBackSpriteFromExternal(),
             true,
             BattleSlotOwner.My
         );
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         targetSlot.faceDownSummonedTurn = battleManager.GetCurrentTurnCountFromExternal();
 
         if (!battleManager.RemoveCardFromHandFromExternal(BattleSlotOwner.My, characterCard))
@@ -495,6 +518,7 @@ public class SummonManager : MonoBehaviour
         }
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.My);
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         targetSlot.faceUpSummonedTurn = battleManager.GetCurrentTurnCountFromExternal();
 
         if (!battleManager.RemoveCardFromHandFromExternal(BattleSlotOwner.My, characterCard))
@@ -580,6 +604,7 @@ public class SummonManager : MonoBehaviour
         }
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, targetSlot.characterOwner);
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         targetSlot.faceUpSummonedTurn = battleManager.GetCurrentTurnCountFromExternal();
 
         ClearPendingFlipChoice();
@@ -590,7 +615,7 @@ public class SummonManager : MonoBehaviour
             $"{characterCard.name} 카드를 플립 출연했습니다.\n" +
             $"시청자 -{cost}";
 
-        RequestOnAppearThenResolveAction(targetSlot, characterCard, actionMessage);
+        battleManager.ResolveMyActionUsedFromExternal(actionMessage);
     }
 
     private void RequestOnAppearThenResolveAction(

@@ -382,6 +382,7 @@ public class CollaborationManager : MonoBehaviour
         }
 
         slot.SetCharacterCard(card, sprite, false, slot.characterOwner);
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(slot, false);
         battleManager.RefreshAllUIFromExternal();
         battleManager.SetSystemMessageFromExternal($"{card.name} 카드가 공개되었습니다.");
 
@@ -792,6 +793,8 @@ public class CollaborationManager : MonoBehaviour
         bool guestWasFaceDown = data.guestSlot.isCharacterFaceDown;
         int guestMaxHp = data.guestSlot.currentCharacterMaxHp;
         bool guestActiveUsedThisTurn = data.guestSlot.characterActiveUsedThisTurn;
+        int guestMovementLockedUntilTurn = data.guestSlot.movementLockedByBroadcastUntilTurn;
+        int guestBroadcastHpMaxDelta = data.guestSlot.broadcastHpMaxDelta;
 
         data.hostSlot.SetCharacterCard(
             data.guestCard,
@@ -808,6 +811,10 @@ public class CollaborationManager : MonoBehaviour
 
         data.hostSlot.SetCharacterMovedThisTurn(true);
         data.hostSlot.SetCharacterActiveUsedThisTurn(guestActiveUsedThisTurn);
+        data.hostSlot.SetMovementLockedByBroadcastUntilTurn(guestMovementLockedUntilTurn);
+        data.hostSlot.SetBroadcastHpMaxDelta(guestBroadcastHpMaxDelta);
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(data.hostSlot, true);
+        battleManager.ApplyBroadcastLeaveEffectsFromExternal(data.guestSlot);
         data.guestSlot.ClearCharacterCard();
     }
 

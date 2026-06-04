@@ -143,7 +143,7 @@
         {
           "id": "e1",
           "timing": "Always",
-          "description": "이 카드는 아무런 효과도 가지지 않습니다",
+          "description": "이 카드는 아무런 효과도 가지지 않습니다.",
           "ref": "",
           "params": {}
         }
@@ -164,8 +164,11 @@
           "id": "e1",
           "timing": "Always",
           "description": "이 방송 카드 위에는 뒷면 표시로 캐릭터를 출연시킬 수 없습니다.\n이 방송 카드 위에서 합방할 경우, 합방 전에 효과를 사용할 수 없습니다.",
-          "ref": "",
-          "params": {}
+          "ref": "broadcast.always.noFaceDownSummonAndDisablePreCollabEffects",
+          "params": {
+            "forbidFaceDownSummon": true,
+            "disablePreCollabEffects": true
+          }
         }
       ]
     },
@@ -183,9 +186,12 @@
         {
           "id": "e1",
           "timing": "Always",
-          "description": "이 카드 위에 있는 동안, 모든 캐릭터 카드는 체력을 1 잃습니다. ",
-          "ref": "",
-          "params": {}
+          "description": "[시청자 증가량 + 2000] 이 카드 위에 있는 동안, 모든 캐릭터 카드는 체력을 1 잃습니다.",
+          "ref": "broadcast.always.prepViewersAndOccupantHpDelta",
+          "params": {
+            "viewersModifier": 2000,
+            "hpMaxDelta": -1
+          }
         }
       ]
     },
@@ -204,9 +210,12 @@
         {
           "id": "e1",
           "timing": "Always",
-          "description": "이 카드 위에 캐릭터가 있을 경우, 해당 캐릭터의 플레이어는 아이돌 카드의 액티브 효과를 사용할 수 없습니다. \n이 카드 위로 캐릭터가 이동했을 경우, 해당 캐릭터는 다음 턴에 이동할 수 없습니다",
-          "ref": "",
-          "params": {}
+          "description": "이 카드 위에 캐릭터가 있을 경우, 해당 캐릭터의 플레이어는 아이돌 카드의 액티브 효과를 사용할 수 없습니다. 이 카드 위로 캐릭터가 이동했을 경우, 해당 캐릭터는 다음 턴에 이동할 수 없습니다.",
+          "ref": "broadcast.always.disableIdolActiveAndLockMoveOnEnter",
+          "params": {
+            "disableIdolActiveForOccupantOwner": true,
+            "lockMoveOnEnterUntilNextTurn": true
+          }
         }
       ]
     },
@@ -226,8 +235,11 @@
           "id": "e1",
           "timing": "Always",
           "description": "이 카드 위에 #파스텔 캐릭터가 있는 경우 1000의 시청자 증가량을 추가로 얻습니다.",
-          "ref": "",
-          "params": {}
+          "ref": "broadcast.always.taggedOccupantPrepViewersBonus",
+          "params": {
+            "tag": "#파스텔",
+            "amount": 1000
+          }
         }
       ]
     },
@@ -246,8 +258,10 @@
           "id": "e1",
           "timing": "Always",
           "description": "이 카드 위에서 캐릭터가 벗어날 경우, 해당 캐릭터의 플레이어는 즉시 1000 시청자를 얻습니다.",
-          "ref": "",
-          "params": {}
+          "ref": "broadcast.always.gainViewersWhenOccupantLeaves",
+          "params": {
+            "amount": 1000
+          }
         }
       ]
     },
@@ -265,9 +279,12 @@
         {
           "id": "e1",
           "timing": "Always",
-          "description": "이 카드 위에서 캐릭터가 회복할 경우, 2의 체력을 추가로 회복합니다.",
-          "ref": "",
-          "params": {}
+          "description": "[시청자 증가량 - 1000] 이 카드 위에서 캐릭터가 회복할 경우, 2의 체력을 추가로 회복합니다.",
+          "ref": "broadcast.always.prepViewersAndHealBonus",
+          "params": {
+            "viewersModifier": -1000,
+            "healBonus": 2
+          }
         }
       ]
     }
@@ -1114,7 +1131,7 @@
         {
           "id": "ct1",
           "timing": "Content",
-          "description": "상대 패에서 카드를 한장 고릅니다. 상대는 그것이 캐릭터 카드일 경우, 두배의 코스트를 지불하고 소환해야합니다. 소환할 수 없을 경우 그 카드를 휴식 존으로 보냅니다.",
+          "description": "상대 손패에서 카드 한 장을 고릅니다. 그 카드가 캐릭터 카드일 경우, 상대는 두 배의 코스트를 지불하고 그 캐릭터를 출연시켜야 합니다. 출연시킬 수 없을 경우 그 카드를 휴식 존으로 보냅니다.",
           "ref": "content.forceOpponentSummonOrSackFromHand",
           "params": {}
         }

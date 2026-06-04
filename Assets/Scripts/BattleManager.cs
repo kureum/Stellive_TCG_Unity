@@ -919,6 +919,7 @@ public class BattleManager : MonoBehaviour
         }
 
         targetSlot.SetCharacterCard(card, sprite, false, owner);
+        ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         RefreshAllUI();
 
         message = $"Cheat summon: {card.id} -> {FormatCheatOwner(owner)} {coord.Trim()}";
@@ -1642,6 +1643,31 @@ public class BattleManager : MonoBehaviour
         return GetSlots(side);
     }
 
+    public IReadOnlyList<BattleFieldSlot> GetEmptyOwnedBroadcastSlotsFromExternal(BattleSlotOwner owner)
+    {
+        List<BattleFieldSlot> result = new List<BattleFieldSlot>();
+        List<BattleFieldSlot> slots = GetBattleSlots(owner);
+
+        if (slots == null)
+            return result;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null)
+                continue;
+
+            if (slot.owner != owner)
+                continue;
+
+            if (!slot.HasBroadcast || slot.HasCharacter)
+                continue;
+
+            result.Add(slot);
+        }
+
+        return result;
+    }
+
     public int GetCurrentTurnCountFromExternal()
     {
         return turnCount;
@@ -1770,6 +1796,176 @@ public class BattleManager : MonoBehaviour
             effectManager.CanIgnoreAppearTurnActionLimit(slot);
     }
 
+    public bool IsFaceDownSummonForbiddenByBroadcastFromExternal(
+        BattleFieldSlot slot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (HasBroadcastEffectBoolParam(
+            slot,
+            "broadcast.always.noFaceDownSummonAndDisablePreCollabEffects",
+            "forbidFaceDownSummon"))
+        {
+            string broadcastName = slot != null && slot.broadcastCard != null
+                ? slot.broadcastCard.name
+                : "이 방송 카드";
+
+            failReason = $"{broadcastName} 위에는 뒷면 표시로 출연할 수 없습니다.";
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool IsPreCollabEffectDisabledByBroadcastFromExternal(
+        BattleFieldSlot attackerSlot,
+        BattleFieldSlot defenderSlot,
+        out string message)
+    {
+        message = "";
+
+        if (HasBroadcastEffectBoolParam(
+                attackerSlot,
+                "broadcast.always.noFaceDownSummonAndDisablePreCollabEffects",
+                "disablePreCollabEffects") ||
+            HasBroadcastEffectBoolParam(
+                defenderSlot,
+                "broadcast.always.noFaceDownSummonAndDisablePreCollabEffects",
+                "disablePreCollabEffects"))
+        {
+            message = "스텔섭 효과로 합방 전 효과를 사용할 수 없습니다.";
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool IsIdolActiveDisabledByBroadcastFromExternal(BattleSlotOwner owner)
+    {
+        return HasCharacterOwnedByOnBroadcastEffectBoolParam(
+            owner,
+            "broadcast.always.disableIdolActiveAndLockMoveOnEnter",
+            "disableIdolActiveForOccupantOwner");
+    }
+
+    public bool IsCharacterMoveLockedByBroadcastFromExternal(
+        BattleFieldSlot slot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.movementLockedByBroadcastUntilTurn < 0 ||
+            turnCount > slot.movementLockedByBroadcastUntilTurn)
+        {
+            return false;
+        }
+
+        failReason = "공포게임 효과로 이 캐릭터는 이번 턴에 이동할 수 없습니다.";
+        return true;
+    }
+
+    public void ApplyBroadcastEnterEffectsFromExternal(
+        BattleFieldSlot destinationSlot,
+        bool enteredByMovement)
+    {
+        RefreshSlotCharacterBroadcastHpMaxModifierFromExternal(destinationSlot);
+
+        if (!enteredByMovement ||
+            destinationSlot == null ||
+            !destinationSlot.HasCharacter)
+        {
+            return;
+        }
+
+        if (!HasBroadcastEffectBoolParam(
+            destinationSlot,
+            "broadcast.always.disableIdolActiveAndLockMoveOnEnter",
+            "lockMoveOnEnterUntilNextTurn"))
+        {
+            return;
+        }
+
+        int lockUntilTurn = turnCount + 1;
+        destinationSlot.SetMovementLockedByBroadcastUntilTurn(lockUntilTurn);
+        Debug.Log(
+            $"공포게임 이동 제한 적용: {destinationSlot.characterCard?.name}, " +
+            $"owner={destinationSlot.characterOwner}, untilTurn={lockUntilTurn}");
+    }
+
+    public void RefreshSlotCharacterBroadcastHpMaxModifierFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return;
+
+        int hpMaxDelta = CalculateBroadcastHpMaxDelta(slot);
+        slot.ApplyBroadcastHpMaxDelta(hpMaxDelta);
+    }
+
+    public int ApplyBroadcastLeaveEffectsFromExternal(BattleFieldSlot fromSlot)
+    {
+        if (fromSlot == null ||
+            !fromSlot.HasCharacter ||
+            fromSlot.characterCard == null)
+        {
+            return 0;
+        }
+
+        return ApplyBroadcastLeaveEffects(
+            fromSlot,
+            fromSlot.characterCard,
+            fromSlot.characterOwner);
+    }
+
+    private int ApplyBroadcastLeaveEffects(
+        BattleFieldSlot fromSlot,
+        BaseCardData leavingCharacter,
+        BattleSlotOwner characterOwner)
+    {
+        if (fromSlot == null || leavingCharacter == null)
+            return 0;
+
+        return TryApplyGainViewersWhenOccupantLeaves(
+            fromSlot,
+            leavingCharacter,
+            characterOwner);
+    }
+
+    private int TryApplyGainViewersWhenOccupantLeaves(
+        BattleFieldSlot fromSlot,
+        BaseCardData leavingCharacter,
+        BattleSlotOwner characterOwner)
+    {
+        EffectData effect = FindBroadcastEffect(
+            fromSlot,
+            "broadcast.always.gainViewersWhenOccupantLeaves");
+
+        if (effect == null)
+            return 0;
+
+        int amount = GetEffectIntParamForBattleManager(effect, "amount", 0);
+
+        if (amount == 0)
+            return 0;
+
+        int actualDelta = ModifyViewersFromExternal(characterOwner, amount);
+
+        if (actualDelta == 0)
+            return 0;
+
+        string ownerName = characterOwner == BattleSlotOwner.My ? "내" : "상대";
+        string message =
+            $"{fromSlot.broadcastCard.name} 효과: {leavingCharacter.name}이 슬롯을 벗어나 {ownerName} 시청자 +{actualDelta}";
+
+        Debug.Log(message);
+        RefreshAllUI();
+        TryResolveVictory(message);
+
+        return actualDelta;
+    }
+
     public int ApplyCharacterDamageFromExternal(
         BattleFieldSlot slot,
         int damage,
@@ -1847,6 +2043,7 @@ public class BattleManager : MonoBehaviour
 
         yield return AnimateCharacterExitToRestZoneRoutine(slot);
 
+        ApplyBroadcastLeaveEffectsFromExternal(slot);
         AddFieldCharacterToRestZoneFromExternal(slot);
         slot.ClearCharacterCard();
         RefreshAllUI();
@@ -2280,7 +2477,12 @@ public class BattleManager : MonoBehaviour
 
         int maxHp = Mathf.Max(1, slot.currentCharacterMaxHp);
         int beforeHp = slot.currentCharacterHp;
-        int afterHp = Mathf.Min(maxHp, beforeHp + Mathf.Max(0, amount));
+        int healAmount = Mathf.Max(0, amount);
+
+        if (healAmount > 0)
+            healAmount += CalculateBroadcastHealBonus(slot);
+
+        int afterHp = Mathf.Min(maxHp, beforeHp + healAmount);
 
         slot.SetCharacterBattleStats(afterHp, slot.currentCharacterTension);
 
@@ -2488,14 +2690,25 @@ public class BattleManager : MonoBehaviour
         BattleFieldSlot slot,
         BaseCardData participantCard)
     {
-        if (slot == null || slot.broadcastCard == null)
-            return 0;
-
-        // TODO: cards.json에 방송 슬롯 스탯 보정용 ref/params가 추가되면 id fallback 대신 ref 기반으로 처리한다.
-        if (string.Equals(slot.broadcastCard.id, "BRST-STL004", StringComparison.OrdinalIgnoreCase))
-            return -1;
-
         return 0;
+    }
+
+    private int CalculateBroadcastHpMaxDelta(BattleFieldSlot slot)
+    {
+        EffectData effect = FindBroadcastEffect(
+            slot,
+            "broadcast.always.prepViewersAndOccupantHpDelta");
+
+        return GetEffectIntParamForBattleManager(effect, "hpMaxDelta", 0);
+    }
+
+    private int CalculateBroadcastHealBonus(BattleFieldSlot slot)
+    {
+        EffectData effect = FindBroadcastEffect(
+            slot,
+            "broadcast.always.prepViewersAndHealBonus");
+
+        return Mathf.Max(0, GetEffectIntParamForBattleManager(effect, "healBonus", 0));
     }
 
     private int GetInstalledContentCharacterTensionModifier(BattleFieldSlot slot)
@@ -2611,6 +2824,77 @@ public class BattleManager : MonoBehaviour
             : "";
     }
 
+    private bool HasBroadcastEffectBoolParam(
+        BattleFieldSlot slot,
+        string effectRef,
+        string paramKey)
+    {
+        EffectData effect = FindBroadcastEffect(slot, effectRef);
+        return GetEffectBoolParamForBattleManager(effect, paramKey, false);
+    }
+
+    private bool HasCharacterOwnedByOnBroadcastEffectBoolParam(
+        BattleSlotOwner characterOwner,
+        string effectRef,
+        string paramKey)
+    {
+        return HasCharacterOwnedByOnBroadcastEffectBoolParam(myBattleSlots, characterOwner, effectRef, paramKey) ||
+            HasCharacterOwnedByOnBroadcastEffectBoolParam(enemyBattleSlots, characterOwner, effectRef, paramKey);
+    }
+
+    private bool HasCharacterOwnedByOnBroadcastEffectBoolParam(
+        List<BattleFieldSlot> slots,
+        BattleSlotOwner characterOwner,
+        string effectRef,
+        string paramKey)
+    {
+        if (slots == null)
+            return false;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null ||
+                !slot.HasCharacter ||
+                slot.characterOwner != characterOwner)
+            {
+                continue;
+            }
+
+            if (HasBroadcastEffectBoolParam(slot, effectRef, paramKey))
+                return true;
+        }
+
+        return false;
+    }
+
+    private EffectData FindBroadcastEffect(BattleFieldSlot slot, string effectRef)
+    {
+        if (slot == null ||
+            slot.broadcastCard == null ||
+            string.IsNullOrWhiteSpace(effectRef))
+        {
+            return null;
+        }
+
+        BroadcastCardData broadcast = slot.broadcastCard as BroadcastCardData;
+
+        if (broadcast == null || broadcast.effects == null)
+            return null;
+
+        foreach (EffectData effect in broadcast.effects)
+        {
+            if (string.Equals(
+                GetEffectRefForBattleManager(effect),
+                effectRef,
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return effect;
+            }
+        }
+
+        return null;
+    }
+
     private bool CardHasHashtag(BaseCardData card, string tag)
     {
         if (card == null || card.hashtags == null || string.IsNullOrEmpty(tag))
@@ -2625,6 +2909,31 @@ public class BattleManager : MonoBehaviour
         }
 
         return false;
+    }
+
+    private bool GetEffectBoolParamForBattleManager(
+        EffectData effect,
+        string key,
+        bool defaultValue)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrEmpty(key))
+            return defaultValue;
+
+        switch (key)
+        {
+            case "forbidFaceDownSummon":
+                return effectParams.forbidFaceDownSummon;
+            case "disablePreCollabEffects":
+                return effectParams.disablePreCollabEffects;
+            case "disableIdolActiveForOccupantOwner":
+                return effectParams.disableIdolActiveForOccupantOwner;
+            case "lockMoveOnEnterUntilNextTurn":
+                return effectParams.lockMoveOnEnterUntilNextTurn;
+            default:
+                return defaultValue;
+        }
     }
 
     private string NormalizeTagForComparison(string tag)
@@ -2646,6 +2955,14 @@ public class BattleManager : MonoBehaviour
 
         switch (key)
         {
+            case "amount":
+                return effectParams.amount;
+            case "viewersModifier":
+                return effectParams.viewersModifier;
+            case "hpMaxDelta":
+                return effectParams.hpMaxDelta;
+            case "healBonus":
+                return effectParams.healBonus;
             case "tension":
                 return effectParams.tension;
             case "hp":
@@ -3082,7 +3399,33 @@ public class BattleManager : MonoBehaviour
         if (movementManager != null)
             movementManager.ResetAllCharacterMoveFlagsForNewTurn();
 
+        ClearExpiredBroadcastMoveLocks();
         ResetAllCharacterActiveFlagsForNewTurn();
+    }
+
+    private void ClearExpiredBroadcastMoveLocks()
+    {
+        ClearExpiredBroadcastMoveLocks(myBattleSlots);
+        ClearExpiredBroadcastMoveLocks(enemyBattleSlots);
+    }
+
+    private void ClearExpiredBroadcastMoveLocks(List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null ||
+                !slot.HasCharacter ||
+                slot.movementLockedByBroadcastUntilTurn < 0)
+            {
+                continue;
+            }
+
+            if (turnCount > slot.movementLockedByBroadcastUntilTurn)
+                slot.SetMovementLockedByBroadcastUntilTurn(-1);
+        }
     }
 
     private void ResetAllCharacterActiveFlagsForNewTurn()
@@ -3277,6 +3620,13 @@ public class BattleManager : MonoBehaviour
         BattleFieldSlot defenderSlot,
         Action onComplete)
     {
+        if (IsPreCollabEffectDisabledByBroadcastFromExternal(attackerSlot, defenderSlot, out string disabledMessage))
+        {
+            SetSystemMessage(disabledMessage);
+            onComplete?.Invoke();
+            return;
+        }
+
         if (effectManager == null)
         {
             onComplete?.Invoke();
@@ -3794,13 +4144,15 @@ public class BattleManager : MonoBehaviour
             slot != null &&
             slot.owner == BattleSlotOwner.Enemy &&
             slot.HasBroadcast &&
-            !slot.HasCharacter
+            !slot.HasCharacter &&
+            !IsFaceDownSummonForbiddenByBroadcastFromExternal(slot, out _)
         );
 
         if (targetSlot == null)
             return false;
 
         targetSlot.SetCharacterCard(characterCard, cardBackSprite, true, BattleSlotOwner.Enemy);
+        ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         targetSlot.faceDownSummonedTurn = turnCount;
         enemyPlayer.hand.Remove(characterCard);
 
@@ -3874,6 +4226,7 @@ public class BattleManager : MonoBehaviour
         enemyPlayer.viewers -= cost;
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.Enemy);
+        ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         targetSlot.faceUpSummonedTurn = turnCount;
 
         RefreshAllUI();
@@ -3932,6 +4285,7 @@ public class BattleManager : MonoBehaviour
         enemyPlayer.viewers -= cost;
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.Enemy);
+        ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         targetSlot.faceUpSummonedTurn = turnCount;
         enemyPlayer.hand.Remove(characterCard);
 
@@ -4251,6 +4605,12 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
+        if (IsIdolActiveDisabledByBroadcastFromExternal(owner))
+        {
+            failReason = "공포게임 위에 있는 캐릭터 때문에 아이돌 액티브를 사용할 수 없습니다.";
+            return false;
+        }
+
         if (HasUsedIdolActiveThisTurn(owner))
         {
             failReason = "이미 이번 턴에 아이돌 액티브 효과를 사용했습니다.";
@@ -4281,7 +4641,13 @@ public class BattleManager : MonoBehaviour
         BaseCardData idolCard = GetIdolCardFromExternal(owner);
         bool waitForEffectCompletion = IsIdolActiveEffectRef(
             idolCard,
-            "idol.active.fullHealOneControlled");
+            "idol.active.fullHealOneControlled") ||
+            IsIdolActiveEffectRef(
+                idolCard,
+                "idol.active.callFromRestByTagThenDonateViewers") ||
+            IsIdolActiveEffectRef(
+                idolCard,
+                "idol.active.fetchTabiOrRestBoongAndFetchBoth");
 
         EffectActivationRequest request = new EffectActivationRequest
         {
@@ -6201,7 +6567,9 @@ public class BattleManager : MonoBehaviour
         int baseGain = GetIdolBaseViewersPerPrep(player);
         int totalGain = baseGain;
 
-        AddPrepViewerGainFromSlots(GetBattleSlots(characterOwner), characterOwner, baseGain, ref totalGain);
+        AddPrepViewerGainFromSlots(myBattleSlots, characterOwner, baseGain, ref totalGain);
+        AddPrepViewerGainFromSlots(enemyBattleSlots, characterOwner, baseGain, ref totalGain);
+        totalGain += CalculatePrepViewerPassiveBonus(characterOwner);
 
         return Mathf.Max(0, totalGain);
     }
@@ -6230,10 +6598,175 @@ public class BattleManager : MonoBehaviour
                 continue;
 
             int slotGain = baseGain;
-            slotGain += GetBroadcastViewersModifier(slot.broadcastCard);
+            slotGain += CalculateBroadcastPrepViewerModifier(slot);
 
             totalGain += slotGain;
         }
+    }
+
+    private int CalculateBroadcastPrepViewerModifier(BattleFieldSlot slot)
+    {
+        if (slot == null || slot.broadcastCard == null)
+            return 0;
+
+        BroadcastCardData broadcast = slot.broadcastCard as BroadcastCardData;
+
+        if (broadcast == null)
+            return 0;
+
+        bool handledByEffectRef = false;
+        int modifier = 0;
+
+        if (broadcast.effects != null)
+        {
+            foreach (EffectData effect in broadcast.effects)
+            {
+                string effectRef = GetEffectRefForBattleManager(effect);
+
+                if (string.Equals(effectRef, "broadcast.always.prepViewersAndOccupantHpDelta", StringComparison.OrdinalIgnoreCase))
+                {
+                    handledByEffectRef = true;
+                    modifier += GetEffectIntParamForBattleManager(effect, "viewersModifier", 0);
+                }
+                else if (string.Equals(effectRef, "broadcast.always.taggedOccupantPrepViewersBonus", StringComparison.OrdinalIgnoreCase))
+                {
+                    handledByEffectRef = true;
+                    modifier += CalculateTaggedOccupantPrepViewerBonus(slot, effect);
+                }
+                else if (string.Equals(effectRef, "broadcast.always.prepViewersAndHealBonus", StringComparison.OrdinalIgnoreCase))
+                {
+                    handledByEffectRef = true;
+                    modifier += GetEffectIntParamForBattleManager(effect, "viewersModifier", 0);
+                }
+            }
+        }
+
+        if (!handledByEffectRef)
+            modifier += GetBroadcastViewersModifier(broadcast);
+
+        return modifier;
+    }
+
+    private int CalculateTaggedOccupantPrepViewerBonus(BattleFieldSlot slot, EffectData effect)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.isCharacterFaceDown ||
+            slot.characterCard == null)
+        {
+            return 0;
+        }
+
+        string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
+
+        if (string.IsNullOrEmpty(tag) || !CardHasHashtag(slot.characterCard, tag))
+            return 0;
+
+        return GetEffectIntParamForBattleManager(effect, "amount", 0);
+    }
+
+    private int CalculatePrepViewerPassiveBonus(BattleSlotOwner characterOwner)
+    {
+        int bonus = 0;
+
+        AddPrepViewerPassiveBonusFromSlots(myBattleSlots, characterOwner, ref bonus);
+        AddPrepViewerPassiveBonusFromSlots(enemyBattleSlots, characterOwner, ref bonus);
+
+        return bonus;
+    }
+
+    private void AddPrepViewerPassiveBonusFromSlots(
+        List<BattleFieldSlot> slots,
+        BattleSlotOwner characterOwner,
+        ref int bonus)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (!IsFaceUpCharacterOwnedBy(slot, characterOwner))
+                continue;
+
+            CharacterCardData character = slot.characterCard as CharacterCardData;
+
+            if (character == null || character.effects == null)
+                continue;
+
+            foreach (EffectData effect in character.effects)
+            {
+                string effectRef = GetEffectRefForBattleManager(effect);
+
+                if (string.Equals(effectRef, "character.passive.viewersBonusIfAdjacentToTag", StringComparison.OrdinalIgnoreCase))
+                {
+                    string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
+
+                    if (!HasAdjacentFaceUpOwnedCharacterWithTag(slot, characterOwner, tag))
+                        continue;
+
+                    int amount = GetEffectIntParamForBattleManager(effect, "amount", 0);
+                    bonus += amount;
+                    Debug.Log($"{character.name} 패시브: {FormatSignedAmount(amount)}");
+                }
+                else if (string.Equals(effectRef, "character.passive.reduceOwnerPrepViewers", StringComparison.OrdinalIgnoreCase))
+                {
+                    int amount = GetEffectIntParamForBattleManager(effect, "amount", 0);
+                    bonus += amount;
+                    Debug.Log($"{character.name} 패시브: {FormatSignedAmount(amount)}");
+                }
+            }
+        }
+    }
+
+    private bool HasAdjacentFaceUpOwnedCharacterWithTag(
+        BattleFieldSlot sourceSlot,
+        BattleSlotOwner characterOwner,
+        string tag)
+    {
+        if (sourceSlot == null || string.IsNullOrEmpty(tag))
+            return false;
+
+        foreach (BattleFieldSlot slot in GetBattleSlots(sourceSlot.owner))
+        {
+            if (!IsFaceUpCharacterOwnedBy(slot, characterOwner))
+                continue;
+
+            if (!AreSlotsOrthogonallyAdjacentOnSameField(sourceSlot, slot))
+                continue;
+
+            if (CardHasHashtag(slot.characterCard, tag))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool IsFaceUpCharacterOwnedBy(BattleFieldSlot slot, BattleSlotOwner characterOwner)
+    {
+        return slot != null &&
+            slot.HasCharacter &&
+            !slot.isCharacterFaceDown &&
+            slot.characterOwner == characterOwner;
+    }
+
+    private bool AreSlotsOrthogonallyAdjacentOnSameField(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        if (sourceSlot == null || targetSlot == null || sourceSlot == targetSlot)
+            return false;
+
+        if (sourceSlot.owner != targetSlot.owner)
+            return false;
+
+        int distance =
+            Mathf.Abs(sourceSlot.x - targetSlot.x) +
+            Mathf.Abs(sourceSlot.y - targetSlot.y);
+
+        return distance == 1;
+    }
+
+    private string FormatSignedAmount(int amount)
+    {
+        return amount >= 0 ? $"+{amount}" : amount.ToString();
     }
 
     private List<BattleFieldSlot> GetBattleSlots(BattleSlotOwner owner)

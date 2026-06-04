@@ -53,6 +53,8 @@ public class BattleFieldSlot : MonoBehaviour,
     public BattleSlotOwner contentOwner { get; private set; }
     public int faceDownSummonedTurn = -1;
     public int faceUpSummonedTurn = -1;
+    public int movementLockedByBroadcastUntilTurn { get; private set; } = -1;
+    public int broadcastHpMaxDelta { get; private set; } = 0;
     public int currentCharacterTension { get; private set; }
     public int currentCharacterHp { get; private set; }
     public int currentCharacterMaxHp { get; private set; }
@@ -305,6 +307,7 @@ public class BattleFieldSlot : MonoBehaviour,
         int previousHp = currentCharacterHp;
         int previousMaxHp = currentCharacterMaxHp;
         int previousTension = currentCharacterTension;
+        int previousBroadcastHpMaxDelta = broadcastHpMaxDelta;
 
         bool isSameCharacter = previousCard != null && previousCard == card;
 
@@ -313,6 +316,8 @@ public class BattleFieldSlot : MonoBehaviour,
         isCharacterFaceDown = faceDown;
         characterMovedThisTurn = false;
         characterActiveUsedThisTurn = false;
+        movementLockedByBroadcastUntilTurn = -1;
+        broadcastHpMaxDelta = isSameCharacter ? previousBroadcastHpMaxDelta : 0;
 
         if (!faceDown)
             faceDownSummonedTurn = -1;
@@ -449,6 +454,8 @@ public class BattleFieldSlot : MonoBehaviour,
         faceUpSummonedTurn = -1;
         characterMovedThisTurn = false;
         characterActiveUsedThisTurn = false;
+        movementLockedByBroadcastUntilTurn = -1;
+        broadcastHpMaxDelta = 0;
         currentCharacterHp = 0;
         currentCharacterMaxHp = 0;
         currentCharacterTension = 0;
@@ -589,6 +596,8 @@ public class BattleFieldSlot : MonoBehaviour,
         faceUpSummonedTurn = -1;
         characterMovedThisTurn = false;
         characterActiveUsedThisTurn = false;
+        movementLockedByBroadcastUntilTurn = -1;
+        broadcastHpMaxDelta = 0;
 
         isCharacterFaceDown = false;
 
@@ -746,6 +755,34 @@ public class BattleFieldSlot : MonoBehaviour,
     public void SetCharacterActiveUsedThisTurn(bool value)
     {
         characterActiveUsedThisTurn = value;
+    }
+
+    public void SetMovementLockedByBroadcastUntilTurn(int turn)
+    {
+        movementLockedByBroadcastUntilTurn = turn;
+    }
+
+    public void SetBroadcastHpMaxDelta(int delta)
+    {
+        broadcastHpMaxDelta = delta;
+    }
+
+    public void ApplyBroadcastHpMaxDelta(int delta)
+    {
+        if (!HasCharacter)
+        {
+            broadcastHpMaxDelta = 0;
+            return;
+        }
+
+        int maxHpBeforeBroadcast = currentCharacterMaxHp - broadcastHpMaxDelta;
+        int nextMaxHp = Mathf.Max(1, maxHpBeforeBroadcast + delta);
+
+        broadcastHpMaxDelta = delta;
+        currentCharacterMaxHp = nextMaxHp;
+
+        if (currentCharacterHp > currentCharacterMaxHp)
+            currentCharacterHp = currentCharacterMaxHp;
     }
 
     public void SetCharacterDoubleClickAction(Action<BattleFieldSlot, BaseCardData> doubleClickAction)

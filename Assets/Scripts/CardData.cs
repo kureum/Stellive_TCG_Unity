@@ -51,6 +51,11 @@ public class EffectParams
     public int range;
     public int reveal;
     public int extraCostPer;
+    public int viewersModifier;
+    public int healBonus;
+    public int donateViewers;
+    public int donateAmount;
+    public int viewersCost;
     public string tag;
     public string requireTag;
     public string tabiTag;
@@ -65,6 +70,10 @@ public class EffectParams
     public bool oncePerTurn;
     public bool faceUp;
     public bool shuffleDeckAfterMove;
+    public bool forbidFaceDownSummon;
+    public bool disablePreCollabEffects;
+    public bool disableIdolActiveForOccupantOwner;
+    public bool lockMoveOnEnterUntilNextTurn;
 }
 
 [Serializable]

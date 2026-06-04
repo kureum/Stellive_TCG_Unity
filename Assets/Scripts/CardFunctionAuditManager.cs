@@ -274,14 +274,22 @@ public class CardFunctionAuditManager : MonoBehaviour
         if (description.Contains("합방 후") && timing != "PostCollab")
             entry.warnings.Add("description mentions 합방 후 but timing is not PostCollab.");
 
-        if (description.Contains("합방 전") && timing != "PreCollab")
+        if (description.Contains("합방 전") &&
+            timing != "PreCollab" &&
+            !IsBroadcastAlwaysEffect(entry))
+        {
             entry.warnings.Add("description mentions 합방 전 but timing is not PreCollab.");
+        }
 
         if (effectParams != null && !string.IsNullOrWhiteSpace(effectParams.tag))
             AddTagMismatchWarnings(entry, description, effectParams.tag.Trim());
 
-        if (refId.Contains("FromHand") && MentionsRestZone(description))
+        if (refId.Contains("FromHand") &&
+            MentionsRestZone(description) &&
+            !MentionsHandToRestFallback(description))
+        {
             entry.warnings.Add("ref name contains FromHand but description mentions 휴식 존.");
+        }
 
         if (refId.Contains("FromRest") && MentionsHand(description))
             entry.warnings.Add("ref name contains FromRest but description mentions 패.");
@@ -303,7 +311,7 @@ public class CardFunctionAuditManager : MonoBehaviour
                 mentionedTags.Add(tag);
         }
 
-        if (mentionedTags.Count == 0 || mentionedTags.Contains(paramTag))
+        if (mentionedTags.Count == 0 || MentionsParamTag(mentionedTags, paramTag))
             return;
 
         entry.warnings.Add($"description mentions {string.Join("/", mentionedTags)} but params.tag is {paramTag}.");
@@ -313,6 +321,73 @@ public class CardFunctionAuditManager : MonoBehaviour
     {
         return !string.IsNullOrWhiteSpace(description) &&
             (description.Contains("휴식 존") || description.Contains("휴식존"));
+    }
+
+    private bool IsBroadcastAlwaysEffect(EffectAuditEntry entry)
+    {
+        return entry != null &&
+            entry.cardKind == "Broadcast" &&
+            entry.timing == "Always";
+    }
+
+    private bool MentionsHandToRestFallback(string description)
+    {
+        return MentionsHand(description) &&
+            MentionsRestZone(description) &&
+            !string.IsNullOrWhiteSpace(description) &&
+            (description.Contains("출연시킬 수 없") ||
+             description.Contains("소환할 수 없") ||
+             description.Contains("사용할 수 없"));
+    }
+
+    private bool MentionsParamTag(HashSet<string> mentionedTags, string paramTag)
+    {
+        if (mentionedTags == null || string.IsNullOrWhiteSpace(paramTag))
+            return false;
+
+        foreach (string mentionedTag in mentionedTags)
+        {
+            if (string.Equals(mentionedTag, paramTag, System.StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (StartsWithParamTagParticle(mentionedTag, paramTag))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool StartsWithParamTagParticle(string mentionedTag, string paramTag)
+    {
+        if (string.IsNullOrWhiteSpace(mentionedTag) ||
+            string.IsNullOrWhiteSpace(paramTag) ||
+            !mentionedTag.StartsWith(paramTag, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string suffix = mentionedTag.Substring(paramTag.Length);
+
+        switch (suffix)
+        {
+            case "은":
+            case "는":
+            case "이":
+            case "가":
+            case "을":
+            case "를":
+            case "과":
+            case "와":
+            case "의":
+            case "도":
+            case "만":
+            case "로":
+            case "으로":
+            case "에게":
+                return true;
+            default:
+                return false;
+        }
     }
 
     private bool MentionsHand(string description)
@@ -637,6 +712,11 @@ public class CardFunctionAuditManager : MonoBehaviour
         AddIntParam(parts, "range", effectParams.range);
         AddIntParam(parts, "reveal", effectParams.reveal);
         AddIntParam(parts, "extraCostPer", effectParams.extraCostPer);
+        AddIntParam(parts, "viewersModifier", effectParams.viewersModifier);
+        AddIntParam(parts, "healBonus", effectParams.healBonus);
+        AddIntParam(parts, "donateViewers", effectParams.donateViewers);
+        AddIntParam(parts, "donateAmount", effectParams.donateAmount);
+        AddIntParam(parts, "viewersCost", effectParams.viewersCost);
         AddStringParam(parts, "tag", effectParams.tag);
         AddStringParam(parts, "requireTag", effectParams.requireTag);
         AddStringParam(parts, "tabiTag", effectParams.tabiTag);
@@ -652,6 +732,12 @@ public class CardFunctionAuditManager : MonoBehaviour
         if (effectParams.faceUp)
             parts.Add("faceUp=true");
 
+        AddBoolParam(parts, "shuffleDeckAfterMove", effectParams.shuffleDeckAfterMove);
+        AddBoolParam(parts, "forbidFaceDownSummon", effectParams.forbidFaceDownSummon);
+        AddBoolParam(parts, "disablePreCollabEffects", effectParams.disablePreCollabEffects);
+        AddBoolParam(parts, "disableIdolActiveForOccupantOwner", effectParams.disableIdolActiveForOccupantOwner);
+        AddBoolParam(parts, "lockMoveOnEnterUntilNextTurn", effectParams.lockMoveOnEnterUntilNextTurn);
+
         return parts.Count > 0 ? string.Join(", ", parts) : "{}";
     }
 
@@ -665,6 +751,12 @@ public class CardFunctionAuditManager : MonoBehaviour
     {
         if (parts != null && !string.IsNullOrWhiteSpace(value))
             parts.Add($"{name}={value}");
+    }
+
+    private void AddBoolParam(List<string> parts, string name, bool value)
+    {
+        if (parts != null && value)
+            parts.Add($"{name}=true");
     }
 
     private string DisplayRef(string refId)

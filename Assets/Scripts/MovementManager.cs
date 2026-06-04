@@ -325,12 +325,18 @@ public class MovementManager : MonoBehaviour
         int currentMaxHp = fromSlot.currentCharacterMaxHp;
         int currentTension = fromSlot.currentCharacterTension;
         bool activeUsedThisTurn = fromSlot.characterActiveUsedThisTurn;
+        int movementLockedUntilTurn = fromSlot.movementLockedByBroadcastUntilTurn;
+        int broadcastHpMaxDelta = fromSlot.broadcastHpMaxDelta;
 
         toSlot.SetCharacterCard(card, currentSprite, wasFaceDown, movingCardOwner);
         toSlot.SetCharacterBattleStats(currentHp, currentMaxHp, currentTension);
         toSlot.SetCharacterMovedThisTurn(true);
         toSlot.SetCharacterActiveUsedThisTurn(activeUsedThisTurn);
+        toSlot.SetMovementLockedByBroadcastUntilTurn(movementLockedUntilTurn);
+        toSlot.SetBroadcastHpMaxDelta(broadcastHpMaxDelta);
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(toSlot, true);
 
+        battleManager.ApplyBroadcastLeaveEffectsFromExternal(fromSlot);
         fromSlot.ClearCharacterCard();
 
         string fromOwnerName = fromSlot.owner == BattleSlotOwner.My ? "내 필드" : "상대 필드";
@@ -427,6 +433,9 @@ public class MovementManager : MonoBehaviour
             failReason = "이 캐릭터는 이번 턴에 이미 이동했습니다.";
             return false;
         }
+
+        if (battleManager.IsCharacterMoveLockedByBroadcastFromExternal(fromSlot, out failReason))
+            return false;
 
         if (card.kind != "Character")
         {
