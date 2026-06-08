@@ -6,6 +6,7 @@ using System.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
@@ -181,6 +182,10 @@ public class BattleManager : MonoBehaviour
     private bool hasUsedEnemyIdolActiveThisTurn = false;
     private float lastIdolClickTime = -10f;
     private readonly HashSet<BattleFieldSlot> resolvingRestSlots = new HashSet<BattleFieldSlot>();
+    private readonly HashSet<BattleFieldSlot> pendingFieldSlotSelectionValidSlots = new HashSet<BattleFieldSlot>();
+    private Action<BattleFieldSlot> pendingFieldSlotSelectionSelectedAction;
+    private Action pendingFieldSlotSelectionCancelAction;
+    private bool isFieldSlotSelectionModeActive;
 
     private bool enemyHasSummonedFaceDownThisTurn = false;
     private TestEnemy testEnemyController;
@@ -265,6 +270,16 @@ public class BattleManager : MonoBehaviour
             battleResultPanel.SetActive(false);
 
         StartBattleSetup();
+    }
+
+    private void Update()
+    {
+        if (!isFieldSlotSelectionModeActive)
+            return;
+
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard != null && keyboard.escapeKey.wasPressedThisFrame)
+            CancelPendingFieldSlotSelection();
     }
 
     private void ResolveBattleResultPanel()
@@ -642,6 +657,7 @@ public class BattleManager : MonoBehaviour
                 OnClickCharacterCardOnField,
                 OnClickContentCardOnField,
                 OnDropHandCardOnFieldSlot,
+                OnPointerClickFieldSlot,
                 OnBeginDragFieldCharacter,
                 OnDragFieldCharacter,
                 OnEndDragFieldCharacter
@@ -663,6 +679,7 @@ public class BattleManager : MonoBehaviour
                 OnClickCharacterCardOnField,
                 OnClickContentCardOnField,
                 OnDropHandCardOnFieldSlot,
+                OnPointerClickFieldSlot,
                 OnBeginDragFieldCharacter,
                 OnDragFieldCharacter,
                 OnEndDragFieldCharacter
@@ -1064,6 +1081,9 @@ public class BattleManager : MonoBehaviour
     private void OnClickFieldSlot(BattleFieldSlot slot)
     {
         if (slot == null)
+            return;
+
+        if (HandlePendingFieldSlotSelectionClick(slot))
             return;
 
         string inputFailReason;
@@ -1628,6 +1648,144 @@ public class BattleManager : MonoBehaviour
         get { return cardQuestionPanel; }
     }
 
+    public bool IsFieldSlotSelectionModeActiveFromExternal
+    {
+        get { return isFieldSlotSelectionModeActive; }
+    }
+
+    public bool RequestFieldSlotSelection(
+        string message,
+        List<BattleFieldSlot> validSlots,
+        Action<BattleFieldSlot> onSelected,
+        Action onCancel = null)
+    {
+        if (onSelected == null)
+        {
+            SetSystemMessage("슬롯 선택 콜백이 없습니다.");
+            return false;
+        }
+
+        if (validSlots == null || validSlots.Count == 0)
+        {
+            SetSystemMessage("선택할 수 있는 위치가 없습니다.");
+            return false;
+        }
+
+        if (questionPanel != null && questionPanel.IsOpen())
+        {
+            SetSystemMessage("이미 선택창이 열려 있습니다.");
+            return false;
+        }
+
+        if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+        {
+            SetSystemMessage("이미 카드 선택창이 열려 있습니다.");
+            return false;
+        }
+
+        ClearPendingFieldSlotSelection(false);
+
+        foreach (BattleFieldSlot slot in validSlots)
+        {
+            if (slot == null)
+                continue;
+
+            pendingFieldSlotSelectionValidSlots.Add(slot);
+            slot.SetQuestionTargetHighlight(true);
+        }
+
+        if (pendingFieldSlotSelectionValidSlots.Count == 0)
+        {
+            SetSystemMessage("선택할 수 있는 위치가 없습니다.");
+            return false;
+        }
+
+        pendingFieldSlotSelectionSelectedAction = onSelected;
+        pendingFieldSlotSelectionCancelAction = onCancel;
+        isFieldSlotSelectionModeActive = true;
+        SetBattleBusy(true, "FieldSlotSelection");
+        SetSystemMessage(string.IsNullOrWhiteSpace(message) ? "출연시킬 위치를 골라주세요." : message);
+        return true;
+    }
+
+    public void ClearPendingFieldSlotSelectionFromExternal()
+    {
+        ClearPendingFieldSlotSelection(false);
+    }
+
+    public void CancelPendingFieldSlotSelectionFromExternal()
+    {
+        CancelPendingFieldSlotSelection();
+    }
+
+    private void OnPointerClickFieldSlot(BattleFieldSlot slot, PointerEventData eventData)
+    {
+        if (!isFieldSlotSelectionModeActive)
+            return;
+
+        if (eventData != null && eventData.button == PointerEventData.InputButton.Right)
+        {
+            CancelPendingFieldSlotSelection();
+            return;
+        }
+
+        if (eventData != null && eventData.button != PointerEventData.InputButton.Left)
+            return;
+
+        HandlePendingFieldSlotSelectionClick(slot);
+    }
+
+    private bool HandlePendingFieldSlotSelectionClick(BattleFieldSlot slot)
+    {
+        if (!isFieldSlotSelectionModeActive)
+            return false;
+
+        if (slot == null || !pendingFieldSlotSelectionValidSlots.Contains(slot))
+        {
+            SetSystemMessage("선택할 수 없는 위치입니다.");
+            return true;
+        }
+
+        Action<BattleFieldSlot> selectedAction = pendingFieldSlotSelectionSelectedAction;
+        ClearPendingFieldSlotSelection(false);
+        selectedAction?.Invoke(slot);
+        return true;
+    }
+
+    private void CancelPendingFieldSlotSelection()
+    {
+        if (!isFieldSlotSelectionModeActive)
+            return;
+
+        Action cancelAction = pendingFieldSlotSelectionCancelAction;
+        ClearPendingFieldSlotSelection(false);
+        SetSystemMessage("위치 선택을 취소했습니다.");
+        cancelAction?.Invoke();
+    }
+
+    private void ClearPendingFieldSlotSelection(bool invokeCancel)
+    {
+        bool wasActive = isFieldSlotSelectionModeActive;
+        Action cancelAction = pendingFieldSlotSelectionCancelAction;
+
+        foreach (BattleFieldSlot slot in pendingFieldSlotSelectionValidSlots)
+        {
+            if (slot != null)
+                slot.SetQuestionTargetHighlight(false);
+        }
+
+        pendingFieldSlotSelectionValidSlots.Clear();
+        pendingFieldSlotSelectionSelectedAction = null;
+        pendingFieldSlotSelectionCancelAction = null;
+        isFieldSlotSelectionModeActive = false;
+
+        if (wasActive)
+            SetBattleBusy(false, "ClearPendingFieldSlotSelection");
+
+        if (invokeCancel && wasActive)
+            cancelAction?.Invoke();
+    }
+
     public BattlePhase CurrentPhaseFromExternal
     {
         get { return currentPhase; }
@@ -1671,6 +1829,69 @@ public class BattleManager : MonoBehaviour
     public int GetCurrentTurnCountFromExternal()
     {
         return turnCount;
+    }
+
+    public bool IsCharacterCollabEffectSilencedFromExternal(BattleFieldSlot slot)
+    {
+        return slot != null && slot.IsCollabEffectsSilenced(turnCount);
+    }
+
+    public void ApplyCollabEffectSilenceThisTurnFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return;
+
+        slot.SetCollabEffectsSilencedUntilTurn(turnCount);
+    }
+
+    public void ApplyCollabAttackForbiddenUntilNextTurnFromExternal(BattleFieldSlot targetSlot)
+    {
+        if (targetSlot == null || !targetSlot.HasCharacter)
+            return;
+
+        int untilTurn = turnCount + 1;
+        targetSlot.SetCollabAttackForbiddenUntilTurn(untilTurn);
+
+        string cardName = targetSlot.characterCard != null
+            ? targetSlot.characterCard.name
+            : "대상 캐릭터";
+        SetSystemMessageFromExternal($"{cardName}은(는) 다음 턴까지 합방을 시작할 수 없습니다.");
+    }
+
+    public bool IsCollabAttackForbiddenFromExternal(BattleFieldSlot slot)
+    {
+        return slot != null && slot.IsCollabAttackForbidden(turnCount);
+    }
+
+    public int CalculateNextOpponentTurnEndLockUntilTurnFromExternal()
+    {
+        return turnCount + 1;
+    }
+
+    public void ApplyBroadcastMoveAndKoLockFromExternal(BattleFieldSlot slot, int untilTurn)
+    {
+        if (slot == null || !slot.HasBroadcast)
+            return;
+
+        slot.SetBroadcastMoveAndKoLockedUntilTurn(untilTurn);
+    }
+
+    public bool IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(
+        BattleFieldSlot slot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (slot == null || !slot.IsBroadcastMoveAndKoLocked(turnCount))
+            return false;
+
+        failReason = "이 방송 슬롯의 효과로 이동할 수 없습니다.";
+        return true;
+    }
+
+    public bool ShouldPreventCollabKOByBroadcastMoveAndKoLockFromExternal(BattleFieldSlot slot)
+    {
+        return slot != null && slot.IsBroadcastMoveAndKoLocked(turnCount);
     }
 
     public bool CanUseMyActionFromExternal(out string failReason)
@@ -2609,6 +2830,7 @@ public class BattleManager : MonoBehaviour
         BattleFieldSlot locationSlot = battleLocationSlot != null ? battleLocationSlot : participantSlot;
         int tension = participantSlot.currentCharacterTension;
         tension += GetSlotCharacterTensionModifierFromExternal(participantSlot, locationSlot);
+        tension += CalculateAdjacentCollabTensionDeltaForTag(participantSlot);
 
         if (effectManager != null)
         {
@@ -2635,6 +2857,72 @@ public class BattleManager : MonoBehaviour
         }
 
         return Mathf.Max(0, tension);
+    }
+
+    private int CalculateAdjacentCollabTensionDeltaForTag(BattleFieldSlot participantSlot)
+    {
+        if (participantSlot == null ||
+            !participantSlot.HasCharacter ||
+            participantSlot.characterCard == null ||
+            participantSlot.isCharacterFaceDown)
+        {
+            return 0;
+        }
+
+        int totalDelta = 0;
+        AddAdjacentCollabTensionDeltaForTagFromSlots(participantSlot, myBattleSlots, ref totalDelta);
+        AddAdjacentCollabTensionDeltaForTagFromSlots(participantSlot, enemyBattleSlots, ref totalDelta);
+        return totalDelta;
+    }
+
+    private void AddAdjacentCollabTensionDeltaForTagFromSlots(
+        BattleFieldSlot participantSlot,
+        IEnumerable<BattleFieldSlot> sourceSlots,
+        ref int totalDelta)
+    {
+        if (participantSlot == null || sourceSlots == null)
+            return;
+
+        foreach (BattleFieldSlot sourceSlot in sourceSlots)
+        {
+            if (sourceSlot == null ||
+                sourceSlot == participantSlot ||
+                !sourceSlot.HasCharacter ||
+                sourceSlot.characterCard == null ||
+                sourceSlot.isCharacterFaceDown ||
+                sourceSlot.currentCharacterHp <= 0)
+            {
+                continue;
+            }
+
+            if (!AreSlotsOrthogonallyAdjacentOnSameField(sourceSlot, participantSlot))
+                continue;
+
+            CharacterCardData sourceCharacter = sourceSlot.characterCard as CharacterCardData;
+            if (sourceCharacter == null || sourceCharacter.effects == null)
+                continue;
+
+            foreach (EffectData effect in sourceCharacter.effects)
+            {
+                string effectRef = GetEffectRefForBattleManager(effect);
+                if (!string.Equals(
+                        effectRef,
+                        "character.passive.adjacentCollabTensionDeltaForTag",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
+                if (string.IsNullOrWhiteSpace(tag) ||
+                    !CardHasHashtag(participantSlot.characterCard, tag))
+                {
+                    continue;
+                }
+
+                totalDelta += GetEffectIntParamForBattleManager(effect, "amount", 0);
+            }
+        }
     }
 
     public int GetSlotCharacterHpModifierFromExternal(BattleFieldSlot slot)
@@ -3290,6 +3578,7 @@ public class BattleManager : MonoBehaviour
         return
             $"question={(questionPanel != null && questionPanel.IsOpen())}, " +
             $"cardQuestion={(cardQuestionPanel != null && cardQuestionPanel.IsOpen())}, " +
+            $"fieldSlotSelection={isFieldSlotSelectionModeActive}, " +
             $"summon={(summonManager != null && (summonManager.HasPendingSummonChoice || summonManager.HasPendingFlipChoice))}, " +
             $"move={(movementManager != null && movementManager.HasPendingMoveChoice)}, " +
             $"collab={(collaborationManager != null && collaborationManager.HasPendingCollaborationChoice)}, " +
@@ -3304,6 +3593,7 @@ public class BattleManager : MonoBehaviour
         ClearPendingContentChoice();
         ClearPendingMoveChoice();
         ClearPendingCollaborationChoice();
+        ClearPendingFieldSlotSelection(false);
 
         if (questionPanel != null && questionPanel.IsOpen())
             questionPanel.Hide();
@@ -3330,6 +3620,7 @@ public class BattleManager : MonoBehaviour
         ClearPendingContentChoice();
         ClearPendingMoveChoice();
         ClearPendingCollaborationChoice();
+        ClearPendingFieldSlotSelection(false);
 
         if (effectManager != null)
             effectManager.ClearPendingEffectActivationFromExternal();
@@ -3400,6 +3691,9 @@ public class BattleManager : MonoBehaviour
             movementManager.ResetAllCharacterMoveFlagsForNewTurn();
 
         ClearExpiredBroadcastMoveLocks();
+        ClearExpiredCollabEffectSilences();
+        ClearExpiredCollabAttackForbiddenLocks();
+        ClearExpiredBroadcastMoveAndKoLocks();
         ResetAllCharacterActiveFlagsForNewTurn();
     }
 
@@ -3425,6 +3719,83 @@ public class BattleManager : MonoBehaviour
 
             if (turnCount > slot.movementLockedByBroadcastUntilTurn)
                 slot.SetMovementLockedByBroadcastUntilTurn(-1);
+        }
+    }
+
+    private void ClearExpiredCollabEffectSilences()
+    {
+        ClearExpiredCollabEffectSilences(myBattleSlots);
+        ClearExpiredCollabEffectSilences(enemyBattleSlots);
+    }
+
+    private void ClearExpiredCollabEffectSilences(List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null ||
+                !slot.HasCharacter ||
+                slot.collabEffectsSilencedUntilTurn < 0)
+            {
+                continue;
+            }
+
+            if (turnCount > slot.collabEffectsSilencedUntilTurn)
+                slot.ClearCollabEffectsSilence();
+        }
+    }
+
+    private void ClearExpiredCollabAttackForbiddenLocks()
+    {
+        ClearExpiredCollabAttackForbiddenLocks(myBattleSlots);
+        ClearExpiredCollabAttackForbiddenLocks(enemyBattleSlots);
+    }
+
+    private void ClearExpiredCollabAttackForbiddenLocks(List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null ||
+                !slot.HasCharacter ||
+                slot.collabAttackForbiddenUntilTurn < 0)
+            {
+                continue;
+            }
+
+            if (turnCount > slot.collabAttackForbiddenUntilTurn)
+                slot.ClearCollabAttackForbidden();
+        }
+    }
+
+    private void ClearExpiredBroadcastMoveAndKoLocks()
+    {
+        ClearExpiredBroadcastMoveAndKoLocks(myBattleSlots);
+        ClearExpiredBroadcastMoveAndKoLocks(enemyBattleSlots);
+    }
+
+    private void ClearExpiredBroadcastMoveAndKoLocks(List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null ||
+                slot.broadcastMoveAndKoLockedUntilTurn < 0)
+            {
+                continue;
+            }
+
+            if (turnCount > slot.broadcastMoveAndKoLockedUntilTurn)
+            {
+                slot.ClearBroadcastMoveAndKoLock();
+                Debug.Log($"모라하지마 잠금 만료: slot=({slot.owner}, {slot.x}, {slot.y}), turn={turnCount}");
+            }
         }
     }
 
@@ -3517,9 +3888,13 @@ public class BattleManager : MonoBehaviour
             ? selectedOption.linkedSlot
             : null;
 
-        if (selectedCharacter == null)
+        if (selectedCharacter == null ||
+            selectedSlot == null ||
+            !selectedSlot.HasCharacter ||
+            selectedSlot.characterCard != selectedCharacter ||
+            selectedSlot.isCharacterFaceDown)
         {
-            SetSystemMessage("채팅 밴 대상 카드 정보가 없습니다.");
+            SetSystemMessage("채팅 밴 대상으로 선택할 수 없는 캐릭터입니다.");
             return;
         }
 
@@ -3539,12 +3914,13 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        // TODO: 이 턴 중 합방 효과 사용 불가 상태 부여 예정.
+        ApplyCollabEffectSilenceThisTurnFromExternal(selectedSlot);
+
         string slotText = selectedSlot != null
             ? $" ({selectedSlot.owner} 슬롯 {selectedSlot.x}, {selectedSlot.y})"
             : "";
-        string message = $"채팅 밴 대상 선택: {selectedCharacter.name}{slotText}";
-        Debug.Log($"{message} / TODO: 이 턴 중 합방 효과 사용 불가 상태 부여 예정");
+        string message = $"{selectedCharacter.name}은 이번 턴 합방 효과를 사용할 수 없습니다.{slotText}";
+        Debug.Log($"채팅 밴 적용: {selectedCharacter.name}{slotText}, untilTurn={turnCount}");
 
         RefreshAllUI();
 
@@ -4370,6 +4746,9 @@ public class BattleManager : MonoBehaviour
 
     private void OnClickBroadcastCardOnField(BattleFieldSlot slot, BaseCardData card)
     {
+        if (HandlePendingFieldSlotSelectionClick(slot))
+            return;
+
         string inputFailReason;
         if (IsInputBlocked(out inputFailReason))
         {
@@ -4384,6 +4763,9 @@ public class BattleManager : MonoBehaviour
     private void OnClickCharacterCardOnField(BattleFieldSlot slot, BaseCardData card) 
     {
         if (slot == null || card == null)
+            return;
+
+        if (HandlePendingFieldSlotSelectionClick(slot))
             return;
 
         string inputFailReason;
@@ -4850,6 +5232,9 @@ public class BattleManager : MonoBehaviour
 
     private void OnClickContentCardOnField(BattleFieldSlot slot, BaseCardData card)
     {
+        if (HandlePendingFieldSlotSelectionClick(slot))
+            return;
+
         string inputFailReason;
         if (IsInputBlocked(out inputFailReason))
         {
@@ -4949,7 +5334,7 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (IsLastingContentCard(card))
+        if (CanInstallAsFieldContentCard(card))
         {
             OpenLastingContentInstallQuestion(slot, card);
             return;
@@ -5417,7 +5802,7 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (IsLastingContentCard(card))
+        if (CanInstallAsFieldContentCard(card))
         {
             SelectHandCard(card, handIndex);
             SetSystemMessage(
@@ -5549,7 +5934,7 @@ public class BattleManager : MonoBehaviour
             effectManager.GetPlayableEffects(EffectTiming.Content, context);
         usableContentCandidates.RemoveAll(candidate =>
             candidate == null ||
-            IsLastingContentCard(candidate.card) ||
+            CanInstallAsFieldContentCard(candidate.card) ||
             IsCollabContentCard(candidate.card));
 
         if (usableContentCandidates.Count == 0)
@@ -5817,7 +6202,7 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        if (!IsLastingContentCard(contentCard))
+        if (!CanInstallAsFieldContentCard(contentCard))
         {
             failReason = "지속형 콘텐츠 카드만 필드에 설치할 수 있습니다.";
             return false;
@@ -5891,6 +6276,36 @@ public class BattleManager : MonoBehaviour
         return string.Equals(content.contentType, "Lasting", StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool CanInstallAsFieldContentCard(BaseCardData card)
+    {
+        return IsLastingContentCard(card) &&
+            !HasPrimaryContentEffectRef(card, "content.lockBroadcastIdNoMoveNoKOUntilNextEnd");
+    }
+
+    private bool HasPrimaryContentEffectRef(BaseCardData card, string effectRef)
+    {
+        ContentCardData content = card as ContentCardData;
+
+        if (content == null ||
+            content.effects == null ||
+            string.IsNullOrWhiteSpace(effectRef))
+        {
+            return false;
+        }
+
+        foreach (EffectData effect in content.effects)
+        {
+            if (effect == null)
+                continue;
+
+            string candidateRef = GetEffectRefForBattleManager(effect);
+            if (string.Equals(candidateRef, effectRef, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
     private bool IsCollabContentCard(BaseCardData card)
     {
         ContentCardData content = card as ContentCardData;
@@ -5947,9 +6362,9 @@ public class BattleManager : MonoBehaviour
             return false;
 
         bool isCharacterCard = IsCharacterCardKind(card);
-        bool isLastingContentCard = IsLastingContentCard(card);
+        bool isInstallableContentCard = CanInstallAsFieldContentCard(card);
 
-        if (!isCharacterCard && !isLastingContentCard)
+        if (!isCharacterCard && !isInstallableContentCard)
             return false;
 
         if (isCharacterCard && summonManager == null)
@@ -5975,7 +6390,7 @@ public class BattleManager : MonoBehaviour
         if (card == null)
             return false;
 
-        return IsCharacterCardKind(card) || IsLastingContentCard(card);
+        return IsCharacterCardKind(card) || CanInstallAsFieldContentCard(card);
     }
 
     private void OnBeginDragHandCard(
@@ -6005,7 +6420,7 @@ public class BattleManager : MonoBehaviour
                 "카드를 출연할 방송 슬롯 위로 이동하세요."
             );
         }
-        else if (IsLastingContentCard(card))
+        else if (CanInstallAsFieldContentCard(card))
         {
             SetSystemMessage(
                 $"지속형 콘텐츠 카드 드래그 시작: {card.name}\n" +
@@ -6051,7 +6466,7 @@ public class BattleManager : MonoBehaviour
         if (hasPendingSummonChoice || hasPendingContentInstallChoice)
             return;
 
-        if (IsLastingContentCard(card))
+        if (CanInstallAsFieldContentCard(card))
         {
             SetSystemMessage(
                 $"지속형 콘텐츠 카드 드래그 종료: {cardName}\n" +

@@ -17,11 +17,17 @@ public class MovementManager : MonoBehaviour
     private BattleFieldSlot pendingMoveToSlot;
     private BaseCardData pendingMoveCard;
 
+    private BattleFieldSlot pendingDoubleStepMoveFromSlot;
+    private BaseCardData pendingDoubleStepMoveCard;
+    private string pendingDoubleStepFirstMoveMessage;
+
     public bool IsDraggingMoveCard => isDraggingMoveCard;
     public bool HasPendingMoveChoice =>
         pendingMoveFromSlot != null ||
         pendingMoveToSlot != null ||
-        pendingMoveCard != null;
+        pendingMoveCard != null ||
+        pendingDoubleStepMoveFromSlot != null ||
+        pendingDoubleStepMoveCard != null;
 
     public bool IsMoveInteractionActive => isDraggingMoveCard || HasPendingMoveChoice;
 
@@ -298,7 +304,20 @@ public class MovementManager : MonoBehaviour
             return;
         }
 
-        ExecuteMove(pendingMoveFromSlot, pendingMoveToSlot, pendingMoveCard);
+        BattleFieldSlot fromSlot = pendingMoveFromSlot;
+        BattleFieldSlot toSlot = pendingMoveToSlot;
+        BaseCardData card = pendingMoveCard;
+
+        bool isDoubleStepMove = IsDoubleStepMoveCharacter(card);
+        string moveMessage = ExecuteMoveStep(fromSlot, toSlot, card, !isDoubleStepMove);
+        ClearPendingMoveChoiceState();
+        battleManager.RefreshAllUIFromExternal();
+
+        if (TryStartDoubleStepFollowUp(toSlot, card, moveMessage))
+            return;
+
+        ClearAllMoveState();
+        battleManager.ResolveMyActionUsedFromExternal(moveMessage);
     }
 
     private void CancelPendingMove()
@@ -312,10 +331,12 @@ public class MovementManager : MonoBehaviour
         );
     }
 
-    private void ExecuteMove(
+    private string ExecuteMoveStep(
         BattleFieldSlot fromSlot,
         BattleFieldSlot toSlot,
-        BaseCardData card)
+        BaseCardData card,
+        bool includeMoveExhaustedMessage = true,
+        bool markMovedThisTurn = true)
     {
         Sprite currentSprite = fromSlot.GetCurrentCharacterSprite();
         bool wasFaceDown = fromSlot.isCharacterFaceDown;
@@ -326,13 +347,17 @@ public class MovementManager : MonoBehaviour
         int currentTension = fromSlot.currentCharacterTension;
         bool activeUsedThisTurn = fromSlot.characterActiveUsedThisTurn;
         int movementLockedUntilTurn = fromSlot.movementLockedByBroadcastUntilTurn;
+        int collabEffectsSilencedUntilTurn = fromSlot.collabEffectsSilencedUntilTurn;
+        int collabAttackForbiddenUntilTurn = fromSlot.collabAttackForbiddenUntilTurn;
         int broadcastHpMaxDelta = fromSlot.broadcastHpMaxDelta;
 
         toSlot.SetCharacterCard(card, currentSprite, wasFaceDown, movingCardOwner);
         toSlot.SetCharacterBattleStats(currentHp, currentMaxHp, currentTension);
-        toSlot.SetCharacterMovedThisTurn(true);
+        toSlot.SetCharacterMovedThisTurn(markMovedThisTurn ? true : fromSlot.characterMovedThisTurn);
         toSlot.SetCharacterActiveUsedThisTurn(activeUsedThisTurn);
         toSlot.SetMovementLockedByBroadcastUntilTurn(movementLockedUntilTurn);
+        toSlot.SetCollabEffectsSilencedUntilTurn(collabEffectsSilencedUntilTurn);
+        toSlot.SetCollabAttackForbiddenUntilTurn(collabAttackForbiddenUntilTurn);
         toSlot.SetBroadcastHpMaxDelta(broadcastHpMaxDelta);
         battleManager.ApplyBroadcastEnterEffectsFromExternal(toSlot, true);
 
@@ -345,19 +370,536 @@ public class MovementManager : MonoBehaviour
         string message =
             $"{card.name} 카드를 이동했습니다.\n" +
             $"이동 전: {fromOwnerName} ({fromSlot.x}, {fromSlot.y})\n" +
-            $"이동 후: {toOwnerName} ({toSlot.x}, {toSlot.y})\n" +
-            "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+            $"이동 후: {toOwnerName} ({toSlot.x}, {toSlot.y})";
+
+        if (includeMoveExhaustedMessage)
+            message += "\n이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
 
         if (toSlot.owner == BattleSlotOwner.Enemy)
         {
-            message += "\n상대의 빈 방송 플랫폼에 진입했습니다.\n" +
-                    "합방 처리는 다음 단계에서 구현합니다.";
+            message += "\n상대의 빈 방송 플랫폼에 진입했습니다.";
         }
 
-        ClearAllMoveState();
+        return message;
+    }
+
+    public List<BattleFieldSlot> BuildMoveCandidatesForEffect(BattleFieldSlot fromSlot)
+    {
+        return BuildTeleportMoveCandidatesForEffect(fromSlot);
+    }
+
+    public bool TryMoveCharacterByEffect(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string message)
+    {
+        message = "";
+
+        if (fromSlot == null || toSlot == null)
+        {
+            message = "효과 이동 출발 슬롯 또는 대상 슬롯이 없습니다.";
+            return false;
+        }
+
+        BaseCardData card = fromSlot.characterCard;
+        if (card == null)
+        {
+            message = "효과로 이동할 캐릭터 카드가 없습니다.";
+            return false;
+        }
+
+        if (!CanTeleportMoveToEmptySlotForEffect(fromSlot, toSlot, out string failReason))
+        {
+            message = failReason;
+            return false;
+        }
+
+        message = ExecuteMoveStep(
+            fromSlot,
+            toSlot,
+            card,
+            false,
+            false);
 
         battleManager.RefreshAllUIFromExternal();
+        return true;
+    }
+
+    public bool TryStartCollaborationByEffect(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string message)
+    {
+        message = "";
+
+        if (!CanStartTeleportCollaborationForEffect(fromSlot, toSlot, out string failReason))
+        {
+            message = failReason;
+            return false;
+        }
+
+        if (battleManager == null || battleManager.collaborationManager == null)
+        {
+            message = "CollaborationManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        QuestionPanel questionPanel = battleManager.BattleQuestionPanel;
+        if (questionPanel == null)
+        {
+            message = "QuestionPanel이 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        if (questionPanel.IsOpen())
+        {
+            message = "이미 다른 선택창이 열려 있습니다.";
+            return false;
+        }
+
+        if (battleManager.collaborationManager.IsCollaborationInteractionActive)
+        {
+            message = "이미 합방 처리를 진행 중입니다.";
+            return false;
+        }
+
+        if (!questionPanel.TryShowYesNoQuestion(
+                "합방을 하시겠습니까?",
+                () =>
+                {
+                    if (CanStartTeleportCollaborationForEffect(fromSlot, toSlot, out string yesFailReason))
+                    {
+                        battleManager.collaborationManager.StartEffectMoveCollaboration(fromSlot, toSlot);
+                        return;
+                    }
+
+                    battleManager.SetSystemMessageFromExternal($"합방할 수 없습니다.\n{yesFailReason}");
+                },
+                () => battleManager.SetSystemMessageFromExternal("합방을 취소했습니다."),
+                () => battleManager.SetSystemMessageFromExternal("합방을 취소했습니다.")))
+        {
+            message = "합방 질문창을 열 수 없습니다.";
+            return false;
+        }
+
+        message = $"{fromSlot.characterCard.name} 카드가 상대 캐릭터에게 합방을 시도합니다.";
+        return true;
+    }
+
+    private List<BattleFieldSlot> BuildTeleportMoveCandidatesForEffect(BattleFieldSlot fromSlot)
+    {
+        List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
+
+        AddTeleportMoveCandidatesForEffect(fromSlot, BattlePlayerSide.My, candidates);
+        AddTeleportMoveCandidatesForEffect(fromSlot, BattlePlayerSide.Enemy, candidates);
+
+        return candidates;
+    }
+
+    private void AddTeleportMoveCandidatesForEffect(
+        BattleFieldSlot fromSlot,
+        BattlePlayerSide side,
+        List<BattleFieldSlot> candidates)
+    {
+        if (battleManager == null || fromSlot == null || candidates == null)
+            return;
+
+        IReadOnlyList<BattleFieldSlot> slots = battleManager.GetSlotsForMovement(side);
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null || candidates.Contains(slot))
+                continue;
+
+            string failReason;
+            if (CanTeleportMoveToEmptySlotForEffect(fromSlot, slot, out failReason) ||
+                CanStartTeleportCollaborationForEffect(fromSlot, slot, out failReason))
+            {
+                candidates.Add(slot);
+            }
+        }
+    }
+
+    private bool CanTeleportMoveToEmptySlotForEffect(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        if (!CanUseTeleportMoveSourceAndTargetForEffect(fromSlot, toSlot, out failReason))
+            return false;
+
+        if (toSlot.HasCharacter)
+        {
+            failReason = toSlot.characterOwner == fromSlot.characterOwner
+                ? "이미 아군 캐릭터가 있는 슬롯으로는 이동할 수 없습니다."
+                : "상대 캐릭터가 있는 슬롯은 합방 대상으로만 선택할 수 있습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CanStartTeleportCollaborationForEffect(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        if (!CanUseTeleportMoveSourceAndTargetForEffect(fromSlot, toSlot, out failReason))
+            return false;
+
+        if (battleManager.IsCollabAttackForbiddenFromExternal(fromSlot))
+        {
+            failReason = "이 캐릭터는 다음 턴까지 합방을 시작할 수 없습니다.";
+            return false;
+        }
+
+        if (!toSlot.HasCharacter ||
+            toSlot.characterOwner == fromSlot.characterOwner)
+        {
+            failReason = "상대 캐릭터가 있는 슬롯에서만 합방할 수 있습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CanUseTeleportMoveSourceAndTargetForEffect(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (fromSlot == null || toSlot == null)
+        {
+            failReason = "효과 이동 출발 슬롯 또는 대상 슬롯이 없습니다.";
+            return false;
+        }
+
+        if (fromSlot == toSlot)
+        {
+            failReason = "같은 슬롯으로는 이동할 수 없습니다.";
+            return false;
+        }
+
+        if (!fromSlot.HasCharacter || fromSlot.characterCard == null)
+        {
+            failReason = "효과로 이동할 캐릭터 카드가 없습니다.";
+            return false;
+        }
+
+        if (fromSlot.characterOwner != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 캐릭터만 효과로 이동할 수 있습니다.";
+            return false;
+        }
+
+        if (battleManager.IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(fromSlot, out failReason))
+            return false;
+
+        if (!toSlot.HasBroadcast)
+        {
+            failReason = "방송 카드가 설치된 슬롯으로만 이동할 수 있습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryStartDoubleStepFollowUp(
+        BattleFieldSlot currentSlot,
+        BaseCardData card,
+        string firstMoveMessage)
+    {
+        if (!IsDoubleStepMoveCharacter(card))
+            return false;
+
+        if (currentSlot == null ||
+            !currentSlot.HasCharacter ||
+            currentSlot.characterCard != card ||
+            currentSlot.isCharacterFaceDown)
+        {
+            return false;
+        }
+
+        string lockFailReason;
+        if (battleManager.IsCharacterMoveLockedByBroadcastFromExternal(currentSlot, out lockFailReason))
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "공포게임 효과로 추가 이동을 할 수 없습니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearAllMoveState();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+            return true;
+        }
+
+        List<BattleFieldSlot> candidates = BuildDoubleStepNextSlotCandidates(currentSlot);
+
+        if (candidates.Count == 0)
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "추가로 이동할 수 있는 인접 방송 슬롯이 없습니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearAllMoveState();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+            return true;
+        }
+
+        pendingDoubleStepMoveFromSlot = currentSlot;
+        pendingDoubleStepMoveCard = card;
+        pendingDoubleStepFirstMoveMessage = firstMoveMessage;
+
+        QuestionPanel questionPanel = battleManager.BattleQuestionPanel;
+        if (questionPanel == null)
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "QuestionPanel이 연결되어 있지 않아 추가 이동을 종료합니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearPendingDoubleStepMove();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+            return true;
+        }
+
+        if (questionPanel.IsOpen())
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "이미 다른 선택창이 열려 있어 추가 이동을 종료합니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearPendingDoubleStepMove();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+            return true;
+        }
+
+        if (!questionPanel.TryShowYesNoQuestion(
+                "추가 이동을 하시겠습니까?",
+                RequestDoubleStepNextSlotSelection,
+                CancelPendingDoubleStepMove,
+                CancelPendingDoubleStepMove))
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "추가 이동 질문창을 열 수 없어 이동을 종료합니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearPendingDoubleStepMove();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+            return true;
+        }
+
+        return true;
+    }
+
+    private void RequestDoubleStepNextSlotSelection()
+    {
+        BattleFieldSlot fromSlot = pendingDoubleStepMoveFromSlot;
+        BaseCardData card = pendingDoubleStepMoveCard;
+        string firstMoveMessage = pendingDoubleStepFirstMoveMessage;
+
+        if (fromSlot == null ||
+            card == null ||
+            !fromSlot.HasCharacter ||
+            fromSlot.characterCard != card)
+        {
+            ClearPendingDoubleStepMove();
+            battleManager.SetSystemMessageFromExternal("추가 이동할 캐릭터 정보가 없습니다.");
+            battleManager.ResolveMyActionUsedFromExternal(firstMoveMessage);
+            return;
+        }
+
+        string lockFailReason;
+        if (battleManager.IsCharacterMoveLockedByBroadcastFromExternal(fromSlot, out lockFailReason))
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "공포게임 효과로 추가 이동을 할 수 없습니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearPendingDoubleStepMove();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+            return;
+        }
+
+        List<BattleFieldSlot> candidates = BuildDoubleStepNextSlotCandidates(fromSlot);
+        if (candidates.Count == 0)
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "추가로 이동할 수 있는 위치가 없습니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearPendingDoubleStepMove();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+            return;
+        }
+
+        bool opened = battleManager.RequestFieldSlotSelection(
+            "한 번 더 이동할 위치를 골라주세요.",
+            candidates,
+            selectedSlot => ExecuteDoubleStepMove(selectedSlot),
+            CancelPendingDoubleStepMove
+        );
+
+        if (!opened)
+        {
+            string message =
+                $"{firstMoveMessage}\n" +
+                "추가 이동 위치 선택을 시작할 수 없어 이동을 종료합니다.\n" +
+                "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+            ClearPendingDoubleStepMove();
+            battleManager.ResolveMyActionUsedFromExternal(message);
+        }
+    }
+
+    private List<BattleFieldSlot> BuildDoubleStepNextSlotCandidates(BattleFieldSlot fromSlot)
+    {
+        List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
+
+        AddDoubleStepNextSlotCandidates(fromSlot, BattlePlayerSide.My, candidates);
+        AddDoubleStepNextSlotCandidates(fromSlot, BattlePlayerSide.Enemy, candidates);
+
+        return candidates;
+    }
+
+    private void AddDoubleStepNextSlotCandidates(
+        BattleFieldSlot fromSlot,
+        BattlePlayerSide side,
+        List<BattleFieldSlot> candidates)
+    {
+        if (battleManager == null || fromSlot == null || candidates == null)
+            return;
+
+        IReadOnlyList<BattleFieldSlot> slots =
+            battleManager.GetSlotsForMovement(side);
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null || candidates.Contains(slot))
+                continue;
+
+            string failReason;
+            if (CanMoveToSlot(fromSlot, slot, out failReason) ||
+                CanStartCollaborationAtSlot(fromSlot, slot, out failReason))
+            {
+                candidates.Add(slot);
+            }
+        }
+    }
+
+    private void ExecuteDoubleStepMove(BattleFieldSlot selectedSlot)
+    {
+        BattleFieldSlot fromSlot = pendingDoubleStepMoveFromSlot;
+        BaseCardData card = pendingDoubleStepMoveCard;
+        string firstMoveMessage = pendingDoubleStepFirstMoveMessage;
+
+        if (fromSlot == null ||
+            selectedSlot == null ||
+            card == null ||
+            !fromSlot.HasCharacter ||
+            fromSlot.characterCard != card)
+        {
+            ClearPendingDoubleStepMove();
+            battleManager.SetSystemMessageFromExternal("추가 이동할 캐릭터 정보가 없습니다.");
+            battleManager.ResolveMyActionUsedFromExternal(firstMoveMessage);
+            return;
+        }
+
+        string failReason;
+        if (CanStartCollaborationAtSlot(fromSlot, selectedSlot, out failReason))
+        {
+            ClearPendingDoubleStepMove();
+            battleManager.ResolveMyActionUsedFromExternal(
+                $"{firstMoveMessage}\n추가 이동으로 합방을 시도합니다.");
+            OpenCollaborationQuestion(fromSlot, selectedSlot, card);
+            return;
+        }
+
+        if (!CanMoveToSlot(fromSlot, selectedSlot, out failReason))
+        {
+            battleManager.SetSystemMessageFromExternal($"추가 이동할 수 없습니다.\n{failReason}");
+            RequestDoubleStepNextSlotSelectionAgain(fromSlot, card, firstMoveMessage);
+            return;
+        }
+
+        string secondMoveMessage = ExecuteMoveStep(fromSlot, selectedSlot, card);
+        string message =
+            $"{firstMoveMessage}\n" +
+            "추가 이동을 완료했습니다.\n" +
+            secondMoveMessage;
+
+        ClearAllMoveState();
+        battleManager.RefreshAllUIFromExternal();
         battleManager.ResolveMyActionUsedFromExternal(message);
+    }
+
+    private void RequestDoubleStepNextSlotSelectionAgain(
+        BattleFieldSlot fromSlot,
+        BaseCardData card,
+        string firstMoveMessage)
+    {
+        pendingDoubleStepMoveFromSlot = fromSlot;
+        pendingDoubleStepMoveCard = card;
+        pendingDoubleStepFirstMoveMessage = firstMoveMessage;
+        RequestDoubleStepNextSlotSelection();
+    }
+
+    private void CancelPendingDoubleStepMove()
+    {
+        string firstMoveMessage = pendingDoubleStepFirstMoveMessage;
+        ClearPendingDoubleStepMove();
+
+        string message =
+            $"{firstMoveMessage}\n" +
+            "추가 이동을 종료했습니다.\n" +
+            "이 캐릭터는 이번 턴에 더 이상 이동할 수 없습니다.";
+
+        battleManager.ResolveMyActionUsedFromExternal(message);
+    }
+
+    private void ClearPendingDoubleStepMove()
+    {
+        pendingDoubleStepMoveFromSlot = null;
+        pendingDoubleStepMoveCard = null;
+        pendingDoubleStepFirstMoveMessage = "";
+    }
+
+    private bool IsDoubleStepMoveCharacter(BaseCardData card)
+    {
+        CharacterCardData character = card as CharacterCardData;
+
+        if (character == null || character.effects == null)
+            return false;
+
+        foreach (EffectData effect in character.effects)
+        {
+            if (string.Equals(
+                    GetEffectRef(effect),
+                    "character.passive.doubleStepMoveNoJump",
+                    System.StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private string GetEffectRef(EffectData effect)
+    {
+        if (effect == null)
+            return "";
+
+        if (!string.IsNullOrWhiteSpace(effect.refName))
+            return effect.refName;
+
+        return effect.@ref;
     }
 
     private bool CanStartMoveFromSlot(
@@ -437,6 +979,9 @@ public class MovementManager : MonoBehaviour
         if (battleManager.IsCharacterMoveLockedByBroadcastFromExternal(fromSlot, out failReason))
             return false;
 
+        if (battleManager.IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(fromSlot, out failReason))
+            return false;
+
         if (card.kind != "Character")
         {
             failReason = "캐릭터 카드만 이동할 수 있습니다.";
@@ -470,6 +1015,9 @@ public class MovementManager : MonoBehaviour
             failReason = "현재는 내 캐릭터만 이동할 수 있습니다.";
             return false;
         }
+
+        if (battleManager.IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(fromSlot, out failReason))
+            return false;
 
         if (!toSlot.HasBroadcast)
         {
@@ -512,6 +1060,15 @@ public class MovementManager : MonoBehaviour
         if (fromSlot.characterOwner != BattleSlotOwner.My)
         {
             failReason = "현재는 내 캐릭터만 합방을 시도할 수 있습니다.";
+            return false;
+        }
+
+        if (battleManager.IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(fromSlot, out failReason))
+            return false;
+
+        if (battleManager.IsCollabAttackForbiddenFromExternal(fromSlot))
+        {
+            failReason = "이 캐릭터는 다음 턴까지 합방을 시작할 수 없습니다.";
             return false;
         }
 
@@ -640,6 +1197,12 @@ public class MovementManager : MonoBehaviour
             draggingCard = null;
             isDraggingMoveCard = false;
 
+            ClearPendingMoveChoiceState();
+            ClearPendingDoubleStepMove();
+        }
+
+        private void ClearPendingMoveChoiceState()
+        {
             pendingMoveFromSlot = null;
             pendingMoveToSlot = null;
             pendingMoveCard = null;

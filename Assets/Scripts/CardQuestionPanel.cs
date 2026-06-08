@@ -2,9 +2,17 @@ using System;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
-public class CardQuestionPanel : MonoBehaviour
+public enum CardQuestionCancelPolicy
+{
+    AllowCancel,
+    DisallowCancel
+}
+
+public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
 {
     [Header("Root")]
     [SerializeField] private GameObject panelRoot;
@@ -37,8 +45,8 @@ public class CardQuestionPanel : MonoBehaviour
     private Action<string> systemMessageAction;
     private Action<BaseCardData, BattleFieldSlot> detailPreviewAction;
     private bool isOpen;
-    private bool canCancel;
     private bool isConfirmOnlyMode;
+    private CardQuestionCancelPolicy cancelPolicy = CardQuestionCancelPolicy.AllowCancel;
 
     private void Awake()
     {
@@ -80,10 +88,35 @@ public class CardQuestionPanel : MonoBehaviour
         TryShow(message, cards, canCancel, onSelected, onCancel);
     }
 
+    public void Show(
+        string message,
+        List<BaseCardData> cards,
+        CardQuestionCancelPolicy cancelPolicy,
+        Action<BaseCardData> onSelected,
+        Action onCancel)
+    {
+        TryShow(message, cards, cancelPolicy, onSelected, onCancel);
+    }
+
     public bool TryShow(
         string message,
         List<BaseCardData> cards,
         bool canCancel,
+        Action<BaseCardData> onSelected,
+        Action onCancel)
+    {
+        return TryShow(
+            message,
+            cards,
+            canCancel ? CardQuestionCancelPolicy.AllowCancel : CardQuestionCancelPolicy.DisallowCancel,
+            onSelected,
+            onCancel);
+    }
+
+    public bool TryShow(
+        string message,
+        List<BaseCardData> cards,
+        CardQuestionCancelPolicy cancelPolicy,
         Action<BaseCardData> onSelected,
         Action onCancel)
     {
@@ -98,7 +131,7 @@ public class CardQuestionPanel : MonoBehaviour
         }
 
         isOpen = true;
-        this.canCancel = canCancel;
+        this.cancelPolicy = cancelPolicy;
         selectedQuestionCard = null;
         selectedQuestionOption = null;
         selectedQuestionOutline = null;
@@ -133,6 +166,21 @@ public class CardQuestionPanel : MonoBehaviour
         Action<CardQuestionOption> onSelected,
         Action onCancel)
     {
+        return TryShowOptions(
+            message,
+            options,
+            canCancel ? CardQuestionCancelPolicy.AllowCancel : CardQuestionCancelPolicy.DisallowCancel,
+            onSelected,
+            onCancel);
+    }
+
+    public bool TryShowOptions(
+        string message,
+        List<CardQuestionOption> options,
+        CardQuestionCancelPolicy cancelPolicy,
+        Action<CardQuestionOption> onSelected,
+        Action onCancel)
+    {
         if (isOpen)
             return false;
 
@@ -144,7 +192,7 @@ public class CardQuestionPanel : MonoBehaviour
         }
 
         isOpen = true;
-        this.canCancel = canCancel;
+        this.cancelPolicy = cancelPolicy;
         selectedQuestionCard = null;
         selectedQuestionOption = null;
         selectedQuestionOutline = null;
@@ -188,7 +236,7 @@ public class CardQuestionPanel : MonoBehaviour
         }
 
         isOpen = true;
-        canCancel = true;
+        cancelPolicy = CardQuestionCancelPolicy.AllowCancel;
         isConfirmOnlyMode = true;
         selectedQuestionCard = null;
         selectedQuestionOption = null;
@@ -221,7 +269,7 @@ public class CardQuestionPanel : MonoBehaviour
     public void Hide()
     {
         isOpen = false;
-        canCancel = false;
+        cancelPolicy = CardQuestionCancelPolicy.AllowCancel;
         selectedQuestionCard = null;
         selectedQuestionOption = null;
         selectedQuestionOutline = null;
@@ -251,9 +299,11 @@ public class CardQuestionPanel : MonoBehaviour
         if (cancelButton != null)
         {
             cancelButton.onClick.RemoveAllListeners();
-            cancelButton.interactable = canCancel || isConfirmOnlyMode;
+            bool cancelAllowed = IsCancelAllowed();
+            cancelButton.interactable = cancelAllowed;
+            cancelButton.gameObject.SetActive(cancelAllowed);
 
-            if (canCancel || isConfirmOnlyMode)
+            if (cancelAllowed)
                 cancelButton.onClick.AddListener(Cancel);
         }
     }
@@ -270,6 +320,7 @@ public class CardQuestionPanel : MonoBehaviour
         {
             cancelButton.onClick.RemoveAllListeners();
             cancelButton.interactable = true;
+            cancelButton.gameObject.SetActive(true);
         }
     }
 
@@ -482,8 +533,11 @@ public class CardQuestionPanel : MonoBehaviour
 
     private void Cancel()
     {
-        if (!canCancel && !isConfirmOnlyMode)
+        if (!IsCancelAllowed())
+        {
+            SendSystemMessage("반드시 카드를 선택해야 합니다.");
             return;
+        }
 
         Action cancelAction = isConfirmOnlyMode
             ? onConfirmOnlyAction
@@ -491,6 +545,34 @@ public class CardQuestionPanel : MonoBehaviour
 
         Hide();
         cancelAction?.Invoke();
+    }
+
+    private bool IsCancelAllowed()
+    {
+        return isConfirmOnlyMode || cancelPolicy == CardQuestionCancelPolicy.AllowCancel;
+    }
+
+    private void Update()
+    {
+        if (!isOpen || isConfirmOnlyMode)
+            return;
+
+        Keyboard keyboard = Keyboard.current;
+        if (keyboard == null || !keyboard.escapeKey.wasPressedThisFrame)
+            return;
+
+        Cancel();
+    }
+
+    public void OnPointerClick(PointerEventData eventData)
+    {
+        if (!isOpen || eventData == null)
+            return;
+
+        if (eventData.button != PointerEventData.InputButton.Right)
+            return;
+
+        Cancel();
     }
 
     private void RefreshSelectionVisual()

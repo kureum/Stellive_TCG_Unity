@@ -130,12 +130,15 @@ public static class EffectDeckPeekService
         }
 
         bool canCancel = !request.requireSelection && request.minTake <= 0;
+        CardQuestionCancelPolicy cancelPolicy = canCancel
+            ? CardQuestionCancelPolicy.AllowCancel
+            : CardQuestionCancelPolicy.DisallowCancel;
         string message = BuildQuestionMessage(request, result);
 
         bool opened = panel.TryShow(
             message,
             result.selectableCards,
-            canCancel,
+            cancelPolicy,
             selectedCard => ResolveSelection(request, context, battleManager, result, selectedCard, onComplete),
             () => ResolveSelection(request, context, battleManager, result, null, onComplete)
         );
@@ -205,11 +208,14 @@ public static class EffectDeckPeekService
         }
 
         bool canCancel = !request.requireSelection && request.minTake <= 0;
+        CardQuestionCancelPolicy cancelPolicy = canCancel
+            ? CardQuestionCancelPolicy.AllowCancel
+            : CardQuestionCancelPolicy.DisallowCancel;
 
         bool opened = panel.TryShow(
             BuildSearchQuestionMessage(request, result),
             result.selectableCards,
-            canCancel,
+            cancelPolicy,
             selectedCard => ResolveSearchSelection(request, context, battleManager, result, selectedCard, onComplete),
             () => ResolveSearchSelection(request, context, battleManager, result, null, onComplete)
         );

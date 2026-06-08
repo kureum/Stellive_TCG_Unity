@@ -6,6 +6,7 @@ using UnityEngine.UI;
 public enum CollaborationStartReason
 {
     Normal,
+    EffectMove,
     ForceBattleTargetAnywhere
 }
 
@@ -109,6 +110,11 @@ public class CollaborationManager : MonoBehaviour
     public void StartCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
     {
         StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.Normal);
+    }
+
+    public void StartEffectMoveCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
+    {
+        StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.EffectMove);
     }
 
     public void StartForcedIncomingCollaboration(
@@ -462,6 +468,13 @@ public class CollaborationManager : MonoBehaviour
         );
 
         bool hostDefeated = GetEffectiveCharacterHp(hostSlot, battleLocationSlot) <= 0;
+        string koPreventMessage = "";
+        if (hostDefeated &&
+            TryPreventCollabKOByBroadcastLock(hostSlot, hostCard, battleLocationSlot, out string hostPreventMessage))
+        {
+            hostDefeated = false;
+            koPreventMessage = AppendLine(koPreventMessage, hostPreventMessage);
+        }
         bool guestDefeated = false;
 
         // 2. 방어자가 생존하면 반격
@@ -483,6 +496,12 @@ public class CollaborationManager : MonoBehaviour
             );
 
             guestDefeated = GetEffectiveCharacterHp(guestSlot, battleLocationSlot) <= 0;
+            if (guestDefeated &&
+                TryPreventCollabKOByBroadcastLock(guestSlot, guestCard, battleLocationSlot, out string guestPreventMessage))
+            {
+                guestDefeated = false;
+                koPreventMessage = AppendLine(koPreventMessage, guestPreventMessage);
+            }
         }
 
         int guestFinalHp = guestSlot.currentCharacterHp;
@@ -499,6 +518,9 @@ public class CollaborationManager : MonoBehaviour
             hostDefeated,
             guestDefeated,
             context != null ? context.startReason : CollaborationStartReason.Normal);
+
+        if (!string.IsNullOrWhiteSpace(koPreventMessage))
+            resultMessage += $"\n{koPreventMessage}";
 
         if (!guestDefeated)
             ResetUiAlpha(guestRect);
@@ -532,6 +554,10 @@ public class CollaborationManager : MonoBehaviour
 
         isResolvingCollaboration = false;
         yield return ResolveCollaborationResultRoutine(resolutionData);
+        string koRestEffectMessage = ApplyCollaborationKoRestEffects(resolutionData);
+        if (!string.IsNullOrWhiteSpace(koRestEffectMessage))
+            resultMessage += $"\n{koRestEffectMessage}";
+
         yield return RequestPostCollabEffectsRoutine(
             resolutionData.guestSlot,
             resolutionData.hostSlot
@@ -543,6 +569,110 @@ public class CollaborationManager : MonoBehaviour
         currentContext = null;
         battleManager.SetBattleBusyFromExternal(false, "CollaborationManager.ExecuteBasicCollaborationRoutine finished");
         battleManager.ResolveMyActionUsedFromExternal(resultMessage);
+    }
+
+    private string ApplyCollaborationKoRestEffects(CollaborationResolutionData data)
+    {
+        if (data == null)
+            return "";
+
+        if (data.hostDefeated && !data.guestDefeated)
+        {
+            return ApplyReduceOpponentCollabTensionOnCollab(
+                data.hostCard,
+                data.hostOwner,
+                data.hostSlot);
+        }
+
+        if (data.guestDefeated && !data.hostDefeated)
+        {
+            return ApplyReduceOpponentCollabTensionOnCollab(
+                data.guestCard,
+                data.guestOwner,
+                data.hostSlot);
+        }
+
+        return "";
+    }
+
+    private string ApplyReduceOpponentCollabTensionOnCollab(
+        BaseCardData defeatedCard,
+        BattleSlotOwner defeatedOwner,
+        BattleFieldSlot survivorSlot)
+    {
+        if (defeatedCard == null ||
+            survivorSlot == null ||
+            !survivorSlot.HasCharacter ||
+            survivorSlot.characterCard == null ||
+            survivorSlot.characterOwner == defeatedOwner)
+        {
+            return "";
+        }
+
+        CharacterCardData defeatedCharacter = defeatedCard as CharacterCardData;
+        if (defeatedCharacter == null || defeatedCharacter.effects == null)
+            return "";
+
+        foreach (EffectData effect in defeatedCharacter.effects)
+        {
+            string effectRef = GetEffectRef(effect);
+            if (!string.Equals(
+                    effectRef,
+                    "character.rest.reduceOpponentCollabTensionOnCollab",
+                    System.StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            int amount = Mathf.Max(0, GetEffectIntParam(effect, "amount", 0));
+            if (amount <= 0)
+                continue;
+
+            int previousTension = survivorSlot.currentCharacterTension;
+            int nextTension = Mathf.Max(0, previousTension - amount);
+            survivorSlot.SetCharacterBattleStats(
+                survivorSlot.currentCharacterHp,
+                survivorSlot.currentCharacterMaxHp,
+                nextTension);
+
+            string targetName = survivorSlot.characterCard != null
+                ? survivorSlot.characterCard.name
+                : "상대 캐릭터";
+            string message =
+                $"{defeatedCard.name} 효과로 {targetName}의 합방 텐션이 {previousTension - nextTension} 감소했습니다.";
+
+            Debug.Log(message);
+            return message;
+        }
+
+        return "";
+    }
+
+    private string GetEffectRef(EffectData effect)
+    {
+        if (effect == null)
+            return "";
+
+        if (!string.IsNullOrWhiteSpace(effect.refName))
+            return effect.refName;
+
+        return effect.@ref;
+    }
+
+    private int GetEffectIntParam(EffectData effect, string key, int defaultValue)
+    {
+        EffectParams effectParams = effect != null ? effect.@params : null;
+
+        if (effectParams == null || string.IsNullOrWhiteSpace(key))
+            return defaultValue;
+
+        switch (key)
+        {
+            case "amount":
+                return effectParams.amount;
+            default:
+                return defaultValue;
+        }
     }
 
     private int CalculateCollaborationDamage(int baseDamage, bool targetWasFaceDownAtCollabStart)
@@ -678,7 +808,8 @@ public class CollaborationManager : MonoBehaviour
             yield break;
         }
 
-        data.guestSlot.SetCharacterMovedThisTurn(true);
+        if (data.startReason == CollaborationStartReason.Normal)
+            data.guestSlot.SetCharacterMovedThisTurn(true);
     }
 
     private IEnumerator ResolveForcedIncomingCollaborationResultRoutine(
@@ -754,6 +885,47 @@ public class CollaborationManager : MonoBehaviour
             battleManager.ShouldDeferZeroHpDuringCollabFromExternal(slot);
     }
 
+    private bool TryPreventCollabKOByBroadcastLock(
+        BattleFieldSlot slot,
+        BaseCardData card,
+        BattleFieldSlot battleLocationSlot,
+        out string message)
+    {
+        message = "";
+
+        if (slot == null ||
+            card == null ||
+            battleManager == null ||
+            !battleManager.ShouldPreventCollabKOByBroadcastMoveAndKoLockFromExternal(slot))
+        {
+            return false;
+        }
+
+        if (GetEffectiveCharacterHp(slot, battleLocationSlot) > 0)
+            return false;
+
+        int nextHp = Mathf.Max(1, slot.currentCharacterHp);
+        slot.SetCharacterBattleStats(
+            nextHp,
+            slot.currentCharacterMaxHp,
+            slot.currentCharacterTension);
+
+        message = $"모라하지마 효과로 {card.name}은 합방으로 퇴장하지 않습니다.";
+        Debug.Log(message);
+        return true;
+    }
+
+    private string AppendLine(string source, string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return source;
+
+        if (string.IsNullOrWhiteSpace(source))
+            return line;
+
+        return $"{source}\n{line}";
+    }
+
     private IEnumerator SendCharacterToRestZoneRoutine(
         BattleSlotOwner owner,
         BaseCardData card,
@@ -794,6 +966,8 @@ public class CollaborationManager : MonoBehaviour
         int guestMaxHp = data.guestSlot.currentCharacterMaxHp;
         bool guestActiveUsedThisTurn = data.guestSlot.characterActiveUsedThisTurn;
         int guestMovementLockedUntilTurn = data.guestSlot.movementLockedByBroadcastUntilTurn;
+        int guestCollabEffectsSilencedUntilTurn = data.guestSlot.collabEffectsSilencedUntilTurn;
+        int guestCollabAttackForbiddenUntilTurn = data.guestSlot.collabAttackForbiddenUntilTurn;
         int guestBroadcastHpMaxDelta = data.guestSlot.broadcastHpMaxDelta;
 
         data.hostSlot.SetCharacterCard(
@@ -809,9 +983,13 @@ public class CollaborationManager : MonoBehaviour
             data.guestTension
         );
 
-        data.hostSlot.SetCharacterMovedThisTurn(true);
+        data.hostSlot.SetCharacterMovedThisTurn(data.startReason == CollaborationStartReason.Normal
+            ? true
+            : data.guestSlot.characterMovedThisTurn);
         data.hostSlot.SetCharacterActiveUsedThisTurn(guestActiveUsedThisTurn);
         data.hostSlot.SetMovementLockedByBroadcastUntilTurn(guestMovementLockedUntilTurn);
+        data.hostSlot.SetCollabEffectsSilencedUntilTurn(guestCollabEffectsSilencedUntilTurn);
+        data.hostSlot.SetCollabAttackForbiddenUntilTurn(guestCollabAttackForbiddenUntilTurn);
         data.hostSlot.SetBroadcastHpMaxDelta(guestBroadcastHpMaxDelta);
         battleManager.ApplyBroadcastEnterEffectsFromExternal(data.hostSlot, true);
         battleManager.ApplyBroadcastLeaveEffectsFromExternal(data.guestSlot);

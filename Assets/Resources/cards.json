@@ -529,10 +529,8 @@
           "id": "c1",
           "timing": "Passive",
           "description": "이 카드는 한 번에 2거리를 이동할 수 있습니다.",
-          "ref": "character.passive.extendMoveRange",
-          "params": {
-            "range": 2
-          }
+          "ref": "character.passive.doubleStepMoveNoJump",
+          "params": {}
         }
       ]
     },

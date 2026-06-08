@@ -13,6 +13,7 @@ public enum BattleSlotOwner
 
 public class BattleFieldSlot : MonoBehaviour,
     IDropHandler,
+    IPointerClickHandler,
     IBeginDragHandler,
     IDragHandler,
     IEndDragHandler
@@ -54,6 +55,9 @@ public class BattleFieldSlot : MonoBehaviour,
     public int faceDownSummonedTurn = -1;
     public int faceUpSummonedTurn = -1;
     public int movementLockedByBroadcastUntilTurn { get; private set; } = -1;
+    public int collabEffectsSilencedUntilTurn { get; private set; } = -1;
+    public int collabAttackForbiddenUntilTurn { get; private set; } = -1;
+    public int broadcastMoveAndKoLockedUntilTurn { get; private set; } = -1;
     public int broadcastHpMaxDelta { get; private set; } = 0;
     public int currentCharacterTension { get; private set; }
     public int currentCharacterHp { get; private set; }
@@ -65,6 +69,7 @@ public class BattleFieldSlot : MonoBehaviour,
     private Action<BattleFieldSlot, BaseCardData> onContentCardClick;
 
     private Action<BattleFieldSlot, PointerEventData> onCardDropped;
+    private Action<BattleFieldSlot, PointerEventData> onSlotPointerClick;
 
     private Action<BattleFieldSlot, BaseCardData, PointerEventData> onBeginDragCharacter;
     private Action<BattleFieldSlot, BaseCardData, PointerEventData> onDragCharacter;
@@ -89,6 +94,7 @@ public class BattleFieldSlot : MonoBehaviour,
         Action<BattleFieldSlot, BaseCardData> characterClickAction,
         Action<BattleFieldSlot, BaseCardData> contentClickAction,
         Action<BattleFieldSlot, PointerEventData> dropAction = null,
+        Action<BattleFieldSlot, PointerEventData> slotPointerClickAction = null,
         Action<BattleFieldSlot, BaseCardData, PointerEventData> beginDragCharacterAction = null,
         Action<BattleFieldSlot, BaseCardData, PointerEventData> dragCharacterAction = null,
         Action<BattleFieldSlot, BaseCardData, PointerEventData> endDragCharacterAction = null)
@@ -99,6 +105,7 @@ public class BattleFieldSlot : MonoBehaviour,
         onCharacterCardDoubleClick = null;
         onContentCardClick = contentClickAction;
         onCardDropped = dropAction;
+        onSlotPointerClick = slotPointerClickAction;
 
         onBeginDragCharacter = beginDragCharacterAction;
         onDragCharacter = dragCharacterAction;
@@ -287,6 +294,7 @@ public class BattleFieldSlot : MonoBehaviour,
     public void SetBroadcastCard(BaseCardData card, Sprite sprite)
     {
         broadcastCard = card;
+        broadcastMoveAndKoLockedUntilTurn = -1;
 
         if (broadcastCardImage != null)
         {
@@ -317,6 +325,8 @@ public class BattleFieldSlot : MonoBehaviour,
         characterMovedThisTurn = false;
         characterActiveUsedThisTurn = false;
         movementLockedByBroadcastUntilTurn = -1;
+        collabEffectsSilencedUntilTurn = -1;
+        collabAttackForbiddenUntilTurn = -1;
         broadcastHpMaxDelta = isSameCharacter ? previousBroadcastHpMaxDelta : 0;
 
         if (!faceDown)
@@ -438,6 +448,7 @@ public class BattleFieldSlot : MonoBehaviour,
     public void ClearBroadcastCard()
     {
         broadcastCard = null;
+        broadcastMoveAndKoLockedUntilTurn = -1;
 
         if (broadcastCardImage != null)
             broadcastCardImage.sprite = null;
@@ -455,6 +466,8 @@ public class BattleFieldSlot : MonoBehaviour,
         characterMovedThisTurn = false;
         characterActiveUsedThisTurn = false;
         movementLockedByBroadcastUntilTurn = -1;
+        collabEffectsSilencedUntilTurn = -1;
+        collabAttackForbiddenUntilTurn = -1;
         broadcastHpMaxDelta = 0;
         currentCharacterHp = 0;
         currentCharacterMaxHp = 0;
@@ -597,7 +610,10 @@ public class BattleFieldSlot : MonoBehaviour,
         characterMovedThisTurn = false;
         characterActiveUsedThisTurn = false;
         movementLockedByBroadcastUntilTurn = -1;
+        collabEffectsSilencedUntilTurn = -1;
+        collabAttackForbiddenUntilTurn = -1;
         broadcastHpMaxDelta = 0;
+        broadcastMoveAndKoLockedUntilTurn = -1;
 
         isCharacterFaceDown = false;
 
@@ -675,6 +691,11 @@ public class BattleFieldSlot : MonoBehaviour,
     public void OnDrop(PointerEventData eventData)
     {
         onCardDropped?.Invoke(this, eventData);
+    }
+
+    public void OnPointerClick(PointerEventData eventData)
+    {
+        onSlotPointerClick?.Invoke(this, eventData);
     }
 
     public void OnBeginDrag(PointerEventData eventData)
@@ -760,6 +781,57 @@ public class BattleFieldSlot : MonoBehaviour,
     public void SetMovementLockedByBroadcastUntilTurn(int turn)
     {
         movementLockedByBroadcastUntilTurn = turn;
+    }
+
+    public void SetCollabEffectsSilencedUntilTurn(int turn)
+    {
+        collabEffectsSilencedUntilTurn = turn;
+    }
+
+    public void ClearCollabEffectsSilence()
+    {
+        collabEffectsSilencedUntilTurn = -1;
+    }
+
+    public bool IsCollabEffectsSilenced(int currentTurn)
+    {
+        return HasCharacter &&
+            collabEffectsSilencedUntilTurn >= 0 &&
+            currentTurn <= collabEffectsSilencedUntilTurn;
+    }
+
+    public void SetCollabAttackForbiddenUntilTurn(int turn)
+    {
+        collabAttackForbiddenUntilTurn = Mathf.Max(collabAttackForbiddenUntilTurn, turn);
+    }
+
+    public void ClearCollabAttackForbidden()
+    {
+        collabAttackForbiddenUntilTurn = -1;
+    }
+
+    public bool IsCollabAttackForbidden(int currentTurn)
+    {
+        return HasCharacter &&
+            collabAttackForbiddenUntilTurn >= 0 &&
+            currentTurn <= collabAttackForbiddenUntilTurn;
+    }
+
+    public void SetBroadcastMoveAndKoLockedUntilTurn(int turn)
+    {
+        broadcastMoveAndKoLockedUntilTurn = turn;
+    }
+
+    public void ClearBroadcastMoveAndKoLock()
+    {
+        broadcastMoveAndKoLockedUntilTurn = -1;
+    }
+
+    public bool IsBroadcastMoveAndKoLocked(int currentTurn)
+    {
+        return HasBroadcast &&
+            broadcastMoveAndKoLockedUntilTurn >= 0 &&
+            currentTurn <= broadcastMoveAndKoLockedUntilTurn;
     }
 
     public void SetBroadcastHpMaxDelta(int delta)
