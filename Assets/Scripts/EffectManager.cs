@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -92,6 +93,38 @@ public class EffectManager : MonoBehaviour
 
     [SerializeField] private BattleManager battleManager;
     private int restReturnOnAppearDepth;
+    private PendingOurTalesState pendingOurTales;
+    private PendingPostCollabRebattleState pendingPostCollabRebattle;
+    private readonly List<NegativeAmountInvertState> negativeAmountInvertStates =
+        new List<NegativeAmountInvertState>();
+
+    private class PendingOurTalesState
+    {
+        public BattleSlotOwner owner;
+        public BaseCardData sourceCard;
+        public BattleFieldSlot attackerSlot;
+        public BattleFieldSlot defenderSlot;
+        public BattleFieldSlot participantSlot;
+        public BaseCardData participantCard;
+        public bool processed;
+    }
+
+    private class PendingPostCollabRebattleState
+    {
+        public BattleSlotOwner owner;
+        public BaseCardData sourceCard;
+        public BattleFieldSlot attackerSlot;
+        public BattleFieldSlot defenderSlot;
+        public bool processed;
+    }
+
+    private class NegativeAmountInvertState
+    {
+        public BattleSlotOwner owner;
+        public string sourceTag;
+        public int turn;
+        public BaseCardData sourceContentCard;
+    }
 
     public void Init(BattleManager manager)
     {
@@ -164,6 +197,12 @@ public class EffectManager : MonoBehaviour
             case "content.lasting.buffTagTensionAndHp":
             case "content.peekTopAndTakeTaggedCharacterOrBottom":
             case "content.moveOwnCharToEmptyOrBattleIfTagged":
+            case "content.redrawIfBehindAndUniverseOnly":
+            case "content.collabClicheSpendBuffRefund":
+            case "content.forceOpponentFlipOrSack":
+            case "content.forceOpponentSummonOrSackFromHand":
+            case "content.postCollabTabiBoostAndRebattle":
+            case "content.invertNegativeAmountForTagThisTurn":
                 return true;
 
             default:
@@ -613,6 +652,30 @@ public class EffectManager : MonoBehaviour
             return;
         }
 
+        if (candidate != null && IsCollabClicheSpendBuffRefundEffect(candidate, context))
+        {
+            ResolveCollabClicheSpendBuffRefundEffect(candidate, context, _ => onComplete?.Invoke());
+            return;
+        }
+
+        if (candidate != null && IsForceOpponentFlipOrSackEffect(candidate, context))
+        {
+            ResolveForceOpponentFlipOrSackEffect(candidate, context, _ => onComplete?.Invoke());
+            return;
+        }
+
+        if (candidate != null && IsForceOpponentSummonOrSackFromHandEffect(candidate, context))
+        {
+            ResolveForceOpponentSummonOrSackFromHandEffect(candidate, context, _ => onComplete?.Invoke());
+            return;
+        }
+
+        if (candidate != null && IsPostCollabTabiBoostAndRebattleEffect(candidate, context))
+        {
+            ResolvePostCollabTabiBoostAndRebattleEffect(candidate, context, _ => onComplete?.Invoke());
+            return;
+        }
+
         if (!TryResolveEffect(candidate, context, out string failReason))
         {
             if (!string.IsNullOrEmpty(failReason))
@@ -720,6 +783,30 @@ public class EffectManager : MonoBehaviour
         if (IsCallFromRestByTagToEmptyPlatformsEffect(candidate, context))
         {
             ResolveCallFromRestByTagToEmptyPlatformsEffect(candidate, context, request.onComplete);
+            return true;
+        }
+
+        if (IsCollabClicheSpendBuffRefundEffect(candidate, context))
+        {
+            ResolveCollabClicheSpendBuffRefundEffect(candidate, context, request.onComplete);
+            return true;
+        }
+
+        if (IsForceOpponentFlipOrSackEffect(candidate, context))
+        {
+            ResolveForceOpponentFlipOrSackEffect(candidate, context, request.onComplete);
+            return true;
+        }
+
+        if (IsForceOpponentSummonOrSackFromHandEffect(candidate, context))
+        {
+            ResolveForceOpponentSummonOrSackFromHandEffect(candidate, context, request.onComplete);
+            return true;
+        }
+
+        if (IsPostCollabTabiBoostAndRebattleEffect(candidate, context))
+        {
+            ResolvePostCollabTabiBoostAndRebattleEffect(candidate, context, request.onComplete);
             return true;
         }
 
@@ -1018,6 +1105,63 @@ public class EffectManager : MonoBehaviour
             return false;
         }
 
+        if (string.Equals(
+                effectRef,
+                "content.postCollabHealOwnParticipant",
+                StringComparison.OrdinalIgnoreCase) &&
+            FindSurvivingOwnCollabParticipantSlot(candidate.owner, safeContext) == null)
+        {
+            failReason = "합방에 참여한 내 캐릭터가 생존해 있지 않아 누룽지를 사용할 수 없습니다.";
+            return false;
+        }
+
+        if (string.Equals(
+                effectRef,
+                "content.redrawIfBehindAndUniverseOnly",
+                StringComparison.OrdinalIgnoreCase) &&
+            !CanActivateRedrawIfBehindAndUniverseOnly(candidate, out failReason))
+        {
+            return false;
+        }
+
+        if (string.Equals(
+                effectRef,
+                "content.collabClicheSpendBuffRefund",
+                StringComparison.OrdinalIgnoreCase) &&
+            !CanActivateCollabClicheSpendBuffRefund(candidate, safeContext, out failReason))
+        {
+            return false;
+        }
+
+        if (string.Equals(
+                effectRef,
+                "content.forceOpponentFlipOrSack",
+                StringComparison.OrdinalIgnoreCase) &&
+            BuildOpponentFaceDownCharacterSlotCandidates(candidate.owner).Count == 0)
+        {
+            failReason = "상대 필드에 대상 가능한 뒷면 캐릭터가 없습니다.";
+            return false;
+        }
+
+        if (string.Equals(
+                effectRef,
+                "content.forceOpponentSummonOrSackFromHand",
+                StringComparison.OrdinalIgnoreCase) &&
+            GetHandCardCount(GetOpponentOwner(candidate.owner)) <= 0)
+        {
+            failReason = "상대 손패에 선택할 카드가 없습니다.";
+            return false;
+        }
+
+        if (string.Equals(
+                effectRef,
+                "content.postCollabTabiBoostAndRebattle",
+                StringComparison.OrdinalIgnoreCase) &&
+            !CanActivatePostCollabTabiBoostAndRebattle(candidate, safeContext, out failReason))
+        {
+            return false;
+        }
+
         if (requestedTiming == EffectTiming.Content)
         {
             if (battleManager.IsBattleInputLockedFromExternal())
@@ -1078,13 +1222,7 @@ public class EffectManager : MonoBehaviour
         if (!battleManager.IsCharacterCollabEffectSilencedFromExternal(sourceSlot))
             return false;
 
-        string cardName = candidate.card != null
-            ? candidate.card.name
-            : sourceSlot != null && sourceSlot.characterCard != null
-            ? sourceSlot.characterCard.name
-            : "이 캐릭터";
-
-        failReason = $"채팅 밴으로 인해 {cardName}의 합방 효과를 사용할 수 없습니다.";
+        failReason = "이 캐릭터의 효과는 무효화되어 있습니다.";
         Debug.Log(failReason);
         return true;
     }
@@ -1370,6 +1508,49 @@ public class EffectManager : MonoBehaviour
         return effectRef == "content.returnUpToNFromRestToDeck";
     }
 
+    private bool IsCollabClicheSpendBuffRefundEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        return IsEffectRef(candidate, context, "content.collabClicheSpendBuffRefund");
+    }
+
+    private bool IsForceOpponentFlipOrSackEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        return IsEffectRef(candidate, context, "content.forceOpponentFlipOrSack");
+    }
+
+    private bool IsForceOpponentSummonOrSackFromHandEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        return IsEffectRef(candidate, context, "content.forceOpponentSummonOrSackFromHand");
+    }
+
+    private bool IsPostCollabTabiBoostAndRebattleEffect(
+        EffectCandidate candidate,
+        EffectContext context)
+    {
+        return IsEffectRef(candidate, context, "content.postCollabTabiBoostAndRebattle");
+    }
+
+    private bool IsEffectRef(
+        EffectCandidate candidate,
+        EffectContext context,
+        string expectedRef)
+    {
+        if (candidate == null || string.IsNullOrEmpty(expectedRef))
+            return false;
+
+        string effectRef = !string.IsNullOrEmpty(candidate.refId)
+            ? candidate.refId
+            : GetPrimaryEffectRef(candidate.card, context != null ? context.timing : candidate.timing);
+
+        return string.Equals(effectRef, expectedRef, StringComparison.OrdinalIgnoreCase);
+    }
+
     private bool IsModifyCharacterStatsEffect(
         EffectCandidate candidate,
         EffectContext context)
@@ -1637,6 +1818,529 @@ public class EffectManager : MonoBehaviour
             message += $"\n시청자 -{cost}";
 
         CompleteEffectResolution(message, ShouldConsumeAction(candidate, context), () => onComplete?.Invoke(true));
+    }
+
+    private void ResolveCollabClicheSpendBuffRefundEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action<bool> onComplete)
+    {
+        EffectContext safeContext = NormalizeContext(context, EffectTiming.PreCollab);
+
+        if (!CanActivateEffect(candidate, safeContext, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        BattleFieldSlot participantSlot = FindOwnedCollabParticipantSlot(candidate.owner, safeContext);
+        BaseCardData participantCard = participantSlot != null ? participantSlot.characterCard : null;
+
+        if (!ConsumeSourceContentForEffect(candidate, safeContext, out string consumeMessage))
+        {
+            battleManager?.SetSystemMessageFromExternal(consumeMessage);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        int currentViewers = battleManager.GetViewersFromExternal(candidate.owner);
+        if (currentViewers > 0)
+            battleManager.ModifyViewersFromExternal(candidate.owner, -currentViewers);
+
+        pendingOurTales = new PendingOurTalesState
+        {
+            owner = candidate.owner,
+            sourceCard = candidate.card,
+            attackerSlot = safeContext.attackerSlot,
+            defenderSlot = safeContext.defenderSlot,
+            participantSlot = participantSlot,
+            participantCard = participantCard,
+            processed = false
+        };
+
+        battleManager.RefreshAllUIFromExternal();
+        CompleteEffectResolution(
+            $"{candidate.card.name} 발동: 모든 시청자를 소모하고 합방을 계속합니다.",
+            false,
+            () => onComplete?.Invoke(true));
+    }
+
+    public IEnumerator ResolvePendingOurTalesAfterCollabRoutineFromExternal(Action<string> onComplete)
+    {
+        if (pendingOurTales == null || pendingOurTales.processed)
+        {
+            onComplete?.Invoke("");
+            yield break;
+        }
+
+        PendingOurTalesState state = pendingOurTales;
+        state.processed = true;
+        pendingOurTales = null;
+
+        BattleFieldSlot targetSlot = FindMatchingSurvivingOurTalesParticipantSlot(state);
+        string sourceName = state.sourceCard != null ? state.sourceCard.name : "Our Tales";
+
+        if (targetSlot == null)
+        {
+            onComplete?.Invoke($"{sourceName}: 합방을 시행한 캐릭터가 생존하지 않아 보상을 얻지 못했습니다.");
+            yield break;
+        }
+
+        int hp = Mathf.Max(0, targetSlot.currentCharacterHp);
+        int reward = hp * 1000;
+        battleManager.ModifyViewersFromExternal(state.owner, reward);
+
+        string message = $"{sourceName}: 생존한 캐릭터의 남은 체력 {hp}만큼 {reward} 시청자를 획득합니다.";
+        yield return battleManager.SendFieldCharacterToRestZoneRoutine(targetSlot);
+
+        battleManager.RefreshAllUIFromExternal();
+        onComplete?.Invoke(message);
+    }
+
+    public bool TryConsumePendingPostCollabRebattleFromExternal(
+        out BattleFieldSlot attackerSlot,
+        out BattleFieldSlot defenderSlot,
+        out string message)
+    {
+        attackerSlot = null;
+        defenderSlot = null;
+        message = "";
+
+        if (pendingPostCollabRebattle == null || pendingPostCollabRebattle.processed)
+            return false;
+
+        PendingPostCollabRebattleState state = pendingPostCollabRebattle;
+        state.processed = true;
+        pendingPostCollabRebattle = null;
+
+        if (!IsSurvivingOwnedCollabParticipantSlot(state.attackerSlot, state.owner) ||
+            state.defenderSlot == null ||
+            !state.defenderSlot.HasCharacter ||
+            state.defenderSlot.characterCard == null ||
+            state.defenderSlot.currentCharacterHp <= 0)
+        {
+            message = "여로: 추가 합방 대상이 더 이상 유효하지 않습니다.";
+            return false;
+        }
+
+        attackerSlot = state.attackerSlot;
+        defenderSlot = state.defenderSlot;
+        string sourceName = state.sourceCard != null ? state.sourceCard.name : "여로";
+        message = $"{sourceName}: 강화된 #타비 캐릭터가 한 번 더 합방합니다.";
+        return true;
+    }
+
+    private void ResolveForceOpponentFlipOrSackEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action<bool> onComplete)
+    {
+        if (!CanActivateEffect(candidate, context, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        List<BattleFieldSlot> targetSlots = BuildOpponentFaceDownCharacterSlotCandidates(candidate.owner);
+        if (targetSlots.Count == 0)
+        {
+            battleManager?.SetSystemMessageFromExternal("상대 필드에 대상 가능한 뒷면 캐릭터가 없습니다.");
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        if (candidate.owner != BattleSlotOwner.My)
+        {
+            ResolveForceOpponentFlipOrSackToSelectedSlot(candidate, context, targetSlots[0], onComplete);
+            return;
+        }
+
+        bool opened = battleManager.RequestFieldSlotSelection(
+            "처리할 상대 뒷면 캐릭터를 선택하세요.",
+            targetSlots,
+            selectedSlot => ResolveForceOpponentFlipOrSackToSelectedSlot(candidate, context, selectedSlot, onComplete),
+            () =>
+            {
+                battleManager?.SetSystemMessageFromExternal($"{candidate.card.name} 효과를 취소했습니다.");
+                onComplete?.Invoke(false);
+            });
+
+        if (!opened)
+        {
+            battleManager?.SetSystemMessageFromExternal("슬롯 선택을 시작할 수 없어 상대 뒷면 캐릭터를 선택할 수 없습니다.");
+            onComplete?.Invoke(false);
+        }
+    }
+
+    private void ResolveForceOpponentFlipOrSackToSelectedSlot(
+        EffectCandidate candidate,
+        EffectContext context,
+        BattleFieldSlot selectedSlot,
+        Action<bool> onComplete)
+    {
+        if (!IsOpponentFaceDownCharacterSlot(candidate.owner, selectedSlot))
+        {
+            battleManager?.SetSystemMessageFromExternal("선택한 슬롯은 상대 필드의 뒷면 캐릭터가 아닙니다.");
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        if (!ConsumeSourceContentForEffect(candidate, context, out string consumeMessage))
+        {
+            battleManager?.SetSystemMessageFromExternal(consumeMessage);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        StartCoroutine(ResolveForceOpponentFlipOrSackRoutine(candidate, context, selectedSlot, onComplete));
+    }
+
+    private IEnumerator ResolveForceOpponentFlipOrSackRoutine(
+        EffectCandidate candidate,
+        EffectContext context,
+        BattleFieldSlot selectedSlot,
+        Action<bool> onComplete)
+    {
+        BaseCardData targetCard = selectedSlot != null ? selectedSlot.characterCard : null;
+        BattleSlotOwner opponent = GetOpponentOwner(candidate.owner);
+        string targetName = targetCard != null ? targetCard.name : "대상 캐릭터";
+        int doubleCost = GetDoubleAppearCost(targetCard);
+
+        if (targetCard == null ||
+            !battleManager.CanPayViewerCostFromExternal(opponent, doubleCost))
+        {
+            yield return RestForceOpponentFlipOrSackTargetRoutine(selectedSlot);
+            string unableMessage = $"{candidate.card.name} 발동: 상대가 2배 출연 코스트를 지불할 수 없어 해당 캐릭터가 휴식존으로 이동합니다.";
+            battleManager.RefreshAllUIFromExternal();
+            CompleteEffectResolution(unableMessage, ShouldConsumeAction(candidate, context), () => onComplete?.Invoke(true));
+            yield break;
+        }
+
+        if (opponent == BattleSlotOwner.My)
+        {
+            bool choiceResolved = false;
+            bool chooseFlip = false;
+            QuestionPanel questionPanel = battleManager != null ? battleManager.BattleQuestionPanel : null;
+
+            if (questionPanel != null &&
+                questionPanel.TryShowYesNoQuestion(
+                    $"{targetName}: 시청자 {doubleCost}을(를) 지불하고 플립하시겠습니까?",
+                    () =>
+                    {
+                        chooseFlip = true;
+                        choiceResolved = true;
+                    },
+                    () =>
+                    {
+                        chooseFlip = false;
+                        choiceResolved = true;
+                    },
+                    () =>
+                    {
+                        chooseFlip = false;
+                        choiceResolved = true;
+                    }))
+            {
+                while (!choiceResolved)
+                    yield return null;
+            }
+            else
+            {
+                battleManager?.SetSystemMessageFromExternal("QuestionPanel을 열 수 없어 지불하지 않는 선택으로 처리합니다.");
+                chooseFlip = false;
+            }
+
+            if (chooseFlip)
+            {
+                if (!battleManager.CanPayViewerCostFromExternal(opponent, doubleCost))
+                {
+                    yield return RestForceOpponentFlipOrSackTargetRoutine(selectedSlot);
+                    string failedAfterChoiceMessage = $"{candidate.card.name} 발동: 상대가 2배 출연 코스트를 지불할 수 없어 해당 캐릭터가 휴식존으로 이동합니다.";
+                    battleManager.RefreshAllUIFromExternal();
+                    CompleteEffectResolution(failedAfterChoiceMessage, ShouldConsumeAction(candidate, context), () => onComplete?.Invoke(true));
+                    yield break;
+                }
+
+                string flipMessage = FlipForceOpponentFlipOrSackTarget(candidate, selectedSlot, opponent, doubleCost);
+                battleManager.RefreshAllUIFromExternal();
+                CompleteEffectResolution(flipMessage, ShouldConsumeAction(candidate, context), () => onComplete?.Invoke(true));
+                yield break;
+            }
+
+            yield return RestForceOpponentFlipOrSackTargetRoutine(selectedSlot);
+            string restMessage = $"{candidate.card.name} 발동: 상대가 지불하지 않아 캐릭터가 휴식존으로 이동합니다.";
+            battleManager.RefreshAllUIFromExternal();
+            CompleteEffectResolution(restMessage, ShouldConsumeAction(candidate, context), () => onComplete?.Invoke(true));
+            yield break;
+        }
+
+        // TODO: TestEnemy/AI 선택 정책을 고도화한다. 1차 구현은 지불 가능하면 플립을 선택한다.
+        if (!battleManager.CanPayViewerCostFromExternal(opponent, doubleCost))
+        {
+            yield return RestForceOpponentFlipOrSackTargetRoutine(selectedSlot);
+            string failedBeforeAutoMessage = $"{candidate.card.name} 발동: 상대가 2배 출연 코스트를 지불할 수 없어 해당 캐릭터가 휴식존으로 이동합니다.";
+            battleManager.RefreshAllUIFromExternal();
+            CompleteEffectResolution(failedBeforeAutoMessage, ShouldConsumeAction(candidate, context), () => onComplete?.Invoke(true));
+            yield break;
+        }
+
+        string autoFlipMessage = FlipForceOpponentFlipOrSackTarget(candidate, selectedSlot, opponent, doubleCost);
+        battleManager.RefreshAllUIFromExternal();
+        CompleteEffectResolution(autoFlipMessage, ShouldConsumeAction(candidate, context), () => onComplete?.Invoke(true));
+    }
+
+    private string FlipForceOpponentFlipOrSackTarget(
+        EffectCandidate candidate,
+        BattleFieldSlot selectedSlot,
+        BattleSlotOwner opponent,
+        int requiredCost)
+    {
+        BaseCardData targetCard = selectedSlot != null ? selectedSlot.characterCard : null;
+
+        if (targetCard == null ||
+            !battleManager.TryPayViewerCostFromExternal(opponent, requiredCost))
+        {
+            return $"{candidate.card.name} 발동: 상대가 2배 출연 코스트를 지불할 수 없어 해당 캐릭터가 휴식존으로 이동합니다.";
+        }
+
+        Sprite sprite = battleManager.LoadCardSpriteFromExternal(targetCard);
+        selectedSlot.SetCharacterCard(targetCard, sprite, false, opponent);
+        selectedSlot.faceUpSummonedTurn = battleManager.GetCurrentTurnCountFromExternal();
+        selectedSlot.SetCharacterMovedThisTurn(false);
+        return $"{candidate.card.name} 발동: 상대가 2배 출연 코스트를 지불하고 캐릭터를 플립했습니다.";
+    }
+
+    private IEnumerator RestForceOpponentFlipOrSackTargetRoutine(BattleFieldSlot selectedSlot)
+    {
+        if (selectedSlot == null ||
+            !selectedSlot.HasCharacter ||
+            selectedSlot.characterCard == null)
+        {
+            yield break;
+        }
+
+        yield return battleManager.SendFieldCharacterToRestZoneRoutine(selectedSlot);
+    }
+
+    private void ResolveForceOpponentSummonOrSackFromHandEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action<bool> onComplete)
+    {
+        if (!CanActivateEffect(candidate, context, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        BattleSlotOwner opponent = GetOpponentOwner(candidate.owner);
+        IReadOnlyList<BaseCardData> opponentHand = battleManager.GetHandCardsFromExternal(opponent);
+        if (opponentHand == null || opponentHand.Count == 0)
+        {
+            battleManager?.SetSystemMessageFromExternal("상대 손패에 선택할 카드가 없습니다.");
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        int randomHandIndex = UnityEngine.Random.Range(0, opponentHand.Count);
+        BaseCardData selectedCard = opponentHand[randomHandIndex];
+
+        if (selectedCard == null ||
+            !battleManager.IsCardInHandAtIndexFromExternal(opponent, randomHandIndex, selectedCard))
+        {
+            battleManager?.SetSystemMessageFromExternal("랜덤으로 선택한 상대 손패를 처리할 수 없습니다.");
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        if (!ConsumeSourceContentForEffect(candidate, context, out string consumeMessage))
+        {
+            battleManager?.SetSystemMessageFromExternal(consumeMessage);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        string revealMessage = $"{candidate.card.name}: 상대 손패에서 {selectedCard.name}이 공개되었습니다.";
+        battleManager.SetSystemMessageFromExternal(revealMessage);
+
+        if (!(selectedCard is CharacterCardData))
+        {
+            battleManager.RefreshAllUIFromExternal();
+            CompleteEffectResolution(
+                $"{revealMessage}\n공개된 카드는 캐릭터가 아니므로 아무 일도 일어나지 않습니다.",
+                ShouldConsumeAction(candidate, context),
+                () => onComplete?.Invoke(true));
+            return;
+        }
+
+        StartCoroutine(ResolveForceOpponentSummonOrSackCharacterRoutine(
+            candidate,
+            context,
+            opponent,
+            selectedCard,
+            randomHandIndex,
+            revealMessage,
+            onComplete));
+    }
+
+    private IEnumerator ResolveForceOpponentSummonOrSackCharacterRoutine(
+        EffectCandidate candidate,
+        EffectContext context,
+        BattleSlotOwner opponent,
+        BaseCardData selectedCard,
+        int handIndex,
+        string revealMessage,
+        Action<bool> onComplete)
+    {
+        string selectedName = selectedCard != null ? selectedCard.name : "선택 카드";
+        int requiredCost = GetDoubleAppearCost(selectedCard);
+        List<BattleFieldSlot> emptySlots = BuildEmptyOwnedBroadcastSlotCandidates(opponent);
+
+        if (!battleManager.CanPayViewerCostFromExternal(opponent, requiredCost))
+        {
+            MoveOpponentHandCardToRest(opponent, handIndex, selectedCard);
+            battleManager.RefreshAllUIFromExternal();
+            CompleteEffectResolution(
+                $"{revealMessage}\n상대가 2배 출연 코스트를 지불할 수 없어 {selectedName}이 휴식존으로 이동합니다.",
+                ShouldConsumeAction(candidate, context),
+                () => onComplete?.Invoke(true));
+            yield break;
+        }
+
+        if (emptySlots.Count == 0)
+        {
+            MoveOpponentHandCardToRest(opponent, handIndex, selectedCard);
+            battleManager.RefreshAllUIFromExternal();
+            CompleteEffectResolution(
+                $"{revealMessage}\n상대 필드에 빈 방송 슬롯이 없어 {selectedName}이 휴식존으로 이동합니다.",
+                ShouldConsumeAction(candidate, context),
+                () => onComplete?.Invoke(true));
+            yield break;
+        }
+
+        BattleFieldSlot selectedSlot = null;
+
+        if (opponent == BattleSlotOwner.My)
+        {
+            bool slotSelected = false;
+            bool opened = battleManager.RequestFieldSlotSelection(
+                $"{selectedName}을(를) 출연시킬 내 빈 방송 슬롯을 선택하세요.",
+                emptySlots,
+                slot =>
+                {
+                    selectedSlot = slot;
+                    slotSelected = true;
+                },
+                () =>
+                {
+                    selectedSlot = null;
+                    slotSelected = true;
+                });
+
+            if (opened)
+            {
+                while (!slotSelected)
+                    yield return null;
+            }
+
+            if (!opened || selectedSlot == null)
+            {
+                MoveOpponentHandCardToRest(opponent, handIndex, selectedCard);
+                battleManager.RefreshAllUIFromExternal();
+                CompleteEffectResolution(
+                    $"{revealMessage}\n출연 위치를 선택하지 않아 {selectedName}이 휴식존으로 이동합니다.",
+                    ShouldConsumeAction(candidate, context),
+                    () => onComplete?.Invoke(true));
+                yield break;
+            }
+        }
+        else
+        {
+            selectedSlot = emptySlots[0];
+        }
+
+        string placeMessage = PlaceOpponentHandCharacterByKumorin(opponent, handIndex, selectedCard, selectedSlot, requiredCost);
+        battleManager.RefreshAllUIFromExternal();
+        CompleteEffectResolution(
+            $"{revealMessage}\n{placeMessage}",
+            ShouldConsumeAction(candidate, context),
+            () => onComplete?.Invoke(true));
+    }
+
+    private void ResolvePostCollabTabiBoostAndRebattleEffect(
+        EffectCandidate candidate,
+        EffectContext context,
+        Action<bool> onComplete)
+    {
+        EffectContext safeContext = NormalizeContext(context, EffectTiming.PostCollab);
+
+        if (!CanActivateEffect(candidate, safeContext, out string failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        EffectData effect = safeContext.sourceEffect ?? candidate.sourceEffect;
+        string tabiTag = GetStringParam(effect, "tabiTag", "#타비");
+        string bunnyTag = GetStringParam(effect, "bunnyTag", "#뿡댕이");
+        BattleFieldSlot tabiSlot = FindSurvivingOwnTaggedCollabParticipantSlot(candidate.owner, safeContext, tabiTag);
+        BattleFieldSlot opponentSlot = FindSurvivingOpponentCollabParticipantSlot(candidate.owner, safeContext);
+
+        if (tabiSlot == null || opponentSlot == null)
+        {
+            battleManager?.SetSystemMessageFromExternal("추가 합방을 진행할 생존 캐릭터가 없습니다.");
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        int bonusTension;
+        int bonusHp;
+        int bunnyCount = SumOwnedFaceUpTaggedCharactersOnBoard(
+            candidate.owner,
+            bunnyTag,
+            out bonusTension,
+            out bonusHp);
+
+        if (bunnyCount <= 0 || bonusTension + bonusHp <= 0)
+        {
+            battleManager?.SetSystemMessageFromExternal("여로를 사용할 수 없습니다: 내 필드 위 앞면 #뿡댕이가 없습니다.");
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        if (!ConsumeSourceContentForEffect(candidate, safeContext, out string consumeMessage))
+        {
+            battleManager?.SetSystemMessageFromExternal(consumeMessage);
+            onComplete?.Invoke(false);
+            return;
+        }
+
+        tabiSlot.SetCharacterBattleStats(
+            tabiSlot.currentCharacterHp + bonusHp,
+            tabiSlot.currentCharacterMaxHp + bonusHp,
+            tabiSlot.currentCharacterTension + bonusTension);
+
+        pendingPostCollabRebattle = new PendingPostCollabRebattleState
+        {
+            owner = candidate.owner,
+            sourceCard = candidate.card,
+            attackerSlot = tabiSlot,
+            defenderSlot = opponentSlot,
+            processed = false
+        };
+
+        battleManager.RefreshAllUIFromExternal();
+        battleManager.RefreshFieldCharacterDetailFromExternal(tabiSlot);
+
+        string tabiName = tabiSlot.characterCard != null ? tabiSlot.characterCard.name : "#타비";
+        string message =
+            $"{candidate.card.name} 발동: {bunnyTag}들의 텐션 합계 {bonusTension}, 체력 합계 {bonusHp}을 {tabiTag}에게 더하고 다시 합방합니다.\n" +
+            $"{candidate.card.name}: {tabiName}의 합방 텐션 +{bonusTension}, 체력 +{bonusHp}";
+        CompleteEffectResolution(message, false, () => onComplete?.Invoke(true));
     }
 
     private bool ConsumeSourceContentForEffect(
@@ -4912,10 +5616,10 @@ public class EffectManager : MonoBehaviour
         switch (effectRef)
         {
             case "character.rest.gainViewers":
-                return ModifyViewers(candidate.owner, GetIntParam(effect, "amount", 0));
+                return ModifyViewers(candidate.owner, GetIntParam(effect, "amount", 0), candidate.card);
 
             case "character.rest.loseViewers":
-                return ModifyViewers(candidate.owner, -GetIntParam(effect, "amount", 0));
+                return ModifyViewers(candidate.owner, -GetIntParam(effect, "amount", 0), candidate.card);
 
             case "content.drawThenDiscard":
                 return DrawThenDiscard(
@@ -4923,6 +5627,9 @@ public class EffectManager : MonoBehaviour
                     GetIntParam(effect, "draw", 0),
                     GetIntParam(effect, "discard", 0)
                 );
+
+            case "content.redrawIfBehindAndUniverseOnly":
+                return RedrawIfBehindAndUniverseOnly(candidate);
 
             case "content.postCollabHealOwnParticipant":
                 return HealOwnCollabParticipant(
@@ -4942,6 +5649,12 @@ public class EffectManager : MonoBehaviour
 
             case "content.collabClicheSpendBuffRefund":
                 return "Our Tales 발동 테스트: 실제 효과는 아직 미구현입니다.";
+
+            case "content.invertNegativeAmountForTagThisTurn":
+                return RegisterNegativeAmountInvertThisTurn(
+                    candidate.owner,
+                    GetStringParam(effect, "tag", "#뿡댕이"),
+                    candidate.card);
 
             default:
                 return GetUnimplementedEffectMessage(candidate.card, effect, effectRef);
@@ -5114,9 +5827,10 @@ public class EffectManager : MonoBehaviour
         return 0;
     }
 
-    private string ModifyViewers(BattleSlotOwner owner, int delta)
+    private string ModifyViewers(BattleSlotOwner owner, int delta, BaseCardData sourceCard)
     {
-        int actualDelta = battleManager.ModifyViewersFromExternal(owner, delta);
+        int appliedDelta = ApplyNegativeAmountInvertIfNeeded(owner, sourceCard, delta);
+        int actualDelta = battleManager.ModifyViewersFromExternal(owner, appliedDelta);
         string ownerName = owner == BattleSlotOwner.My ? "내" : "상대";
         string sign = actualDelta >= 0 ? "+" : "";
 
@@ -5144,18 +5858,658 @@ public class EffectManager : MonoBehaviour
         return message;
     }
 
+    private bool CanActivateRedrawIfBehindAndUniverseOnly(
+        EffectCandidate candidate,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (candidate == null)
+        {
+            failReason = "효과 후보 정보가 없습니다.";
+            return false;
+        }
+
+        BaseCardData idolCard = battleManager.GetIdolCardFromExternal(candidate.owner);
+        if (!CardHasHashtag(idolCard, "#유니버스"))
+        {
+            failReason = "아이돌 카드에 #유니버스 태그가 없어 사용할 수 없습니다.";
+            return false;
+        }
+
+        BattleSlotOwner opponent = GetOpponentOwner(candidate.owner);
+        int ownerViewers = battleManager.GetViewersFromExternal(candidate.owner);
+        int opponentViewers = battleManager.GetViewersFromExternal(opponent);
+
+        if (ownerViewers >= opponentViewers)
+        {
+            failReason = "상대보다 시청자가 적을 때만 사용할 수 있습니다.";
+            return false;
+        }
+
+        if (CountHandCardsExcludingSource(candidate) <= 0)
+        {
+            failReason = "되돌릴 손패가 없어 사용할 수 없습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private string RedrawIfBehindAndUniverseOnly(EffectCandidate candidate)
+    {
+        if (candidate == null || candidate.card == null)
+            return "효과 발동 카드 정보가 없습니다.";
+
+        List<BaseCardData> returnCards = BuildCurrentHandCards(candidate.owner);
+        int returnedCount = 0;
+
+        for (int i = returnCards.Count - 1; i >= 0; i--)
+        {
+            BaseCardData card = returnCards[i];
+            int handIndex = battleManager.FindHandCardIndexFromExternal(candidate.owner, card);
+
+            bool removed = handIndex >= 0 &&
+                battleManager.RemoveHandCardAtIndexFromExternal(candidate.owner, handIndex, card);
+
+            if (!removed)
+                removed = battleManager.RemoveCardFromHandFromExternal(candidate.owner, card);
+
+            if (!removed)
+            {
+                Debug.LogWarning($"Stars Align: 손패에서 되돌릴 카드를 제거하지 못했습니다: {card?.id}");
+                continue;
+            }
+
+            battleManager.AddCardToMainDeckFromExternal(
+                candidate.owner,
+                card,
+                DeckInsertPosition.Bottom,
+                false
+            );
+            returnedCount++;
+        }
+
+        battleManager.ShuffleMainDeckFromExternal(candidate.owner);
+        int drawnCount = battleManager.DrawCardsFromExternal(candidate.owner, returnedCount);
+        battleManager.RefreshAllUIFromExternal();
+
+        return $"{candidate.card.name} 발동: 손패 {returnedCount}장을 덱으로 되돌리고 {drawnCount}장 드로우했습니다.";
+    }
+
+    private int CountHandCardsExcludingSource(EffectCandidate candidate)
+    {
+        if (candidate == null || battleManager == null)
+            return 0;
+
+        IReadOnlyList<BaseCardData> hand = battleManager.GetHandCardsFromExternal(candidate.owner);
+        if (hand == null)
+            return 0;
+
+        int count = 0;
+
+        for (int i = 0; i < hand.Count; i++)
+        {
+            if (i == candidate.handIndex)
+                continue;
+
+            if (hand[i] != null)
+                count++;
+        }
+
+        return count;
+    }
+
+    private List<BaseCardData> BuildCurrentHandCards(BattleSlotOwner owner)
+    {
+        List<BaseCardData> cards = new List<BaseCardData>();
+
+        if (battleManager == null)
+            return cards;
+
+        IReadOnlyList<BaseCardData> hand = battleManager.GetHandCardsFromExternal(owner);
+        if (hand == null)
+            return cards;
+
+        for (int i = 0; i < hand.Count; i++)
+        {
+            BaseCardData card = hand[i];
+
+            if (card == null)
+                continue;
+
+            cards.Add(card);
+        }
+
+        return cards;
+    }
+
+    private BattleSlotOwner GetOpponentOwner(BattleSlotOwner owner)
+    {
+        return owner == BattleSlotOwner.My
+            ? BattleSlotOwner.Enemy
+            : BattleSlotOwner.My;
+    }
+
+    private string RegisterNegativeAmountInvertThisTurn(
+        BattleSlotOwner owner,
+        string sourceTag,
+        BaseCardData sourceContentCard)
+    {
+        string safeTag = string.IsNullOrWhiteSpace(sourceTag) ? "#뿡댕이" : sourceTag;
+        int turn = battleManager != null ? battleManager.GetCurrentTurnCountFromExternal() : 0;
+
+        NegativeAmountInvertState existing = negativeAmountInvertStates.Find(state =>
+            state != null &&
+            state.owner == owner &&
+            state.turn == turn &&
+            string.Equals(state.sourceTag, safeTag, StringComparison.OrdinalIgnoreCase));
+
+        if (existing == null)
+        {
+            negativeAmountInvertStates.Add(new NegativeAmountInvertState
+            {
+                owner = owner,
+                sourceTag = safeTag,
+                turn = turn,
+                sourceContentCard = sourceContentCard
+            });
+        }
+        else
+        {
+            existing.sourceContentCard = sourceContentCard;
+        }
+
+        string sourceName = sourceContentCard != null ? sourceContentCard.name : "왜 말을 그렇게 해 ;ㅁ;";
+        return $"{sourceName} 발동: 이번 턴 {safeTag} 카드가 발생시키는 부정적 수치 효과가 반전됩니다.";
+    }
+
+    public void ClearExpiredNegativeAmountInvertStatesFromExternal()
+    {
+        ClearExpiredNegativeAmountInvertStates();
+    }
+
+    private void ClearExpiredNegativeAmountInvertStates()
+    {
+        if (battleManager == null || negativeAmountInvertStates.Count == 0)
+            return;
+
+        int currentTurn = battleManager.GetCurrentTurnCountFromExternal();
+        negativeAmountInvertStates.RemoveAll(state => state == null || state.turn != currentTurn);
+    }
+
+    public bool HasNegativeAmountInvertThisTurn(BattleSlotOwner owner, string sourceTag)
+    {
+        ClearExpiredNegativeAmountInvertStates();
+
+        if (battleManager == null || string.IsNullOrWhiteSpace(sourceTag))
+            return false;
+
+        int currentTurn = battleManager.GetCurrentTurnCountFromExternal();
+        return negativeAmountInvertStates.Exists(state =>
+            state != null &&
+            state.owner == owner &&
+            state.turn == currentTurn &&
+            string.Equals(state.sourceTag, sourceTag, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public int ApplyNegativeAmountInvertIfNeeded(
+        BattleSlotOwner owner,
+        BaseCardData sourceCard,
+        int amount)
+    {
+        if (amount >= 0 || sourceCard == null)
+            return amount;
+
+        ClearExpiredNegativeAmountInvertStates();
+        int currentTurn = battleManager != null ? battleManager.GetCurrentTurnCountFromExternal() : 0;
+
+        foreach (NegativeAmountInvertState state in negativeAmountInvertStates)
+        {
+            if (state == null ||
+                state.owner != owner ||
+                state.turn != currentTurn)
+            {
+                continue;
+            }
+
+            if (!IsNegativeAmountInvertSource(sourceCard, state.sourceTag))
+                continue;
+
+            battleManager?.SetSystemMessageFromExternal(
+                $"{state.sourceContentCard?.name ?? "왜 말을 그렇게 해 ;ㅁ;"}: {state.sourceTag} 카드의 부정적 효과가 긍정적 효과로 바뀌었습니다.");
+            return Mathf.Abs(amount);
+        }
+
+        return amount;
+    }
+
+    public int ApplyNegativeAmountInvertIfNeeded(
+        BattleSlotOwner owner,
+        BattleFieldSlot sourceSlot,
+        int amount)
+    {
+        BaseCardData sourceCard = sourceSlot != null ? sourceSlot.characterCard : null;
+        return ApplyNegativeAmountInvertIfNeeded(owner, sourceCard, amount);
+    }
+
+    public bool IsNegativeAmountInvertSource(BaseCardData sourceCard, string sourceTag)
+    {
+        return sourceCard != null &&
+            !string.IsNullOrWhiteSpace(sourceTag) &&
+            CardHasHashtag(sourceCard, sourceTag);
+    }
+
+    private bool CanActivateCollabClicheSpendBuffRefund(
+        EffectCandidate candidate,
+        EffectContext context,
+        out string failReason)
+    {
+        failReason = "";
+
+        EffectData effect = candidate != null ? candidate.sourceEffect : null;
+        string tag = GetStringParam(effect, "tag", "#클리셰");
+        BaseCardData idolCard = battleManager.GetIdolCardFromExternal(candidate.owner);
+
+        if (!CardHasHashtag(idolCard, tag))
+        {
+            failReason = $"아이돌 카드에 {tag} 태그가 없어 사용할 수 없습니다.";
+            return false;
+        }
+
+        if (context == null ||
+            context.attackerSlot == null ||
+            context.defenderSlot == null ||
+            FindOwnedCollabParticipantSlot(candidate.owner, context) == null)
+        {
+            failReason = "합방에 참여한 내 캐릭터가 없어 사용할 수 없습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CanActivatePostCollabTabiBoostAndRebattle(
+        EffectCandidate candidate,
+        EffectContext context,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (pendingPostCollabRebattle != null && !pendingPostCollabRebattle.processed)
+        {
+            failReason = "이미 추가 합방이 예약되어 있습니다.";
+            return false;
+        }
+
+        EffectData effect = candidate != null ? candidate.sourceEffect : null;
+        string tabiTag = GetStringParam(effect, "tabiTag", "#타비");
+        string bunnyTag = GetStringParam(effect, "bunnyTag", "#뿡댕이");
+
+        if (FindSurvivingOwnTaggedCollabParticipantSlot(candidate.owner, context, tabiTag) == null)
+        {
+            failReason = "여로를 사용할 수 없습니다: 합방에 참여한 내 #타비 또는 상대 캐릭터가 생존해 있지 않습니다.";
+            return false;
+        }
+
+        BattleFieldSlot opponentSlot = FindSurvivingOpponentCollabParticipantSlot(candidate.owner, context);
+        if (opponentSlot == null || opponentSlot.currentCharacterHp <= 0)
+        {
+            failReason = "여로를 사용할 수 없습니다: 합방에 참여한 내 #타비 또는 상대 캐릭터가 생존해 있지 않습니다.";
+            return false;
+        }
+
+        int tensionSum;
+        int hpSum;
+        int bunnyCount = SumOwnedFaceUpTaggedCharactersOnBoard(
+            candidate.owner,
+            bunnyTag,
+            out tensionSum,
+            out hpSum);
+
+        if (bunnyCount <= 0 || tensionSum + hpSum <= 0)
+        {
+            failReason = "여로를 사용할 수 없습니다: 내 필드 위 앞면 #뿡댕이가 없습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private BattleFieldSlot FindOwnedCollabParticipantSlot(
+        BattleSlotOwner owner,
+        EffectContext context)
+    {
+        if (context == null)
+            return null;
+
+        if (IsOwnedCollabParticipantSlot(context.attackerSlot, owner))
+            return context.attackerSlot;
+
+        if (IsOwnedCollabParticipantSlot(context.defenderSlot, owner))
+            return context.defenderSlot;
+
+        return null;
+    }
+
+    private bool IsOwnedCollabParticipantSlot(BattleFieldSlot slot, BattleSlotOwner owner)
+    {
+        return slot != null &&
+            slot.HasCharacter &&
+            slot.characterCard != null &&
+            slot.characterOwner == owner;
+    }
+
+    private BattleFieldSlot FindSurvivingOwnTaggedCollabParticipantSlot(
+        BattleSlotOwner owner,
+        EffectContext context,
+        string tag)
+    {
+        BattleFieldSlot ownSlot = FindSurvivingOwnCollabParticipantSlot(owner, context);
+
+        if (ownSlot == null ||
+            ownSlot.characterCard == null ||
+            !CardHasHashtag(ownSlot.characterCard, tag))
+        {
+            return null;
+        }
+
+        return ownSlot;
+    }
+
+    private BattleFieldSlot FindMatchingSurvivingOurTalesParticipantSlot(PendingOurTalesState state)
+    {
+        if (state == null)
+            return null;
+
+        BattleFieldSlot slot = FindMatchingSurvivingOurTalesParticipantSlot(state.participantSlot, state);
+        if (slot != null)
+            return slot;
+
+        slot = FindMatchingSurvivingOurTalesParticipantSlot(state.attackerSlot, state);
+        if (slot != null)
+            return slot;
+
+        return FindMatchingSurvivingOurTalesParticipantSlot(state.defenderSlot, state);
+    }
+
+    private BattleFieldSlot FindMatchingSurvivingOurTalesParticipantSlot(
+        BattleFieldSlot slot,
+        PendingOurTalesState state)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null ||
+            slot.characterOwner != state.owner ||
+            slot.currentCharacterHp <= 0)
+        {
+            return null;
+        }
+
+        if (state.participantCard != null && slot.characterCard != state.participantCard)
+            return null;
+
+        return slot;
+    }
+
+    private List<BattleFieldSlot> BuildOpponentFaceDownCharacterSlotCandidates(BattleSlotOwner owner)
+    {
+        List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
+
+        if (battleManager == null)
+            return candidates;
+
+        AddOpponentFaceDownCharacterSlotCandidates(candidates, owner, BattlePlayerSide.My);
+        AddOpponentFaceDownCharacterSlotCandidates(candidates, owner, BattlePlayerSide.Enemy);
+        return candidates;
+    }
+
+    private void AddOpponentFaceDownCharacterSlotCandidates(
+        List<BattleFieldSlot> candidates,
+        BattleSlotOwner owner,
+        BattlePlayerSide side)
+    {
+        IReadOnlyList<BattleFieldSlot> slots = battleManager.GetSlotsForMovement(side);
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (IsOpponentFaceDownCharacterSlot(owner, slot))
+                candidates.Add(slot);
+        }
+    }
+
+    private bool IsOpponentFaceDownCharacterSlot(BattleSlotOwner owner, BattleFieldSlot slot)
+    {
+        BattleSlotOwner opponent = GetOpponentOwner(owner);
+
+        return slot != null &&
+            slot.owner == opponent &&
+            slot.HasCharacter &&
+            slot.characterCard != null &&
+            slot.characterOwner == opponent &&
+            slot.isCharacterFaceDown;
+    }
+
+    private int GetHandCardCount(BattleSlotOwner owner)
+    {
+        IReadOnlyList<BaseCardData> hand = battleManager != null
+            ? battleManager.GetHandCardsFromExternal(owner)
+            : null;
+
+        return hand != null ? hand.Count : 0;
+    }
+
+    private List<CardQuestionOption> BuildOpponentHandOptions(BattleSlotOwner opponent)
+    {
+        List<CardQuestionOption> options = new List<CardQuestionOption>();
+        IReadOnlyList<BaseCardData> hand = battleManager != null
+            ? battleManager.GetHandCardsFromExternal(opponent)
+            : null;
+
+        if (hand == null)
+            return options;
+
+        for (int i = 0; i < hand.Count; i++)
+        {
+            BaseCardData card = hand[i];
+            if (card == null)
+                continue;
+
+            EffectCandidate linkedCandidate = new EffectCandidate
+            {
+                card = card,
+                owner = opponent,
+                sourceZone = EffectSourceZone.Hand,
+                handIndex = i,
+                timing = EffectTiming.Content,
+                consumeAction = false
+            };
+
+            options.Add(new CardQuestionOption(card, null, linkedCandidate));
+        }
+
+        return options;
+    }
+
+    private int GetDoubleAppearCost(BaseCardData card)
+    {
+        int cost = 0;
+
+        if (battleManager != null && battleManager.summonManager != null && card is CharacterCardData)
+            cost = battleManager.summonManager.GetCharacterAppearCostFromExternal(card);
+
+        return Mathf.Max(0, cost * 2);
+    }
+
+    private bool MoveOpponentHandCardToRest(
+        BattleSlotOwner opponent,
+        int handIndex,
+        BaseCardData selectedCard)
+    {
+        if (selectedCard == null)
+            return false;
+
+        bool removed = battleManager.RemoveHandCardAtIndexFromExternal(opponent, handIndex, selectedCard);
+        if (!removed)
+            removed = battleManager.RemoveCardFromHandFromExternal(opponent, selectedCard);
+
+        if (!removed)
+            return false;
+
+        battleManager.AddCardToRestZoneFromExternal(opponent, selectedCard);
+        return true;
+    }
+
+    private string PlaceOpponentHandCharacterByKumorin(
+        BattleSlotOwner opponent,
+        int handIndex,
+        BaseCardData selectedCard,
+        BattleFieldSlot selectedSlot,
+        int requiredCost)
+    {
+        string selectedName = selectedCard != null ? selectedCard.name : "선택 카드";
+
+        if (!(selectedCard is CharacterCardData))
+            return "공개된 카드는 캐릭터가 아니므로 아무 일도 일어나지 않습니다.";
+
+        if (selectedSlot == null ||
+            selectedSlot.owner != opponent ||
+            !selectedSlot.HasBroadcast ||
+            selectedSlot.HasCharacter)
+        {
+            MoveOpponentHandCardToRest(opponent, handIndex, selectedCard);
+            return $"선택한 슬롯에 출연할 수 없어 {selectedName}이 휴식존으로 이동합니다.";
+        }
+
+        if (!battleManager.CanPayViewerCostFromExternal(opponent, requiredCost))
+        {
+            MoveOpponentHandCardToRest(opponent, handIndex, selectedCard);
+            return $"상대가 2배 출연 코스트를 지불할 수 없어 {selectedName}이 휴식존으로 이동합니다.";
+        }
+
+        bool removed = battleManager.RemoveHandCardAtIndexFromExternal(opponent, handIndex, selectedCard);
+        if (!removed)
+            removed = battleManager.RemoveCardFromHandFromExternal(opponent, selectedCard);
+
+        if (!removed)
+        {
+            battleManager.AddCardToRestZoneFromExternal(opponent, selectedCard);
+            return $"선택한 손패를 출연시킬 수 없어 {selectedName}이 휴식존으로 이동합니다.";
+        }
+
+        if (!battleManager.TryPayViewerCostFromExternal(opponent, requiredCost))
+        {
+            battleManager.AddCardToRestZoneFromExternal(opponent, selectedCard);
+            return $"상대가 2배 출연 코스트를 지불할 수 없어 {selectedName}이 휴식존으로 이동합니다.";
+        }
+
+        Sprite sprite = battleManager.LoadCardSpriteFromExternal(selectedCard);
+        selectedSlot.SetCharacterCard(selectedCard, sprite, false, opponent);
+        selectedSlot.faceUpSummonedTurn = battleManager.GetCurrentTurnCountFromExternal();
+        battleManager.ApplyBroadcastEnterEffectsFromExternal(selectedSlot, false);
+        return $"상대가 {selectedName}을 앞면 출연시켰습니다.";
+    }
+
+    private string ResolveOpponentHandCardSummonOrSack(
+        EffectCandidate candidate,
+        BattleSlotOwner opponent,
+        BaseCardData selectedCard)
+    {
+        string selectedName = selectedCard != null ? selectedCard.name : "선택 카드";
+
+        if (!(selectedCard is CharacterCardData))
+        {
+            battleManager.AddCardToRestZoneFromExternal(opponent, selectedCard);
+            return $"{candidate.card.name} 발동: {selectedName}은(는) 캐릭터 카드가 아니어서 휴식존으로 이동했습니다.";
+        }
+
+        int doubleCost = GetDoubleAppearCost(selectedCard);
+        IReadOnlyList<BattleFieldSlot> emptySlots = battleManager.GetEmptyOwnedBroadcastSlotsFromExternal(opponent);
+
+        if (emptySlots != null &&
+            emptySlots.Count > 0 &&
+            battleManager.CanPayViewerCostFromExternal(opponent, doubleCost) &&
+            battleManager.TryPayViewerCostFromExternal(opponent, doubleCost))
+        {
+            BattleFieldSlot targetSlot = emptySlots[0];
+            Sprite sprite = battleManager.LoadCardSpriteFromExternal(selectedCard);
+            targetSlot.SetCharacterCard(selectedCard, sprite, false, opponent);
+            targetSlot.faceUpSummonedTurn = battleManager.GetCurrentTurnCountFromExternal();
+            battleManager.ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
+            return $"{candidate.card.name} 발동: {selectedName}이(가) 시청자 {doubleCost}을(를) 지불하고 앞면으로 출연했습니다.";
+        }
+
+        battleManager.AddCardToRestZoneFromExternal(opponent, selectedCard);
+        return $"{candidate.card.name} 발동: {selectedName}이(가) 출연 조건을 만족하지 못해 휴식존으로 이동했습니다.";
+    }
+
+    private int SumOwnedFaceUpTaggedCharactersOnBoard(
+        BattleSlotOwner owner,
+        string tag,
+        out int totalTension,
+        out int totalHp)
+    {
+        totalTension = 0;
+        totalHp = 0;
+
+        if (battleManager == null || string.IsNullOrWhiteSpace(tag))
+            return 0;
+
+        BattlePlayerSide side = owner == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+
+        return SumOwnedFaceUpTaggedCharactersOnBoard(side, owner, tag, ref totalTension, ref totalHp);
+    }
+
+    private int SumOwnedFaceUpTaggedCharactersOnBoard(
+        BattlePlayerSide side,
+        BattleSlotOwner owner,
+        string tag,
+        ref int totalTension,
+        ref int totalHp)
+    {
+        int count = 0;
+        IReadOnlyList<BattleFieldSlot> slots = battleManager.GetSlotsForMovement(side);
+        if (slots == null)
+            return 0;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null ||
+                slot.owner != owner ||
+                !slot.HasCharacter ||
+                slot.characterCard == null ||
+                slot.characterOwner != owner ||
+                slot.isCharacterFaceDown ||
+                !CardHasHashtag(slot.characterCard, tag))
+            {
+                continue;
+            }
+
+            totalTension += Mathf.Max(0, slot.currentCharacterTension);
+            totalHp += Mathf.Max(0, slot.currentCharacterHp);
+            count++;
+        }
+
+        return count;
+    }
+
     private string HealOwnCollabParticipant(
         BattleSlotOwner owner,
         EffectContext context,
         int amount)
     {
-        BattleFieldSlot targetSlot = GetOwnCollabParticipant(owner, context);
+        BattleFieldSlot targetSlot = FindSurvivingOwnCollabParticipantSlot(owner, context);
 
         if (targetSlot == null)
-            return "회복할 합방 참가 캐릭터를 찾지 못했습니다.";
+            return "합방에 참여한 내 캐릭터가 생존해 있지 않아 누룽지를 사용할 수 없습니다.";
 
         int healedAmount = battleManager.HealCharacterFromExternal(targetSlot, Mathf.Max(0, amount));
         battleManager.RefreshAllUIFromExternal();
+        battleManager.RefreshFieldCharacterDetailFromExternal(targetSlot);
 
         string cardName = targetSlot.characterCard != null
             ? targetSlot.characterCard.name
@@ -5164,28 +6518,29 @@ public class EffectManager : MonoBehaviour
         return $"{cardName}의 체력을 {healedAmount} 회복했습니다.";
     }
 
-    private BattleFieldSlot GetOwnCollabParticipant(
+    private BattleFieldSlot FindSurvivingOwnCollabParticipantSlot(
         BattleSlotOwner owner,
         EffectContext context)
     {
         if (context == null)
             return null;
 
-        if (IsOwnedActiveCharacterSlot(context.attackerSlot, owner))
+        if (IsSurvivingOwnedCollabParticipantSlot(context.attackerSlot, owner))
             return context.attackerSlot;
 
-        if (IsOwnedActiveCharacterSlot(context.defenderSlot, owner))
+        if (IsSurvivingOwnedCollabParticipantSlot(context.defenderSlot, owner))
             return context.defenderSlot;
 
         return null;
     }
 
-    private bool IsOwnedActiveCharacterSlot(BattleFieldSlot slot, BattleSlotOwner owner)
+    private bool IsSurvivingOwnedCollabParticipantSlot(BattleFieldSlot slot, BattleSlotOwner owner)
     {
         return slot != null &&
             slot.HasCharacter &&
-            !slot.isCharacterFaceDown &&
-            slot.characterOwner == owner;
+            slot.characterCard != null &&
+            slot.characterOwner == owner &&
+            slot.currentCharacterHp > 0;
     }
 
     private bool HasIdolPassiveForSlot(
@@ -5854,7 +7209,7 @@ public class EffectManager : MonoBehaviour
         {
             case EffectTiming.PreCollab:
             case EffectTiming.PostCollab:
-                return "이 카드는 합방 타이밍에만 사용할 수 있습니다.";
+                return "현재 타이밍에 발동할 수 없는 카드입니다.";
 
             case EffectTiming.OnAppear:
             case EffectTiming.OnRest:
@@ -5864,10 +7219,10 @@ public class EffectManager : MonoBehaviour
             case EffectTiming.Broadcast:
             case EffectTiming.TurnStart:
             case EffectTiming.TurnEnd:
-                return "아직 구현되지 않은 발동 타이밍입니다.";
+                return "현재 타이밍에 발동할 수 없는 카드입니다.";
 
             default:
-                return "지금은 사용할 수 없는 카드입니다.";
+                return "현재 타이밍에 발동할 수 없는 카드입니다.";
         }
     }
 

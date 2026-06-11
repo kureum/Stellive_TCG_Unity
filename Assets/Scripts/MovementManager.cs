@@ -114,9 +114,22 @@ public class MovementManager : MonoBehaviour
         }
 
         string failReason;
-        if (CanStartCollaborationAtSlot(draggingFromSlot, toSlot, out failReason))
+        string collaborationFailReason;
+        if (CanStartCollaborationAtSlot(draggingFromSlot, toSlot, out collaborationFailReason))
         {
             OpenCollaborationQuestion(draggingFromSlot, toSlot, draggingCard);
+            return true;
+        }
+
+        if (toSlot != null &&
+            toSlot.HasCharacter &&
+            draggingFromSlot != null &&
+            toSlot.characterOwner != draggingFromSlot.characterOwner)
+        {
+            ClearAllMoveState();
+            battleManager.SetSystemMessageFromExternal(
+                $"합방할 수 없습니다.\n{collaborationFailReason}"
+            );
             return true;
         }
 
@@ -486,6 +499,15 @@ public class MovementManager : MonoBehaviour
         return true;
     }
 
+    public bool CanStartCollaborationForOwnerFromExternal(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        return CanStartCollaborationAtSlot(actingOwner, fromSlot, toSlot, true, out failReason);
+    }
+
     private List<BattleFieldSlot> BuildTeleportMoveCandidatesForEffect(BattleFieldSlot fromSlot)
     {
         List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
@@ -548,7 +570,7 @@ public class MovementManager : MonoBehaviour
 
         if (battleManager.IsCollabAttackForbiddenFromExternal(fromSlot))
         {
-            failReason = "이 캐릭터는 다음 턴까지 합방을 시작할 수 없습니다.";
+            failReason = "효과로 인해 이번 턴 합방할 수 없습니다.";
             return false;
         }
 
@@ -957,7 +979,7 @@ public class MovementManager : MonoBehaviour
 
         if (fromSlot.isCharacterFaceDown)
         {
-            failReason = "뒷면 캐릭터는 아직 이동할 수 없습니다.";
+            failReason = "뒷면 캐릭터는 이동할 수 없습니다.";
             return false;
         }
 
@@ -972,7 +994,7 @@ public class MovementManager : MonoBehaviour
 
         if (fromSlot.characterMovedThisTurn)
         {
-            failReason = "이 캐릭터는 이번 턴에 이미 이동했습니다.";
+            failReason = "이 캐릭터는 이번 턴 이동할 수 없습니다.";
             return false;
         }
 
@@ -1043,6 +1065,16 @@ public class MovementManager : MonoBehaviour
         BattleFieldSlot toSlot,
         out string failReason)
     {
+        return CanStartCollaborationAtSlot(BattleSlotOwner.My, fromSlot, toSlot, false, out failReason);
+    }
+
+    private bool CanStartCollaborationAtSlot(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        bool validateSourceActionState,
+        out string failReason)
+    {
         failReason = "";
 
         if (fromSlot == null || toSlot == null)
@@ -1057,10 +1089,52 @@ public class MovementManager : MonoBehaviour
             return false;
         }
 
-        if (fromSlot.characterOwner != BattleSlotOwner.My)
+        if (!fromSlot.HasCharacter)
         {
-            failReason = "현재는 내 캐릭터만 합방을 시도할 수 있습니다.";
+            failReason = "합방을 시도할 캐릭터가 없습니다.";
             return false;
+        }
+
+        if (fromSlot.characterOwner != actingOwner)
+        {
+            failReason = actingOwner == BattleSlotOwner.My
+                ? "현재는 내 캐릭터만 합방을 시도할 수 있습니다."
+                : "현재는 상대 캐릭터만 합방을 시도할 수 있습니다.";
+            return false;
+        }
+
+        if (fromSlot.isCharacterFaceDown)
+        {
+            failReason = "이 캐릭터는 합방을 시도할 수 없습니다.";
+            return false;
+        }
+
+        BaseCardData fromCard = fromSlot.characterCard;
+        if (fromCard == null || fromCard.kind != "Character")
+        {
+            failReason = "캐릭터 카드만 합방을 시도할 수 있습니다.";
+            return false;
+        }
+
+        if (validateSourceActionState)
+        {
+            int currentTurn = battleManager.GetCurrentTurnCountFromExternal();
+            if (fromSlot.faceUpSummonedTurn >= 0 &&
+                currentTurn <= fromSlot.faceUpSummonedTurn &&
+                !battleManager.CanIgnoreAppearTurnActionLimitFromExternal(fromSlot))
+            {
+                failReason = "앞면으로 출연한 턴에는 합방할 수 없습니다.";
+                return false;
+            }
+
+            if (fromSlot.characterMovedThisTurn)
+            {
+                failReason = "이 캐릭터는 이번 턴 이동할 수 없습니다.";
+                return false;
+            }
+
+            if (battleManager.IsCharacterMoveLockedByBroadcastFromExternal(fromSlot, out failReason))
+                return false;
         }
 
         if (battleManager.IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(fromSlot, out failReason))
@@ -1068,7 +1142,7 @@ public class MovementManager : MonoBehaviour
 
         if (battleManager.IsCollabAttackForbiddenFromExternal(fromSlot))
         {
-            failReason = "이 캐릭터는 다음 턴까지 합방을 시작할 수 없습니다.";
+            failReason = "효과로 인해 이번 턴 합방할 수 없습니다.";
             return false;
         }
 
@@ -1079,9 +1153,16 @@ public class MovementManager : MonoBehaviour
         }
 
         if (!toSlot.HasCharacter ||
-            toSlot.characterOwner != BattleSlotOwner.Enemy)
+            toSlot.characterOwner == actingOwner)
         {
             failReason = "상대 캐릭터가 있는 슬롯에서만 합방할 수 있습니다.";
+            return false;
+        }
+
+        BaseCardData toCard = toSlot.characterCard;
+        if (toCard == null || toCard.kind != "Character")
+        {
+            failReason = "합방 대상은 캐릭터 카드여야 합니다.";
             return false;
         }
 

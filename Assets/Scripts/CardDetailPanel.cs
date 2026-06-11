@@ -1,6 +1,7 @@
 using System.Text;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 public class CardDetailPanel : MonoBehaviour
@@ -22,6 +23,21 @@ public class CardDetailPanel : MonoBehaviour
 
     [Header("Effect Text")]
     public TMP_Text cardEffectText;
+
+    [Header("Runtime Status")]
+    public Image runtimeStatusPanelImage;
+    public Button runtimeStatusButton;
+    public TMP_Text runtimeStatusButtonText;
+    public GameObject runtimeStatusTextRoot;
+    public TMP_Text runtimeStatusText;
+
+    [Header("Runtime Status Colors")]
+    public Color runtimeStatusNormalColor = Color.white;
+    public Color runtimeStatusChangedColor = new Color(0.75f, 0.87f, 1f, 1f);
+
+    private BattleFieldSlot currentRuntimeSlot;
+    private bool hasWarnedMissingRuntimeStatusImage;
+    private bool hasWarnedMissingRuntimeStatusText;
     
     private void Awake()
     {
@@ -52,6 +68,10 @@ public class CardDetailPanel : MonoBehaviour
             popupButton.onClick.RemoveAllListeners();
             popupButton.onClick.AddListener(CloseZoomPopup);
         }
+
+        ResolveRuntimeStatusReferences();
+        ConfigureRuntimeStatusButton();
+        ResetRuntimeStatusPanel();
     }
 
     public void Init(BattleManager manager)
@@ -70,6 +90,7 @@ public class CardDetailPanel : MonoBehaviour
         SetBasicInfo(card);
         SetCardImage(card);
         SetEffectText(card);
+        ResetRuntimeStatusPanel();
     }
 
     public void ShowFieldCharacter(BattleFieldSlot slot)
@@ -85,6 +106,428 @@ public class CardDetailPanel : MonoBehaviour
         SetBasicInfo(card);
         SetCardImage(card);
         SetEffectText(card, slot);
+        SetRuntimeStatusSlot(slot);
+    }
+
+    public void ShowFieldCharacter(BaseCardData card, BattleFieldSlot slot)
+    {
+        if (slot == null || card == null)
+        {
+            ShowCard(card);
+            return;
+        }
+
+        ShowFieldCharacter(slot);
+    }
+
+    private void ResolveRuntimeStatusReferences()
+    {
+        Transform panel = transform.Find("RuntimeStatusPanel");
+
+        if (runtimeStatusPanelImage == null)
+        {
+            if (panel != null)
+                runtimeStatusPanelImage = panel.GetComponent<Image>();
+        }
+
+        bool hasRuntimeStatusPanel =
+            panel != null ||
+            runtimeStatusPanelImage != null ||
+            runtimeStatusButton != null ||
+            runtimeStatusTextRoot != null ||
+            runtimeStatusText != null;
+
+        if (!hasRuntimeStatusPanel)
+            return;
+
+        if (runtimeStatusPanelImage != null)
+            runtimeStatusNormalColor = runtimeStatusPanelImage.color;
+        else if (!hasWarnedMissingRuntimeStatusImage)
+        {
+            hasWarnedMissingRuntimeStatusImage = true;
+            Debug.LogWarning("CardDetailPanel RuntimeStatusPanel Image 참조가 없습니다. Inspector에서 연결하거나 RuntimeStatusPanel에 Image를 추가하세요.");
+        }
+
+        if (runtimeStatusButton == null)
+        {
+            Transform buttonTransform = transform.Find("RuntimeStatusPanel/RuntimeStatusButton");
+            if (buttonTransform != null)
+                runtimeStatusButton = buttonTransform.GetComponent<Button>();
+        }
+
+        if (runtimeStatusButtonText == null && runtimeStatusButton != null)
+            runtimeStatusButtonText = runtimeStatusButton.GetComponentInChildren<TMP_Text>(true);
+
+        if (runtimeStatusTextRoot == null)
+        {
+            Transform textRootTransform = transform.Find("RuntimeStatusPanel/RuntimeStatusText");
+            if (textRootTransform != null)
+                runtimeStatusTextRoot = textRootTransform.gameObject;
+        }
+
+        if (runtimeStatusText == null)
+        {
+            if (runtimeStatusTextRoot != null)
+                runtimeStatusText = runtimeStatusTextRoot.GetComponentInChildren<TMP_Text>(true);
+            else
+            {
+                Transform textTransform = transform.Find("RuntimeStatusPanel/RuntimeStatusText/Text");
+                if (textTransform != null)
+                    runtimeStatusText = textTransform.GetComponent<TMP_Text>();
+            }
+        }
+
+        if (runtimeStatusText == null && !hasWarnedMissingRuntimeStatusText)
+        {
+            hasWarnedMissingRuntimeStatusText = true;
+            Debug.LogWarning("CardDetailPanel RuntimeStatusText TMP_Text 참조가 없습니다. Inspector에서 연결하세요.");
+        }
+    }
+
+    private void ConfigureRuntimeStatusButton()
+    {
+        if (runtimeStatusButtonText != null)
+            runtimeStatusButtonText.text = "상태 보기";
+
+        if (runtimeStatusButton == null)
+            return;
+
+        runtimeStatusButton.onClick.RemoveAllListeners();
+        runtimeStatusButton.interactable = true;
+        ConfigureRuntimeStatusHoverEvents(runtimeStatusButton.gameObject);
+    }
+
+    private void ConfigureRuntimeStatusHoverEvents(GameObject targetObject)
+    {
+        if (targetObject == null)
+            return;
+
+        EventTrigger trigger = targetObject.GetComponent<EventTrigger>();
+
+        if (trigger == null)
+            trigger = targetObject.AddComponent<EventTrigger>();
+
+        trigger.triggers.Clear();
+
+        EventTrigger.Entry enterEntry = new EventTrigger.Entry
+        {
+            eventID = EventTriggerType.PointerEnter
+        };
+        enterEntry.callback.AddListener(_ => ShowRuntimeStatusTextOnHover());
+        trigger.triggers.Add(enterEntry);
+
+        EventTrigger.Entry exitEntry = new EventTrigger.Entry
+        {
+            eventID = EventTriggerType.PointerExit
+        };
+        exitEntry.callback.AddListener(_ => HideRuntimeStatusTextOnHoverExit());
+        trigger.triggers.Add(exitEntry);
+    }
+
+    private void ResetRuntimeStatusPanel()
+    {
+        currentRuntimeSlot = null;
+
+        if (runtimeStatusPanelImage != null)
+            runtimeStatusPanelImage.color = runtimeStatusNormalColor;
+
+        if (runtimeStatusButtonText != null)
+            runtimeStatusButtonText.text = "상태 보기";
+
+        SetRuntimeStatusButtonVisible(true);
+        SetRuntimeStatusTextVisible(false);
+
+        if (runtimeStatusText != null)
+            runtimeStatusText.text = "";
+    }
+
+    private void SetRuntimeStatusSlot(BattleFieldSlot slot)
+    {
+        currentRuntimeSlot = slot;
+
+        if (runtimeStatusButtonText != null)
+            runtimeStatusButtonText.text = "상태 보기";
+
+        SetRuntimeStatusButtonVisible(true);
+        RefreshRuntimeStatusPanel();
+        SetRuntimeStatusTextVisible(false);
+    }
+
+    private void ShowRuntimeStatusTextOnHover()
+    {
+        if (currentRuntimeSlot == null || !currentRuntimeSlot.HasCharacter)
+            return;
+
+        RefreshRuntimeStatusPanel();
+        SetRuntimeStatusTextVisible(true);
+    }
+
+    private void HideRuntimeStatusTextOnHoverExit()
+    {
+        SetRuntimeStatusTextVisible(false);
+    }
+
+    private void RefreshRuntimeStatusPanel()
+    {
+        if (currentRuntimeSlot == null || !currentRuntimeSlot.HasCharacter)
+        {
+            ResetRuntimeStatusPanel();
+            return;
+        }
+
+        if (runtimeStatusPanelImage != null)
+        {
+            runtimeStatusPanelImage.color = HasRuntimeStatusChange(currentRuntimeSlot)
+                ? runtimeStatusChangedColor
+                : runtimeStatusNormalColor;
+        }
+
+        if (runtimeStatusText != null)
+            runtimeStatusText.text = BuildRuntimeStatusText(currentRuntimeSlot);
+    }
+
+    private void SetRuntimeStatusButtonVisible(bool visible)
+    {
+        if (runtimeStatusButton == null)
+            return;
+
+        runtimeStatusButton.gameObject.SetActive(visible);
+        runtimeStatusButton.interactable = true;
+    }
+
+    private void SetRuntimeStatusTextVisible(bool visible)
+    {
+        if (runtimeStatusTextRoot != null)
+        {
+            runtimeStatusTextRoot.SetActive(visible);
+            return;
+        }
+
+        if (runtimeStatusText != null)
+            runtimeStatusText.gameObject.SetActive(visible);
+    }
+
+    private bool HasRuntimeStatusChange(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return false;
+
+        CharacterCardData character = slot.characterCard as CharacterCardData;
+        int currentTurn = GetCurrentTurnCount();
+
+        if (character != null)
+        {
+            if (GetDisplayedCharacterHp(slot) != GetDisplayedCharacterMaxHp(slot))
+                return true;
+
+            if (GetDisplayedCharacterMaxHp(slot) != Mathf.Max(1, character.hpMax))
+                return true;
+
+            if (GetDisplayedCharacterTension(slot) != Mathf.Max(0, character.tension))
+                return true;
+        }
+
+        if (slot.isCharacterFaceDown)
+            return true;
+
+        if (slot.characterMovedThisTurn)
+            return true;
+
+        if (slot.characterActiveUsedThisTurn)
+            return true;
+
+        if (IsMovementLocked(slot))
+            return true;
+
+        if (slot.IsCollabAttackForbidden(currentTurn))
+            return true;
+
+        if (slot.IsCollabEffectsSilenced(currentTurn))
+            return true;
+
+        // TODO: 일반 효과 무효화 상태가 별도 런타임 값으로 생기면 여기에서 판정한다.
+        // TODO: 이동 완료와 합방/공격 완료가 분리되면 합방 완료 상태를 별도로 판정한다.
+
+        return false;
+    }
+
+    private string BuildRuntimeStatusText(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return "";
+
+        CharacterCardData character = slot.characterCard as CharacterCardData;
+        int baseTension = character != null ? Mathf.Max(0, character.tension) : slot.currentCharacterTension;
+        int currentTension = GetDisplayedCharacterTension(slot);
+        int currentHp = GetDisplayedCharacterHp(slot);
+        int maxHp = GetDisplayedCharacterMaxHp(slot);
+
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine("현재 상태");
+        sb.AppendLine();
+        sb.AppendLine($"체력: {currentHp} / {maxHp}");
+        sb.AppendLine($"합방 텐션: {currentTension} / {baseTension}");
+        sb.AppendLine();
+        sb.AppendLine(BuildMoveStatusLine(slot));
+        sb.AppendLine(BuildCollabStatusLine(slot));
+        sb.AppendLine(BuildEffectStatusLine(slot));
+        sb.AppendLine(BuildCollabEffectStatusLine(slot));
+
+        return sb.ToString();
+    }
+
+    private string BuildMoveStatusLine(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return "이동: 불가 - 캐릭터가 없습니다.";
+
+        if (slot.isCharacterFaceDown)
+            return "이동: 불가 - 뒷면 캐릭터는 이동할 수 없습니다.";
+
+        if (slot.characterMovedThisTurn)
+            return "이동: 완료 - 이번 턴 이미 이동했습니다.";
+
+        if (IsMovementLocked(slot))
+            return "이동: 불가 - 효과로 인해 이동할 수 없습니다.";
+
+        if (IsAppearTurnActionLimited(slot))
+            return "이동: 불가 - 출연한 턴에는 이동할 수 없습니다.";
+
+        return "이동: 가능";
+    }
+
+    private string BuildCollabStatusLine(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return "합방: 불가 - 캐릭터가 없습니다.";
+
+        if (slot.isCharacterFaceDown)
+            return "합방: 불가 - 이 캐릭터는 합방을 시도할 수 없습니다.";
+
+        if (slot.characterMovedThisTurn)
+            return "합방: 완료 - 이번 턴 이미 합방을 시도했거나 이동했습니다.";
+
+        if (slot.IsCollabAttackForbidden(GetCurrentTurnCount()))
+            return "합방: 불가 - 효과로 인해 이번 턴 합방을 시도할 수 없습니다.";
+
+        if (IsMovementLocked(slot))
+            return "합방: 불가 - 효과로 인해 합방을 시도할 수 없습니다.";
+
+        if (IsAppearTurnActionLimited(slot))
+            return "합방: 불가 - 출연한 턴에는 합방을 시도할 수 없습니다.";
+
+        // TODO: 합방/공격 완료 전용 런타임 플래그가 생기면 characterMovedThisTurn과 분리해 표시한다.
+        return "합방: 가능";
+    }
+
+    private string BuildEffectStatusLine(BattleFieldSlot slot)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return "효과: 불가 - 캐릭터가 없습니다.";
+
+        if (slot.isCharacterFaceDown)
+            return "효과: 불가 - 뒷면 캐릭터는 효과를 발동할 수 없습니다.";
+
+        if (slot.characterActiveUsedThisTurn)
+            return "효과: 완료 - 이번 턴 이미 효과를 발동했습니다.";
+
+        if (!HasActiveEffect(slot.characterCard))
+            return "효과: 불가 - 이 캐릭터는 효과를 발동할 수 없습니다.";
+
+        // TODO: 일반 효과 무효화 런타임 플래그가 생기면 "효과: 무효"로 표시한다.
+        return "효과: 가능";
+    }
+
+    private string BuildCollabEffectStatusLine(BattleFieldSlot slot)
+    {
+        if (slot != null && slot.IsCollabEffectsSilenced(GetCurrentTurnCount()))
+            return "합방 효과: 무효 - 이번 턴 합방 효과가 무효화되어 있습니다.";
+
+        return "합방 효과: 정상";
+    }
+
+    private bool IsMovementLocked(BattleFieldSlot slot)
+    {
+        if (slot == null)
+            return false;
+
+        int currentTurn = GetCurrentTurnCount();
+
+        return (slot.movementLockedByBroadcastUntilTurn >= 0 &&
+                currentTurn <= slot.movementLockedByBroadcastUntilTurn) ||
+            slot.IsBroadcastMoveAndKoLocked(currentTurn);
+    }
+
+    private bool IsAppearTurnActionLimited(BattleFieldSlot slot)
+    {
+        if (slot == null)
+            return false;
+
+        if (slot.faceUpSummonedTurn < 0)
+            return false;
+
+        int currentTurn = GetCurrentTurnCount();
+        if (currentTurn > slot.faceUpSummonedTurn)
+            return false;
+
+        return battleManager == null ||
+            !battleManager.CanIgnoreAppearTurnActionLimitFromExternal(slot);
+    }
+
+    private bool HasActiveEffect(BaseCardData card)
+    {
+        CharacterCardData character = card as CharacterCardData;
+
+        if (character == null || character.effects == null)
+            return false;
+
+        foreach (EffectData effect in character.effects)
+        {
+            if (effect == null)
+                continue;
+
+            if (TryParseEffectTiming(effect.timing, out EffectTiming timing) &&
+                timing == EffectTiming.CharacterActive)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool TryParseEffectTiming(string rawTiming, out EffectTiming timing)
+    {
+        timing = EffectTiming.None;
+
+        if (string.IsNullOrWhiteSpace(rawTiming))
+            return false;
+
+        string normalized = rawTiming
+            .Trim()
+            .Replace("_", "")
+            .Replace("-", "")
+            .Replace(" ", "")
+            .ToLowerInvariant();
+
+        switch (normalized)
+        {
+            case "active":
+            case "characteractive":
+            case "characteract":
+                timing = EffectTiming.CharacterActive;
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private int GetCurrentTurnCount()
+    {
+        return battleManager != null
+            ? battleManager.GetCurrentTurnCountFromExternal()
+            : 0;
     }
 
     private void SetBasicInfo(BaseCardData card)
@@ -315,6 +758,8 @@ public class CardDetailPanel : MonoBehaviour
 
         if (cardEffectText != null)
             cardEffectText.text = "";
+
+        ResetRuntimeStatusPanel();
             
         CloseZoomPopup();
     }

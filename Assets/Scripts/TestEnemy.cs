@@ -14,6 +14,9 @@ public class TestEnemy : MonoBehaviour
     public bool victoryCheckEnabled = true;
     public float actionDelay = 0.5f;
 
+    [Header("Enemy Attack")]
+    public bool enemyAttackEnabled = true;
+
     [Header("Enemy Summon")]
     public bool enemySummonEnabled = true;
     public bool enemyBacksideSummonEnabled = true;
@@ -100,6 +103,14 @@ public class TestEnemy : MonoBehaviour
         timer = 0f;
 
         bool didAction = false;
+
+        if (enemyAttackEnabled)
+        {
+            didAction = battleManager.TryExecuteTestEnemyAttack();
+
+            if (didAction)
+                return;
+        }
 
         if (enemySummonEnabled)
         {

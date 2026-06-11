@@ -107,40 +107,40 @@ public class CollaborationManager : MonoBehaviour
         HidePanel();
     }
 
-    public void StartCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
+    public bool StartCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
     {
-        StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.Normal);
+        return StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.Normal);
     }
 
-    public void StartEffectMoveCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
+    public bool StartEffectMoveCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
     {
-        StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.EffectMove);
+        return StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.EffectMove);
     }
 
-    public void StartForcedIncomingCollaboration(
+    public bool StartForcedIncomingCollaboration(
         BattleFieldSlot forcedAttackerSlot,
         BattleFieldSlot defenderSlot,
         CollaborationStartReason reason = CollaborationStartReason.ForceBattleTargetAnywhere)
     {
-        StartCollaborationInternal(forcedAttackerSlot, defenderSlot, reason);
+        return StartCollaborationInternal(forcedAttackerSlot, defenderSlot, reason);
     }
 
-    private void StartCollaborationInternal(
+    private bool StartCollaborationInternal(
         BattleFieldSlot guestSlot,
         BattleFieldSlot hostSlot,
         CollaborationStartReason reason)
     {
         if (battleManager == null)
-            return;
+            return false;
 
         if (IsCollaborationInteractionActive)
         {
             battleManager.SetSystemMessageFromExternal("이미 합방 처리를 진행 중입니다.");
-            return;
+            return false;
         }
 
         if (!ValidateCollaboration(guestSlot, hostSlot))
-            return;
+            return false;
 
         currentGuestCard = guestSlot.characterCard;
         currentHostCard = hostSlot.characterCard;
@@ -158,6 +158,8 @@ public class CollaborationManager : MonoBehaviour
             pendingHostSlot,
             ExecutePendingCollaboration
         );
+
+        return true;
     }
 
     private void OpenResolveResultQuestion()
@@ -514,10 +516,11 @@ public class CollaborationManager : MonoBehaviour
         if (guestDefeated)
             yield return AnimateDefeatFade(guestRect);
 
-        string resultMessage = BuildResultMessage(
-            hostDefeated,
+        string resultMessage = BuildPlayerRelativeResultMessage(
+            guestOwner,
+            hostOwner,
             guestDefeated,
-            context != null ? context.startReason : CollaborationStartReason.Normal);
+            hostDefeated);
 
         if (!string.IsNullOrWhiteSpace(koPreventMessage))
             resultMessage += $"\n{koPreventMessage}";
@@ -563,12 +566,63 @@ public class CollaborationManager : MonoBehaviour
             resolutionData.hostSlot
         );
 
+        yield return ResolvePendingAfterPostCollabEffectsRoutine();
+
+        if (TryStartPendingPostCollabRebattle())
+            yield break;
+
         ClearPendingCollaboration();
 
         battleManager.RefreshAllUIFromExternal();
         currentContext = null;
         battleManager.SetBattleBusyFromExternal(false, "CollaborationManager.ExecuteBasicCollaborationRoutine finished");
-        battleManager.ResolveMyActionUsedFromExternal(resultMessage);
+        BattleSlotOwner actionOwner = resolutionData.startReason == CollaborationStartReason.Normal
+            ? resolutionData.guestOwner
+            : BattleSlotOwner.My;
+        battleManager.ResolveCollaborationActionUsedFromExternal(actionOwner, resultMessage);
+    }
+
+    private IEnumerator ResolvePendingAfterPostCollabEffectsRoutine()
+    {
+        if (battleManager == null || battleManager.effectManager == null)
+            yield break;
+
+        string message = "";
+        yield return battleManager.effectManager.ResolvePendingOurTalesAfterCollabRoutineFromExternal(
+            resolvedMessage => message = resolvedMessage);
+
+        if (!string.IsNullOrWhiteSpace(message))
+            battleManager.SetSystemMessageFromExternal(message);
+    }
+
+    private bool TryStartPendingPostCollabRebattle()
+    {
+        if (battleManager == null || battleManager.effectManager == null)
+            return false;
+
+        BattleFieldSlot attackerSlot;
+        BattleFieldSlot defenderSlot;
+        string message;
+        if (!battleManager.effectManager.TryConsumePendingPostCollabRebattleFromExternal(
+                out attackerSlot,
+                out defenderSlot,
+                out message))
+        {
+            if (!string.IsNullOrWhiteSpace(message))
+                battleManager.SetSystemMessageFromExternal(message);
+
+            return false;
+        }
+
+        ClearPendingCollaboration();
+        currentContext = null;
+        battleManager.RefreshAllUIFromExternal();
+        battleManager.SetBattleBusyFromExternal(false, "CollaborationManager.PostCollabRebattle");
+
+        if (!string.IsNullOrWhiteSpace(message))
+            battleManager.SetSystemMessageFromExternal(message);
+
+        return StartCollaboration(attackerSlot, defenderSlot);
     }
 
     private string ApplyCollaborationKoRestEffects(CollaborationResolutionData data)
@@ -734,33 +788,31 @@ public class CollaborationManager : MonoBehaviour
         public CollaborationStartReason startReason = CollaborationStartReason.Normal;
     }
 
-    private string BuildResultMessage(
-        bool hostDefeated,
+    private string BuildPlayerRelativeResultMessage(
+        BattleSlotOwner guestOwner,
+        BattleSlotOwner hostOwner,
         bool guestDefeated,
-        CollaborationStartReason reason = CollaborationStartReason.Normal)
+        bool hostDefeated)
     {
-        if (reason == CollaborationStartReason.ForceBattleTargetAnywhere)
-        {
-            if (hostDefeated && !guestDefeated)
-                return "내 카드가 졌습니다.";
-
-            if (!hostDefeated && guestDefeated)
-                return "내 카드가 이겼습니다.";
-
-            if (hostDefeated && guestDefeated)
-                return "양쪽 캐릭터가 모두 퇴장했습니다.";
-
-            return "합방이 종료되었습니다.";
-        }
-
-        if (hostDefeated && !guestDefeated)
-            return "내 카드가 이겼습니다.";
-
-        if (!hostDefeated && guestDefeated)
-            return "내 카드가 졌습니다.";
-
-        if (hostDefeated && guestDefeated)
+        if (guestDefeated && hostDefeated)
             return "양쪽 캐릭터가 모두 퇴장했습니다.";
+
+        if (!guestDefeated && !hostDefeated)
+            return "합방이 종료되었습니다.";
+
+        bool myCardDefeated =
+            (guestOwner == BattleSlotOwner.My && guestDefeated) ||
+            (hostOwner == BattleSlotOwner.My && hostDefeated);
+
+        bool enemyCardDefeated =
+            (guestOwner == BattleSlotOwner.Enemy && guestDefeated) ||
+            (hostOwner == BattleSlotOwner.Enemy && hostDefeated);
+
+        if (enemyCardDefeated && !myCardDefeated)
+            return "내 카드가 승리했습니다.";
+
+        if (myCardDefeated && !enemyCardDefeated)
+            return "내 카드가 패배했습니다.";
 
         return "합방이 종료되었습니다.";
     }

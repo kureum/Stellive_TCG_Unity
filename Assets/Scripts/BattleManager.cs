@@ -1885,7 +1885,7 @@ public class BattleManager : MonoBehaviour
         if (slot == null || !slot.IsBroadcastMoveAndKoLocked(turnCount))
             return false;
 
-        failReason = "이 방송 슬롯의 효과로 이동할 수 없습니다.";
+        failReason = "효과로 인해 이동할 수 없습니다.";
         return true;
     }
 
@@ -1944,8 +1944,34 @@ public class BattleManager : MonoBehaviour
         RefreshAllUI();
     }
 
+    public void RefreshFieldCharacterDetailFromExternal(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterCard == null ||
+            cardDetailPanel == null)
+        {
+            return;
+        }
+
+        cardDetailPanel.ShowFieldCharacter(slot);
+    }
+
     public void ResolveMyActionUsedFromExternal(string actionMessage)
     {
+        ResolveMyActionUsed(actionMessage);
+    }
+
+    public void ResolveCollaborationActionUsedFromExternal(
+        BattleSlotOwner actionOwner,
+        string actionMessage)
+    {
+        if (actionOwner == BattleSlotOwner.Enemy)
+        {
+            ResolveEnemyActionUsed(actionMessage);
+            return;
+        }
+
         ResolveMyActionUsed(actionMessage);
     }
 
@@ -2664,6 +2690,16 @@ public class BattleManager : MonoBehaviour
         targetPlayer.viewers = Mathf.Max(0, targetPlayer.viewers + delta);
 
         return targetPlayer.viewers - before;
+    }
+
+    public int GetViewersFromExternal(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        return targetPlayer != null ? targetPlayer.viewers : 0;
     }
 
     public int DrawCardsFromExternal(BattleSlotOwner owner, int count)
@@ -4026,6 +4062,15 @@ public class BattleManager : MonoBehaviour
             consumeAction = false
         };
 
+        if (context.actingOwner == BattleSlotOwner.Enemy)
+        {
+            if (TryRequestTestEnemyEffectActivation(EffectTiming.PreCollab, context, onComplete))
+                return;
+
+            onComplete?.Invoke();
+            return;
+        }
+
         effectManager.RequestOptionalEffectActivation(
             EffectTiming.PreCollab,
             context,
@@ -4044,11 +4089,13 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
+        BattleSlotOwner postCollabOwner = ResolvePostCollabActingOwner(attackerSlot, defenderSlot);
+
         EffectContext context = new EffectContext
         {
             battleManager = this,
             collaborationManager = collaborationManager,
-            actingOwner = attackerSlot != null ? attackerSlot.characterOwner : BattleSlotOwner.My,
+            actingOwner = postCollabOwner,
             timing = EffectTiming.PostCollab,
             attackerOriginalSlot = attackerSlot,
             attackerSlot = attackerSlot,
@@ -4061,11 +4108,52 @@ public class BattleManager : MonoBehaviour
             consumeAction = false
         };
 
+        if (context.actingOwner == BattleSlotOwner.Enemy)
+        {
+            if (TryRequestTestEnemyEffectActivation(EffectTiming.PostCollab, context, onComplete))
+                return;
+
+            onComplete?.Invoke();
+            return;
+        }
+
         effectManager.RequestOptionalEffectActivation(
             EffectTiming.PostCollab,
             context,
             onComplete
         );
+    }
+
+    private BattleSlotOwner ResolvePostCollabActingOwner(
+        BattleFieldSlot attackerSlot,
+        BattleFieldSlot defenderSlot)
+    {
+        if (IsSurvivingPostCollabParticipant(attackerSlot, BattleSlotOwner.My) ||
+            IsSurvivingPostCollabParticipant(defenderSlot, BattleSlotOwner.My))
+        {
+            return BattleSlotOwner.My;
+        }
+
+        if (IsSurvivingPostCollabParticipant(attackerSlot, BattleSlotOwner.Enemy) ||
+            IsSurvivingPostCollabParticipant(defenderSlot, BattleSlotOwner.Enemy))
+        {
+            return BattleSlotOwner.Enemy;
+        }
+
+        return attackerSlot != null
+            ? attackerSlot.characterOwner
+            : BattleSlotOwner.My;
+    }
+
+    private bool IsSurvivingPostCollabParticipant(
+        BattleFieldSlot slot,
+        BattleSlotOwner owner)
+    {
+        return slot != null &&
+            slot.HasCharacter &&
+            slot.characterCard != null &&
+            slot.characterOwner == owner &&
+            slot.currentCharacterHp > 0;
     }
 
     public void RequestOnAppearEffectsFromExternal(
@@ -4398,6 +4486,8 @@ public class BattleManager : MonoBehaviour
 
         turnCount++;
         EffectStatService.ExpireTurnEndModifiers(this, turnCount);
+        if (effectManager != null)
+            effectManager.ClearExpiredNegativeAmountInvertStatesFromExternal();
 
         consecutivePassCount = 0;
         currentActionSide = firstPlayerSide;
@@ -4488,6 +4578,128 @@ public class BattleManager : MonoBehaviour
             return;
 
         ResolveEnemyActionUsed(actionMessage);
+    }
+
+    public bool TryExecuteTestEnemyAttack()
+    {
+        if (IsGameOver() || IsBattleBusy())
+            return false;
+
+        if (currentPhase != BattlePhase.MainGame)
+            return false;
+
+        if (currentActionSide != BattlePlayerSide.Enemy)
+            return false;
+
+        if (movementManager == null || collaborationManager == null)
+            return false;
+
+        BattleFieldSlot attackerSlot;
+        BattleFieldSlot defenderSlot;
+        if (!FindTestEnemyAttackCandidate(out attackerSlot, out defenderSlot))
+            return false;
+
+        return ExecuteEnemyCollaborationAttack(attackerSlot, defenderSlot);
+    }
+
+    private bool FindTestEnemyAttackCandidate(
+        out BattleFieldSlot attackerSlot,
+        out BattleFieldSlot defenderSlot)
+    {
+        attackerSlot = null;
+        defenderSlot = null;
+
+        foreach (BattleFieldSlot enemySlot in enemyBattleSlots)
+        {
+            if (!IsTestEnemyAttackSourceSlot(enemySlot))
+                continue;
+
+            List<BattleFieldSlot> attackableSlots =
+                GetAttackablePlayerCharacterSlots(enemySlot);
+
+            if (attackableSlots.Count == 0)
+                continue;
+
+            attackerSlot = enemySlot;
+            defenderSlot = attackableSlots[0];
+            return true;
+        }
+
+        return false;
+    }
+
+    private List<BattleFieldSlot> GetAttackablePlayerCharacterSlots(BattleFieldSlot attackerSlot)
+    {
+        List<BattleFieldSlot> result = new List<BattleFieldSlot>();
+
+        if (movementManager == null || attackerSlot == null)
+            return result;
+
+        foreach (BattleFieldSlot playerSlot in myBattleSlots)
+        {
+            if (!IsTestEnemyAttackTargetSlot(playerSlot))
+                continue;
+
+            string failReason;
+            if (movementManager.CanStartCollaborationForOwnerFromExternal(
+                    BattleSlotOwner.Enemy,
+                    attackerSlot,
+                    playerSlot,
+                    out failReason))
+            {
+                result.Add(playerSlot);
+            }
+        }
+
+        return result;
+    }
+
+    private bool ExecuteEnemyCollaborationAttack(
+        BattleFieldSlot attackerSlot,
+        BattleFieldSlot defenderSlot)
+    {
+        if (collaborationManager == null)
+            return false;
+
+        string failReason;
+        if (movementManager == null ||
+            !movementManager.CanStartCollaborationForOwnerFromExternal(
+                BattleSlotOwner.Enemy,
+                attackerSlot,
+                defenderSlot,
+                out failReason))
+        {
+            return false;
+        }
+
+        return collaborationManager.StartCollaboration(attackerSlot, defenderSlot);
+    }
+
+    private bool IsTestEnemyAttackSourceSlot(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterOwner != BattleSlotOwner.Enemy ||
+            slot.isCharacterFaceDown)
+        {
+            return false;
+        }
+
+        CharacterCardData character = slot.characterCard as CharacterCardData;
+        return character != null;
+    }
+
+    private bool IsTestEnemyAttackTargetSlot(BattleFieldSlot slot)
+    {
+        if (slot == null ||
+            !slot.HasCharacter ||
+            slot.characterOwner != BattleSlotOwner.My)
+        {
+            return false;
+        }
+
+        CharacterCardData character = slot.characterCard as CharacterCardData;
+        return character != null;
     }
 
     public bool TestEnemyTrySummonBacksideCharacter()
@@ -4861,13 +5073,13 @@ public class BattleManager : MonoBehaviour
 
         if (!HasActiveEffect(slot.characterCard))
         {
-            failReason = "발동 가능한 액티브 효과가 없습니다.";
+            failReason = "이 캐릭터는 효과를 발동할 수 없습니다.";
             return false;
         }
 
         if (slot.characterActiveUsedThisTurn)
         {
-            failReason = "이미 이번 턴에 액티브 효과를 사용했습니다.";
+            failReason = "이 캐릭터는 효과를 발동할 수 없습니다.";
             return false;
         }
 
@@ -7041,23 +7253,37 @@ public class BattleManager : MonoBehaviour
                 if (string.Equals(effectRef, "broadcast.always.prepViewersAndOccupantHpDelta", StringComparison.OrdinalIgnoreCase))
                 {
                     handledByEffectRef = true;
-                    modifier += GetEffectIntParamForBattleManager(effect, "viewersModifier", 0);
+                    modifier += ApplyNegativeAmountInvertForEffectSource(
+                        slot.owner,
+                        broadcast,
+                        GetEffectIntParamForBattleManager(effect, "viewersModifier", 0));
                 }
                 else if (string.Equals(effectRef, "broadcast.always.taggedOccupantPrepViewersBonus", StringComparison.OrdinalIgnoreCase))
                 {
                     handledByEffectRef = true;
-                    modifier += CalculateTaggedOccupantPrepViewerBonus(slot, effect);
+                    modifier += ApplyNegativeAmountInvertForEffectSource(
+                        slot.owner,
+                        broadcast,
+                        CalculateTaggedOccupantPrepViewerBonus(slot, effect));
                 }
                 else if (string.Equals(effectRef, "broadcast.always.prepViewersAndHealBonus", StringComparison.OrdinalIgnoreCase))
                 {
                     handledByEffectRef = true;
-                    modifier += GetEffectIntParamForBattleManager(effect, "viewersModifier", 0);
+                    modifier += ApplyNegativeAmountInvertForEffectSource(
+                        slot.owner,
+                        broadcast,
+                        GetEffectIntParamForBattleManager(effect, "viewersModifier", 0));
                 }
             }
         }
 
         if (!handledByEffectRef)
-            modifier += GetBroadcastViewersModifier(broadcast);
+        {
+            modifier += ApplyNegativeAmountInvertForEffectSource(
+                slot.owner,
+                broadcast,
+                GetBroadcastViewersModifier(broadcast));
+        }
 
         return modifier;
     }
@@ -7120,17 +7346,30 @@ public class BattleManager : MonoBehaviour
                         continue;
 
                     int amount = GetEffectIntParamForBattleManager(effect, "amount", 0);
+                    amount = ApplyNegativeAmountInvertForEffectSource(characterOwner, character, amount);
                     bonus += amount;
                     Debug.Log($"{character.name} 패시브: {FormatSignedAmount(amount)}");
                 }
                 else if (string.Equals(effectRef, "character.passive.reduceOwnerPrepViewers", StringComparison.OrdinalIgnoreCase))
                 {
                     int amount = GetEffectIntParamForBattleManager(effect, "amount", 0);
+                    amount = ApplyNegativeAmountInvertForEffectSource(characterOwner, character, amount);
                     bonus += amount;
                     Debug.Log($"{character.name} 패시브: {FormatSignedAmount(amount)}");
                 }
             }
         }
+    }
+
+    private int ApplyNegativeAmountInvertForEffectSource(
+        BattleSlotOwner owner,
+        BaseCardData sourceCard,
+        int amount)
+    {
+        if (effectManager == null)
+            return amount;
+
+        return effectManager.ApplyNegativeAmountInvertIfNeeded(owner, sourceCard, amount);
     }
 
     private bool HasAdjacentFaceUpOwnedCharacterWithTag(
@@ -7386,9 +7625,17 @@ public class BattleManager : MonoBehaviour
         if (string.IsNullOrWhiteSpace(message))
             return "";
 
-        string firstLine = message
+        string[] messageLines = message
             .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-            .FirstOrDefault();
+            .Select(line => line.Trim())
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
+
+        string prioritizedFailureMessage = TryBuildActionFailureSimpleMessage(messageLines);
+        if (!string.IsNullOrEmpty(prioritizedFailureMessage))
+            return prioritizedFailureMessage;
+
+        string firstLine = messageLines.FirstOrDefault();
 
         if (string.IsNullOrWhiteSpace(firstLine))
             return "";
@@ -7487,11 +7734,75 @@ public class BattleManager : MonoBehaviour
         if (firstLine.Contains("카드 이미지를 찾"))
             return "카드 이미지를 찾지 못했습니다.";
 
-        if (ContainsAny(firstLine, "할 수 없습니다", "할 수 없", "불가능"))
-            return "할 수 없는 행동입니다.";
+        if (ContainsAny(firstLine, "할 수 없습니다", "할 수 없", "불가능", "불가"))
+            return firstLine;
 
         if (ContainsAny(firstLine, "없습니다", "아닙니다"))
             return "";
+
+        return "";
+    }
+
+    private string TryBuildActionFailureSimpleMessage(string[] messageLines)
+    {
+        if (messageLines == null || messageLines.Length == 0)
+            return "";
+
+        foreach (string line in messageLines)
+        {
+            string normalized = NormalizeActionFailureMessage(line);
+            if (!string.IsNullOrEmpty(normalized))
+                return normalized;
+        }
+
+        return "";
+    }
+
+    private string NormalizeActionFailureMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return "";
+
+        string value = message.Trim();
+
+        if (value.Contains("뒷면 캐릭터") && value.Contains("이동"))
+            return "뒷면 캐릭터는 이동할 수 없습니다.";
+
+        if (value.Contains("이번 턴") && value.Contains("이동"))
+            return "이 캐릭터는 이번 턴 이동할 수 없습니다.";
+
+        if (value.Contains("효과") && value.Contains("이동") && ContainsAny(value, "할 수 없습니다", "할 수 없", "불가"))
+            return "효과로 인해 이동할 수 없습니다.";
+
+        if (value.Contains("뒷면 캐릭터") && value.Contains("효과"))
+            return "뒷면 캐릭터는 효과를 발동할 수 없습니다.";
+
+        if (value.Contains("효과는 무효화"))
+            return "이 캐릭터의 효과는 무효화되어 있습니다.";
+
+        if (value.Contains("채팅 밴") && value.Contains("합방 효과"))
+            return "이 캐릭터의 효과는 무효화되어 있습니다.";
+
+        if (value.Contains("효과를 발동할 수 없습니다") ||
+            value.Contains("액티브 효과를 사용"))
+        {
+            return "이 캐릭터는 효과를 발동할 수 없습니다.";
+        }
+
+        if (value.Contains("뒷면 캐릭터") && value.Contains("합방"))
+            return "이 캐릭터는 합방을 시도할 수 없습니다.";
+
+        if (value.Contains("합방을 시작할 수 없습니다") ||
+            value.Contains("합방을 시도할 수 없습니다"))
+        {
+            if (value.Contains("효과") || value.Contains("다음 턴까지"))
+                return "효과로 인해 이번 턴 합방할 수 없습니다.";
+
+            return "이 캐릭터는 합방을 시도할 수 없습니다.";
+        }
+
+        if (value.Contains("현재 타이밍에 발동할 수 없는 카드입니다"))
+            return "현재 타이밍에 발동할 수 없는 카드입니다.";
 
         return "";
     }

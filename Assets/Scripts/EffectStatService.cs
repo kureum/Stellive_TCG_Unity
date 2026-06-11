@@ -278,6 +278,11 @@ public static class EffectStatService
         BattleFieldSlot slot = target.slot;
         int beforeValue = GetStatValue(slot, delta.statType);
         int afterValue = beforeValue;
+        int appliedAmount = ApplyNegativeAmountInvertIfNeeded(
+            battleManager,
+            request != null ? request.owner : BattleSlotOwner.My,
+            request != null ? request.sourceCard : null,
+            delta.amount);
 
         if (IsTemporaryDuration(delta.duration) &&
             delta.statType != EffectStatType.CurrentTension)
@@ -291,20 +296,20 @@ public static class EffectStatService
         switch (delta.statType)
         {
             case EffectStatType.CurrentHp:
-                afterValue = ApplyCurrentHpDelta(battleManager, context, slot, delta);
+                afterValue = ApplyCurrentHpDelta(battleManager, context, slot, delta, appliedAmount);
                 break;
 
             case EffectStatType.CurrentTension:
                 afterValue = Mathf.Max(
                     delta.allowBelowZero ? int.MinValue : 0,
-                    slot.currentCharacterTension + delta.amount
+                    slot.currentCharacterTension + appliedAmount
                 );
                 slot.SetCharacterBattleStats(slot.currentCharacterHp, afterValue);
                 afterValue = slot.currentCharacterTension;
                 break;
 
             case EffectStatType.MaxHp:
-                slot.ModifyCharacterMaxHp(delta.amount);
+                slot.ModifyCharacterMaxHp(appliedAmount);
                 afterValue = slot.currentCharacterMaxHp;
                 break;
         }
@@ -317,7 +322,7 @@ public static class EffectStatService
             cardName = target.card != null ? target.card.name : "",
             statType = delta.statType,
             duration = delta.duration,
-            amount = delta.amount,
+            amount = appliedAmount,
             beforeValue = beforeValue,
             afterValue = afterValue
         });
@@ -331,7 +336,7 @@ public static class EffectStatService
             $"currentTension={slot.currentCharacterTension}"
         );
 
-        RegisterTemporaryStatModifierIfNeeded(context, target, delta);
+        RegisterTemporaryStatModifierIfNeeded(context, target, delta, appliedAmount);
     }
 
     private static bool IsTemporaryDuration(EffectStatDuration duration)
@@ -343,7 +348,8 @@ public static class EffectStatService
     private static void RegisterTemporaryStatModifierIfNeeded(
         EffectContext context,
         EffectTargetCandidate target,
-        StatDelta delta)
+        StatDelta delta,
+        int appliedAmount)
     {
         if (context == null ||
             target == null ||
@@ -374,7 +380,7 @@ public static class EffectStatService
             targetCardId = target.card.id,
             targetCard = target.card,
             statType = delta.statType,
-            amount = delta.amount,
+            amount = appliedAmount,
             duration = delta.duration,
             appliedTurn = currentTurn,
             expireTurn = delta.duration == EffectStatDuration.ThisTurn
@@ -474,17 +480,18 @@ public static class EffectStatService
         BattleManager battleManager,
         EffectContext context,
         BattleFieldSlot slot,
-        StatDelta delta)
+        StatDelta delta,
+        int appliedAmount)
     {
         int beforeHp = slot.currentCharacterHp;
 
-        if (delta.amount > 0 && delta.clampHpToMax && battleManager != null)
+        if (appliedAmount > 0 && delta.clampHpToMax && battleManager != null)
         {
-            battleManager.HealCharacterFromExternal(slot, delta.amount);
+            battleManager.HealCharacterFromExternal(slot, appliedAmount);
         }
         else
         {
-            int nextHp = beforeHp + delta.amount;
+            int nextHp = beforeHp + appliedAmount;
 
             if (!delta.allowBelowZero)
                 nextHp = Mathf.Max(0, nextHp);
@@ -499,6 +506,18 @@ public static class EffectStatService
         }
 
         return slot.currentCharacterHp;
+    }
+
+    private static int ApplyNegativeAmountInvertIfNeeded(
+        BattleManager battleManager,
+        BattleSlotOwner owner,
+        BaseCardData sourceCard,
+        int amount)
+    {
+        if (battleManager == null || battleManager.effectManager == null)
+            return amount;
+
+        return battleManager.effectManager.ApplyNegativeAmountInvertIfNeeded(owner, sourceCard, amount);
     }
 
     private static BattleFieldSlot ResolveEffectLocationSlot(
