@@ -166,6 +166,8 @@ public class BattleManager : MonoBehaviour
     private int turnCount = 1;
 
     private BattlePlayerSide currentActionSide;
+    private int nextActionSequence = 1;
+    private BattleActionExecutor actionExecutor;
     private int consecutivePassCount = 0;
     private bool isRestZonePanelOpen = false;
     private BattlePlayerSide openRestZoneSide = BattlePlayerSide.My;
@@ -185,7 +187,9 @@ public class BattleManager : MonoBehaviour
     private readonly HashSet<BattleFieldSlot> pendingFieldSlotSelectionValidSlots = new HashSet<BattleFieldSlot>();
     private Action<BattleFieldSlot> pendingFieldSlotSelectionSelectedAction;
     private Action pendingFieldSlotSelectionCancelAction;
+    private string pendingFieldSlotSelectionEffectRef = "";
     private bool isFieldSlotSelectionModeActive;
+    private bool isExecutingFieldSlotSelectionAction;
 
     private bool enemyHasSummonedFaceDownThisTurn = false;
     private TestEnemy testEnemyController;
@@ -205,6 +209,8 @@ public class BattleManager : MonoBehaviour
 
     private void Start()
     {
+        actionExecutor = new BattleActionExecutor(this);
+
         ResolveSimpleMessagePanel();
 
         if (summonManager == null)
@@ -1657,7 +1663,8 @@ public class BattleManager : MonoBehaviour
         string message,
         List<BattleFieldSlot> validSlots,
         Action<BattleFieldSlot> onSelected,
-        Action onCancel = null)
+        Action onCancel = null,
+        string effectRef = "")
     {
         if (onSelected == null)
         {
@@ -1702,6 +1709,7 @@ public class BattleManager : MonoBehaviour
 
         pendingFieldSlotSelectionSelectedAction = onSelected;
         pendingFieldSlotSelectionCancelAction = onCancel;
+        pendingFieldSlotSelectionEffectRef = effectRef ?? "";
         isFieldSlotSelectionModeActive = true;
         SetBattleBusy(true, "FieldSlotSelection");
         SetSystemMessage(string.IsNullOrWhiteSpace(message) ? "출연시킬 위치를 골라주세요." : message);
@@ -1746,10 +1754,42 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
-        Action<BattleFieldSlot> selectedAction = pendingFieldSlotSelectionSelectedAction;
-        ClearPendingFieldSlotSelection(false);
-        selectedAction?.Invoke(slot);
+        bool requested = RequestSelectEffectTargetActionFromExternal(pendingFieldSlotSelectionEffectRef, slot);
+        if (!requested)
+            SetSystemMessage("대상 선택을 처리할 수 없습니다.");
+
         return true;
+    }
+
+    private bool ExecutePendingFieldSlotSelectionFromAction(BattleAction action, BattleFieldSlot selectedSlot)
+    {
+        if (selectedSlot == null)
+        {
+            Debug.LogWarning("[BattleAction] SelectEffectTarget failed: selected slot is null");
+            SetSystemMessage("선택한 효과 대상 슬롯을 찾을 수 없습니다.");
+            return false;
+        }
+
+        Action<BattleFieldSlot> selectedAction = pendingFieldSlotSelectionSelectedAction;
+        if (selectedAction == null)
+        {
+            Debug.LogWarning("[BattleAction] SelectEffectTarget failed: pending callback is null");
+            SetSystemMessage("효과 대상 선택 콜백이 없습니다.");
+            return false;
+        }
+
+        isExecutingFieldSlotSelectionAction = true;
+
+        try
+        {
+            ClearPendingFieldSlotSelection(false);
+            selectedAction.Invoke(selectedSlot);
+            return true;
+        }
+        finally
+        {
+            isExecutingFieldSlotSelectionAction = false;
+        }
     }
 
     private void CancelPendingFieldSlotSelection()
@@ -1777,7 +1817,9 @@ public class BattleManager : MonoBehaviour
         pendingFieldSlotSelectionValidSlots.Clear();
         pendingFieldSlotSelectionSelectedAction = null;
         pendingFieldSlotSelectionCancelAction = null;
+        pendingFieldSlotSelectionEffectRef = "";
         isFieldSlotSelectionModeActive = false;
+        isExecutingFieldSlotSelectionAction = false;
 
         if (wasActive)
             SetBattleBusy(false, "ClearPendingFieldSlotSelection");
@@ -4299,6 +4341,1247 @@ public class BattleManager : MonoBehaviour
         }
     }
 
+    public bool ExecuteEndTurnFromAction(BattleAction action)
+    {
+        string failReason;
+        if (!CanExecuteEndTurnAction(action, out failReason))
+        {
+            Debug.LogWarning($"[BattleActionExecutor] EndTurn rejected: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute EndTurn. seq={action.actionSequence}, actor={action.actor}");
+        StartCoroutine(ExecuteEndTurnActionRoutine(action));
+        return true;
+    }
+
+    private IEnumerator ExecuteEndTurnActionRoutine(BattleAction action)
+    {
+        yield return EndPlayerActionRoutine();
+
+        Debug.Log($"[BattleActionExecutor] EndTurn completed. seq={action.actionSequence}, actor={action.actor}");
+    }
+
+    private bool CanExecuteEndTurnAction(BattleAction action, out string failReason)
+    {
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.EndTurn)
+        {
+            failReason = $"EndTurn이 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = GetBattleBusyReason();
+            return false;
+        }
+
+        if (questionPanel != null && questionPanel.IsOpen())
+        {
+            failReason = "이미 다른 선택창이 열려 있습니다.";
+            return false;
+        }
+
+        if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+        {
+            failReason = "이미 카드 선택창이 열려 있습니다.";
+            return false;
+        }
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (currentActionSide != BattlePlayerSide.My || action.actor != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 행동권이 아닙니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool RequestSummonFaceDownActionFromExternal(BaseCardData card, BattleFieldSlot targetSlot)
+    {
+        BattleAction action = CreateSummonFaceDownAction(card, targetSlot);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestSummonFaceUpActionFromExternal(BaseCardData card, BattleFieldSlot targetSlot)
+    {
+        BattleAction action = CreateSummonFaceUpAction(card, targetSlot);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestFlipSummonActionFromExternal(BattleFieldSlot sourceSlot)
+    {
+        BattleAction action = CreateFlipSummonAction(sourceSlot);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestMoveCharacterActionFromExternal(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        BattleAction action = CreateMoveCharacterAction(sourceSlot, targetSlot);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestStartCollabActionFromExternal(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        BattleAction action = CreateStartCollabAction(sourceSlot, targetSlot);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestUseContentActionFromExternal(BaseCardData card, string effectRef)
+    {
+        int handIndex = FindHandCardIndexFromExternal(BattleSlotOwner.My, card);
+        return RequestUseContentActionFromExternal(card, handIndex, effectRef, EffectTiming.Content);
+    }
+
+    public bool RequestUseContentActionFromExternal(BaseCardData card, int handIndex, string effectRef)
+    {
+        return RequestUseContentActionFromExternal(card, handIndex, effectRef, EffectTiming.Content);
+    }
+
+    public bool RequestUseContentActionFromExternal(
+        BaseCardData card,
+        int handIndex,
+        string effectRef,
+        EffectTiming effectTiming)
+    {
+        BattleAction action = CreateUseContentAction(card, handIndex, effectRef, effectTiming);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestSelectEffectTargetActionFromExternal(string effectRef, BattleFieldSlot selectedSlot)
+    {
+        BattleAction action = CreateSelectEffectTargetAction(effectRef, selectedSlot);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestSelectCardOptionActionFromExternal(string effectRef, int selectedIndex, string selectedCardId = "")
+    {
+        BattleAction action = CreateSelectCardOptionAction(effectRef, selectedIndex, selectedCardId);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestSelectMultipleCardOptionsActionFromExternal(
+        string effectRef,
+        List<int> selectedIndexes,
+        List<string> selectedCardIds = null)
+    {
+        BattleAction action = CreateSelectMultipleCardOptionsAction(effectRef, selectedIndexes, selectedCardIds);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool RequestSelectEffectChoiceActionFromExternal(string effectRef, string choiceId, string choiceValue)
+    {
+        BattleAction action = CreateSelectEffectChoiceAction(effectRef, choiceId, choiceValue);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool ExecuteSelectEffectTargetFromAction(BattleAction action)
+    {
+        BattleFieldSlot targetSlot;
+        string failReason;
+
+        if (!CanExecuteSelectEffectTargetAction(action, out targetSlot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] SelectEffectTarget failed: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute SelectEffectTarget. seq={action.actionSequence}, actor={action.actor}, effectRef={action.effectRef}, targetSlot={action.targetSlotId}");
+        return ExecutePendingFieldSlotSelectionFromAction(action, targetSlot);
+    }
+
+    public bool ExecuteSelectCardOptionFromAction(BattleAction action)
+    {
+        string failReason;
+        if (!CanExecuteSelectCardOptionAction(action, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] SelectCardOption failed: {failReason}");
+            SetSystemMessage(failReason);
+            return false;
+        }
+
+        return effectManager.ExecuteSelectCardOptionFromAction(action);
+    }
+
+    private bool CanExecuteSelectCardOptionAction(BattleAction action, out string failReason)
+    {
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.SelectCardOption)
+        {
+            failReason = $"SelectCardOption이 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (effectManager == null)
+        {
+            failReason = "EffectManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        return effectManager.CanExecuteSelectCardOptionFromAction(action, out failReason);
+    }
+
+    public bool ExecuteSelectMultipleCardOptionsFromAction(BattleAction action)
+    {
+        string failReason;
+        if (!CanExecuteSelectMultipleCardOptionsAction(action, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] SelectMultipleCardOptions failed: {failReason}");
+            SetSystemMessage(failReason);
+            return false;
+        }
+
+        return effectManager.ExecuteSelectMultipleCardOptionsFromAction(action);
+    }
+
+    private bool CanExecuteSelectMultipleCardOptionsAction(BattleAction action, out string failReason)
+    {
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.SelectMultipleCardOptions)
+        {
+            failReason = $"SelectMultipleCardOptions가 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (effectManager == null)
+        {
+            failReason = "EffectManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        return effectManager.CanExecuteSelectMultipleCardOptionsFromAction(action, out failReason);
+    }
+
+    public bool ExecuteSelectEffectChoiceFromAction(BattleAction action)
+    {
+        string failReason;
+        if (!CanExecuteSelectEffectChoiceAction(action, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] SelectEffectChoice failed: {failReason}");
+            SetSystemMessage(failReason);
+            return false;
+        }
+
+        return effectManager.ExecuteSelectEffectChoiceFromAction(action);
+    }
+
+    private bool CanExecuteSelectEffectChoiceAction(BattleAction action, out string failReason)
+    {
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.SelectEffectChoice)
+        {
+            failReason = $"SelectEffectChoice가 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (effectManager == null)
+        {
+            failReason = "EffectManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        return effectManager.CanExecuteSelectEffectChoiceFromAction(action, out failReason);
+    }
+
+    public bool CanExecuteSelectEffectTargetAction(
+        BattleAction action,
+        out BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        targetSlot = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.SelectEffectTarget)
+        {
+            failReason = $"SelectEffectTarget이 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (!isFieldSlotSelectionModeActive)
+        {
+            failReason = "효과 대상 선택 대기 상태가 아닙니다.";
+            return false;
+        }
+
+        if (isExecutingFieldSlotSelectionAction)
+        {
+            failReason = "효과 대상 선택을 처리 중입니다.";
+            return false;
+        }
+
+        if (pendingFieldSlotSelectionSelectedAction == null)
+        {
+            failReason = "효과 대상 선택 콜백이 없습니다.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pendingFieldSlotSelectionEffectRef) &&
+            !string.Equals(pendingFieldSlotSelectionEffectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "대기 중인 효과와 선택 액션의 effectRef가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.targetSlotId))
+        {
+            failReason = "선택한 효과 대상 슬롯 ID가 없습니다.";
+            return false;
+        }
+
+        targetSlot = FindSlotById(action.targetSlotId);
+        if (targetSlot == null)
+        {
+            failReason = "선택한 효과 대상 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (!pendingFieldSlotSelectionValidSlots.Contains(targetSlot))
+        {
+            failReason = "선택할 수 없는 효과 대상 슬롯입니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool ExecuteUseContentFromAction(BattleAction action)
+    {
+        BaseCardData contentCard;
+        string failReason;
+
+        if (!CanExecuteUseContentAction(action, out contentCard, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] UseContent failed: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        if (effectManager == null)
+        {
+            Debug.LogWarning("[BattleAction] UseContent failed: EffectManager is null");
+            SetSystemMessage("EffectManager가 연결되어 있지 않습니다.");
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute UseContent. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, effectRef={action.effectRef}, timing={action.effectTiming}");
+        return effectManager.ExecuteUseContentFromAction(contentCard, action.handIndex, action.effectRef, action.effectTiming);
+    }
+
+    private bool CanExecuteUseContentAction(
+        BattleAction action,
+        out BaseCardData contentCard,
+        out string failReason)
+    {
+        contentCard = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.UseContent)
+        {
+            failReason = $"UseContent가 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        bool isCollabContentTiming =
+            action.effectTiming == EffectTiming.PreCollab ||
+            action.effectTiming == EffectTiming.PostCollab;
+
+        if (!isCollabContentTiming && IsBattleBusy())
+        {
+            failReason = GetBattleBusyReason();
+            return false;
+        }
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (action.actor != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 손패의 콘텐츠 카드만 발동할 수 있습니다.";
+            return false;
+        }
+
+        if (!isCollabContentTiming && currentActionSide != BattlePlayerSide.My)
+        {
+            failReason = "현재는 내 행동권이 아닙니다.";
+            return false;
+        }
+
+        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(action.actor);
+        if (hand == null || action.handIndex < 0 || action.handIndex >= hand.Count)
+        {
+            failReason = "유효하지 않은 손패 인덱스입니다.";
+            return false;
+        }
+
+        contentCard = hand[action.handIndex];
+        if (contentCard == null)
+        {
+            failReason = "손패 카드 데이터가 없습니다.";
+            return false;
+        }
+
+        if (!IsContentCardKind(contentCard))
+        {
+            failReason = "콘텐츠 카드만 사용할 수 있습니다.";
+            return false;
+        }
+
+        if (CanInstallAsFieldContentCard(contentCard))
+        {
+            failReason = "지속형 콘텐츠 설치는 이번 UseContentAction 대상이 아닙니다.";
+            return false;
+        }
+
+        if (action.effectTiming == EffectTiming.Content && IsCollabContentCard(contentCard))
+        {
+            failReason = "합방 타이밍 콘텐츠는 이번 UseContentAction 대상이 아닙니다.";
+            return false;
+        }
+
+        if (effectManager == null)
+        {
+            failReason = "EffectManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        if (action.effectTiming != EffectTiming.Content &&
+            action.effectTiming != EffectTiming.PreCollab &&
+            action.effectTiming != EffectTiming.PostCollab)
+        {
+            failReason = $"지원하지 않는 콘텐츠 효과 타이밍입니다. timing={action.effectTiming}";
+            Debug.LogWarning("[BattleAction] UseContent failed: invalid effect timing");
+            return false;
+        }
+
+        bool canUse = effectManager.CanUseContentActionFromExternal(
+            contentCard,
+            action.handIndex,
+            action.effectRef,
+            action.actor,
+            action.effectTiming,
+            out failReason);
+
+        if (!canUse)
+            Debug.LogWarning($"[BattleAction] UseContent failed: content is not playable at requested timing. timing={action.effectTiming}, reason={failReason}");
+
+        return canUse;
+    }
+
+    public bool ExecuteStartCollabFromAction(BattleAction action)
+    {
+        BattleFieldSlot sourceSlot;
+        BattleFieldSlot targetSlot;
+        string failReason;
+
+        if (!CanExecuteStartCollabAction(action, out sourceSlot, out targetSlot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] StartCollab failed: {failReason}");
+            SetSystemMessage($"합방할 수 없습니다.\n{failReason}");
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        if (collaborationManager == null)
+        {
+            Debug.LogWarning("[BattleAction] StartCollab failed: CollaborationManager is null");
+            SetSystemMessage("CollaborationManager가 연결되어 있지 않습니다.");
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute StartCollab. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+        return collaborationManager.ExecuteStartCollabFromAction(sourceSlot, targetSlot);
+    }
+
+    private bool CanExecuteStartCollabAction(
+        BattleAction action,
+        out BattleFieldSlot sourceSlot,
+        out BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        sourceSlot = null;
+        targetSlot = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.StartCollab)
+        {
+            failReason = $"StartCollab이 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = GetBattleBusyReason();
+            return false;
+        }
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (currentActionSide != BattlePlayerSide.My || action.actor != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 행동권이 아닙니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.sourceSlotId))
+        {
+            failReason = "합방 출발 슬롯 ID가 없습니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.targetSlotId))
+        {
+            failReason = "합방 대상 슬롯 ID가 없습니다.";
+            return false;
+        }
+
+        sourceSlot = FindSlotById(action.sourceSlotId);
+        if (sourceSlot == null)
+        {
+            failReason = "합방 출발 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        targetSlot = FindSlotById(action.targetSlotId);
+        if (targetSlot == null)
+        {
+            failReason = "합방 대상 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (!sourceSlot.HasCharacter || sourceSlot.characterCard == null)
+        {
+            failReason = "합방을 시도할 캐릭터가 없습니다.";
+            return false;
+        }
+
+        if (!targetSlot.HasCharacter || targetSlot.characterCard == null)
+        {
+            failReason = "합방 대상 캐릭터가 없습니다.";
+            return false;
+        }
+
+        if (sourceSlot.characterOwner != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 캐릭터만 합방을 시도할 수 있습니다.";
+            return false;
+        }
+
+        if (sourceSlot.isCharacterFaceDown)
+        {
+            failReason = "이 캐릭터는 합방을 시도할 수 없습니다.";
+            return false;
+        }
+
+        if (targetSlot.characterOwner == BattleSlotOwner.My)
+        {
+            failReason = "상대 캐릭터가 있는 슬롯에서만 합방할 수 있습니다.";
+            return false;
+        }
+
+        if (!IsCharacterCardKind(sourceSlot.characterCard) ||
+            !IsCharacterCardKind(targetSlot.characterCard))
+        {
+            failReason = "합방 참가자는 캐릭터 카드여야 합니다.";
+            return false;
+        }
+
+        if (movementManager == null)
+        {
+            failReason = "MovementManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        if (collaborationManager == null)
+        {
+            failReason = "CollaborationManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        return movementManager.CanStartCollaborationForOwnerFromExternal(
+            BattleSlotOwner.My,
+            sourceSlot,
+            targetSlot,
+            out failReason);
+    }
+
+    public bool ExecuteMoveCharacterFromAction(BattleAction action)
+    {
+        BattleFieldSlot sourceSlot;
+        BattleFieldSlot targetSlot;
+        string failReason;
+
+        if (!CanExecuteMoveCharacterAction(action, out sourceSlot, out targetSlot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] MoveCharacter failed: {failReason}");
+            SetSystemMessage($"이동할 수 없습니다.\n{failReason}");
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        if (movementManager == null)
+        {
+            Debug.LogWarning("[BattleAction] MoveCharacter failed: MovementManager is null");
+            SetSystemMessage("MovementManager가 연결되어 있지 않습니다.");
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute MoveCharacter. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+        return movementManager.ExecuteMoveCharacterFromAction(sourceSlot, targetSlot);
+    }
+
+    private bool CanExecuteMoveCharacterAction(
+        BattleAction action,
+        out BattleFieldSlot sourceSlot,
+        out BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        sourceSlot = null;
+        targetSlot = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.MoveCharacter)
+        {
+            failReason = $"MoveCharacter가 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = GetBattleBusyReason();
+            return false;
+        }
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (currentActionSide != BattlePlayerSide.My || action.actor != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 행동권이 아닙니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.sourceSlotId))
+        {
+            failReason = "이동 출발 슬롯 ID가 없습니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.targetSlotId))
+        {
+            failReason = "이동 대상 슬롯 ID가 없습니다.";
+            return false;
+        }
+
+        sourceSlot = FindSlotById(action.sourceSlotId);
+        if (sourceSlot == null)
+        {
+            failReason = "이동 출발 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        targetSlot = FindSlotById(action.targetSlotId);
+        if (targetSlot == null)
+        {
+            failReason = "이동 대상 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (!sourceSlot.HasCharacter || sourceSlot.characterCard == null)
+        {
+            failReason = "이동할 캐릭터가 없습니다.";
+            return false;
+        }
+
+        if (sourceSlot.characterOwner != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 캐릭터만 이동할 수 있습니다.";
+            return false;
+        }
+
+        if (sourceSlot.isCharacterFaceDown)
+        {
+            failReason = "뒷면 캐릭터는 이동할 수 없습니다.";
+            return false;
+        }
+
+        if (!IsCharacterCardKind(sourceSlot.characterCard))
+        {
+            failReason = "캐릭터 카드만 이동할 수 있습니다.";
+            return false;
+        }
+
+        if (!targetSlot.HasBroadcast)
+        {
+            failReason = "방송 카드가 설치된 슬롯으로만 이동할 수 있습니다.";
+            return false;
+        }
+
+        if (targetSlot.HasCharacter)
+        {
+            failReason = "이번 Action 단계에서는 빈 슬롯으로의 일반 이동만 처리합니다.";
+            return false;
+        }
+
+        if (movementManager == null)
+        {
+            failReason = "MovementManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        return movementManager.CanMoveCharacterFromExternal(sourceSlot, targetSlot, out failReason);
+    }
+
+    public bool ExecuteFlipSummonFromAction(BattleAction action)
+    {
+        BattleFieldSlot sourceSlot;
+        string failReason;
+
+        if (!CanExecuteFlipSummonAction(action, out sourceSlot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] FlipSummon failed: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        if (summonManager == null)
+        {
+            Debug.LogWarning("[BattleAction] FlipSummon failed: SummonManager is null");
+            SetSystemMessage("SummonManager가 연결되어 있지 않습니다.");
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute FlipSummon. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}");
+        return summonManager.ExecuteFlipSummonFromAction(sourceSlot);
+    }
+
+    private bool CanExecuteFlipSummonAction(
+        BattleAction action,
+        out BattleFieldSlot sourceSlot,
+        out string failReason)
+    {
+        sourceSlot = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.FlipSummon)
+        {
+            failReason = $"FlipSummon이 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = GetBattleBusyReason();
+            return false;
+        }
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (currentActionSide != BattlePlayerSide.My || action.actor != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 행동권이 아닙니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.sourceSlotId))
+        {
+            failReason = "플립 출연할 슬롯 ID가 없습니다.";
+            return false;
+        }
+
+        sourceSlot = FindSlotById(action.sourceSlotId);
+        if (sourceSlot == null)
+        {
+            failReason = "플립 출연할 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (sourceSlot.owner != BattleSlotOwner.My || sourceSlot.characterOwner != BattleSlotOwner.My)
+        {
+            failReason = "내 캐릭터만 플립 출연할 수 있습니다.";
+            return false;
+        }
+
+        if (!sourceSlot.HasCharacter || sourceSlot.characterCard == null)
+        {
+            failReason = "플립 출연할 캐릭터가 없습니다.";
+            return false;
+        }
+
+        if (!sourceSlot.isCharacterFaceDown)
+        {
+            failReason = "이미 앞면 상태인 캐릭터입니다.";
+            return false;
+        }
+
+        if (!IsCharacterCardKind(sourceSlot.characterCard))
+        {
+            failReason = "캐릭터 카드만 플립 출연할 수 있습니다.";
+            return false;
+        }
+
+        if (summonManager == null)
+        {
+            failReason = "SummonManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        if (!summonManager.CanFlipSummonByTurnFromExternal(sourceSlot, out failReason))
+            return false;
+
+        int cost = summonManager.GetCharacterAppearCostFromExternal(sourceSlot.characterCard);
+        if (!CanPayViewerCostFromExternal(BattleSlotOwner.My, cost))
+        {
+            failReason = "시청자가 부족하여 플립 출연할 수 없습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool ExecuteSummonFaceUpFromAction(BattleAction action)
+    {
+        BaseCardData card;
+        BattleFieldSlot targetSlot;
+        string failReason;
+
+        if (!CanExecuteSummonFaceUpAction(action, out card, out targetSlot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] SummonFaceUp failed: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        if (summonManager == null)
+        {
+            Debug.LogWarning("[BattleAction] SummonFaceUp failed: SummonManager is null");
+            SetSystemMessage("SummonManager가 연결되어 있지 않습니다.");
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute SummonFaceUp. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        return summonManager.ExecuteSummonFaceUpFromAction(card, targetSlot);
+    }
+
+    private bool CanExecuteSummonFaceUpAction(
+        BattleAction action,
+        out BaseCardData card,
+        out BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        card = null;
+        targetSlot = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.SummonFaceUp)
+        {
+            failReason = $"SummonFaceUp이 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = GetBattleBusyReason();
+            return false;
+        }
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (currentActionSide != BattlePlayerSide.My || action.actor != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 행동권이 아닙니다.";
+            return false;
+        }
+
+        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(action.actor);
+        if (hand == null || action.handIndex < 0 || action.handIndex >= hand.Count)
+        {
+            failReason = "유효하지 않은 손패 인덱스입니다.";
+            return false;
+        }
+
+        card = hand[action.handIndex];
+        if (card == null)
+        {
+            failReason = "손패 카드 데이터가 없습니다.";
+            return false;
+        }
+
+        if (!IsCharacterCardKind(card))
+        {
+            failReason = "캐릭터 카드만 앞면 출연할 수 있습니다.";
+            return false;
+        }
+
+        targetSlot = FindSlotById(action.targetSlotId);
+        if (targetSlot == null)
+        {
+            failReason = "대상 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (targetSlot.owner != BattleSlotOwner.My)
+        {
+            failReason = "내 방송 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
+            return false;
+        }
+
+        if (!targetSlot.HasBroadcast)
+        {
+            failReason = "방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
+            return false;
+        }
+
+        if (targetSlot.HasCharacter)
+        {
+            failReason = "이미 캐릭터가 있는 슬롯입니다.";
+            return false;
+        }
+
+        if (summonManager == null)
+        {
+            failReason = "SummonManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        int cost = summonManager.GetCharacterAppearCostFromExternal(card);
+        if (!CanPayViewerCostFromExternal(BattleSlotOwner.My, cost))
+        {
+            failReason = "시청자가 부족하여 앞면 출연할 수 없습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool ExecuteSummonFaceDownFromAction(BattleAction action)
+    {
+        BaseCardData card;
+        BattleFieldSlot targetSlot;
+        string failReason;
+
+        if (!CanExecuteSummonFaceDownAction(action, out card, out targetSlot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] SummonFaceDown failed: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        if (summonManager == null)
+        {
+            Debug.LogWarning("[BattleAction] SummonFaceDown failed: SummonManager is null");
+            SetSystemMessage("SummonManager가 연결되어 있지 않습니다.");
+            return false;
+        }
+
+        Debug.Log($"[BattleActionExecutor] Execute SummonFaceDown. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        return summonManager.ExecuteSummonFaceDownFromAction(card, targetSlot);
+    }
+
+    private bool CanExecuteSummonFaceDownAction(
+        BattleAction action,
+        out BaseCardData card,
+        out BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        card = null;
+        targetSlot = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.SummonFaceDown)
+        {
+            failReason = $"SummonFaceDown이 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (IsGameOver())
+        {
+            failReason = "이미 배틀이 종료되었습니다.";
+            return false;
+        }
+
+        if (IsBattleBusy())
+        {
+            failReason = GetBattleBusyReason();
+            return false;
+        }
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (currentActionSide != BattlePlayerSide.My || action.actor != BattleSlotOwner.My)
+        {
+            failReason = "현재는 내 행동권이 아닙니다.";
+            return false;
+        }
+
+        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(action.actor);
+        if (hand == null || action.handIndex < 0 || action.handIndex >= hand.Count)
+        {
+            failReason = "유효하지 않은 손패 인덱스입니다.";
+            return false;
+        }
+
+        card = hand[action.handIndex];
+        if (card == null)
+        {
+            failReason = "손패 카드 데이터가 없습니다.";
+            return false;
+        }
+
+        if (!IsCharacterCardKind(card))
+        {
+            failReason = "캐릭터 카드만 뒷면 출연할 수 있습니다.";
+            return false;
+        }
+
+        targetSlot = FindSlotById(action.targetSlotId);
+        if (targetSlot == null)
+        {
+            failReason = "대상 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (targetSlot.owner != BattleSlotOwner.My)
+        {
+            failReason = "내 방송 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
+            return false;
+        }
+
+        if (!targetSlot.HasBroadcast)
+        {
+            failReason = "방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
+            return false;
+        }
+
+        if (targetSlot.HasCharacter)
+        {
+            failReason = "이미 캐릭터가 있는 슬롯입니다.";
+            return false;
+        }
+
+        if (summonManager == null)
+        {
+            failReason = "SummonManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        if (!summonManager.CanSummonBacksideFromExternal(card, out failReason))
+            return false;
+
+        if (IsFaceDownSummonForbiddenByBroadcastFromExternal(targetSlot, out failReason))
+            return false;
+
+        return true;
+    }
+
+    private BattleFieldSlot FindSlotById(string slotId)
+    {
+        if (string.IsNullOrWhiteSpace(slotId))
+            return null;
+
+        foreach (BattleFieldSlot slot in myBattleSlots)
+        {
+            if (slot != null && slot.GetSlotId() == slotId)
+                return slot;
+        }
+
+        foreach (BattleFieldSlot slot in enemyBattleSlots)
+        {
+            if (slot != null && slot.GetSlotId() == slotId)
+                return slot;
+        }
+
+        return null;
+    }
+
     private void ResolveEnemyActionUsed(string actionMessage)
     {
         consecutivePassCount = 0;
@@ -5040,7 +6323,7 @@ public class BattleManager : MonoBehaviour
         if (questionPanel == null ||
             !questionPanel.TryShowYesNoQuestion(
                 message,
-                () => ConfirmCharacterActive(slot),
+                () => RequestUseCharacterActiveActionFromExternal(slot),
                 () => SetSystemMessage($"{card.name} 액티브 효과 발동을 취소했습니다."),
                 () => SetSystemMessage($"{card.name} 액티브 효과 발동을 취소했습니다.")
             ))
@@ -5096,12 +6379,83 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
-    private void ConfirmCharacterActive(BattleFieldSlot slot)
+    public bool RequestUseCharacterActiveActionFromExternal(BattleFieldSlot slot)
+    {
+        BattleAction action = CreateUseCharacterActiveAction(slot);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool ExecuteUseCharacterActiveFromAction(BattleAction action)
+    {
+        BattleFieldSlot slot;
+        string failReason;
+
+        if (!CanExecuteUseCharacterActiveAction(action, out slot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] UseCharacterActive failed: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        return ExecuteCharacterActiveFromAction(action, slot);
+    }
+
+    private bool CanExecuteUseCharacterActiveAction(
+        BattleAction action,
+        out BattleFieldSlot slot,
+        out string failReason)
+    {
+        slot = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.UseCharacterActive)
+        {
+            failReason = $"UseCharacterActive가 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (action.actor != BattleSlotOwner.My)
+        {
+            failReason = "상대 캐릭터의 효과는 발동할 수 없습니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.sourceSlotId))
+        {
+            failReason = "액티브 효과 발동 캐릭터 슬롯 ID가 없습니다.";
+            return false;
+        }
+
+        slot = FindSlotById(action.sourceSlotId);
+        if (slot == null)
+        {
+            failReason = "액티브 효과 발동 캐릭터 슬롯을 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (!CanUseCharacterActive(slot, out failReason))
+            return false;
+
+        return true;
+    }
+
+    private bool ExecuteCharacterActiveFromAction(BattleAction action, BattleFieldSlot slot)
     {
         if (!CanUseCharacterActive(slot, out string failReason))
         {
             SetSystemMessage(failReason);
-            return;
+            return false;
         }
 
         bool waitForEffectCompletion = IsCharacterActiveEffectRef(
@@ -5122,16 +6476,19 @@ public class BattleManager : MonoBehaviour
             sourceSlot = slot,
             targetSlot = null,
             handIndex = -1,
+            effectRef = action != null ? action.effectRef : "",
             consumeAction = true,
             onComplete = waitForEffectCompletion
                 ? (Action<bool>)(success =>
                 {
                     if (!success)
                     {
+                        Debug.Log("[BattleAction] UseCharacterActive did not consume action because effect was cancelled or failed.");
                         RefreshAllUI();
                         return;
                     }
 
+                    Debug.Log("[BattleAction] UseCharacterActive resolved as action used.");
                     slot.SetCharacterActiveUsedThisTurn(true);
                     RefreshAllUI();
                 })
@@ -5142,14 +6499,17 @@ public class BattleManager : MonoBehaviour
         {
             if (!waitForEffectCompletion)
             {
+                Debug.Log("[BattleAction] UseCharacterActive resolved as action used.");
                 slot.SetCharacterActiveUsedThisTurn(true);
                 RefreshAllUI();
             }
 
-            return;
+            return true;
         }
 
+        Debug.Log("[BattleAction] UseCharacterActive did not consume action because effect was cancelled or failed.");
         SetSystemMessage("효과를 발동할 수 없습니다.");
+        return false;
     }
 
     public void RequestIdolActive(BattleSlotOwner owner)
@@ -5166,7 +6526,7 @@ public class BattleManager : MonoBehaviour
         if (questionPanel == null ||
             !questionPanel.TryShowYesNoQuestion(
                 message,
-                () => ConfirmIdolActive(owner),
+                () => RequestUseIdolActiveActionFromExternal(owner),
                 () => SetSystemMessage($"{idolCard.name} 액티브 효과 발동을 취소했습니다."),
                 () => SetSystemMessage($"{idolCard.name} 액티브 효과 발동을 취소했습니다.")
             ))
@@ -5224,12 +6584,61 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
-    private void ConfirmIdolActive(BattleSlotOwner owner)
+    public bool RequestUseIdolActiveActionFromExternal(BattleSlotOwner owner)
     {
+        BattleAction action = CreateUseIdolActiveAction(owner);
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        return actionExecutor.ExecuteAction(action);
+    }
+
+    public bool ExecuteUseIdolActiveFromAction(BattleAction action)
+    {
+        string failReason;
+
+        if (!CanExecuteUseIdolActiveAction(action, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] UseIdolActive failed: {failReason}");
+            SetSystemMessage(failReason);
+            RefreshTurnEndButtonState();
+            return false;
+        }
+
+        return ExecuteIdolActiveFromAction(action);
+    }
+
+    private bool CanExecuteUseIdolActiveAction(BattleAction action, out string failReason)
+    {
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        if (action.actionType != BattleActionType.UseIdolActive)
+        {
+            failReason = $"UseIdolActive가 아닌 액션입니다. actionType={action.actionType}";
+            return false;
+        }
+
+        if (!CanUseIdolActive(action.actor, out failReason))
+            return false;
+
+        return true;
+    }
+
+    private bool ExecuteIdolActiveFromAction(BattleAction action)
+    {
+        BattleSlotOwner owner = action != null ? action.actor : BattleSlotOwner.My;
+
         if (!CanUseIdolActive(owner, out string failReason))
         {
             SetSystemMessage(failReason);
-            return;
+            return false;
         }
 
         BaseCardData idolCard = GetIdolCardFromExternal(owner);
@@ -5251,16 +6660,19 @@ public class BattleManager : MonoBehaviour
             sourceSlot = null,
             targetSlot = null,
             handIndex = -1,
+            effectRef = action != null ? action.effectRef : "",
             consumeAction = true,
             onComplete = waitForEffectCompletion
                 ? (Action<bool>)(success =>
                 {
                     if (!success)
                     {
+                        Debug.Log("[BattleAction] UseIdolActive did not consume action because effect was cancelled or failed.");
                         RefreshAllUI();
                         return;
                     }
 
+                    Debug.Log("[BattleAction] UseIdolActive resolved as action used.");
                     SetIdolActiveUsedThisTurn(owner, true);
                     RefreshAllUI();
                 })
@@ -5271,14 +6683,17 @@ public class BattleManager : MonoBehaviour
         {
             if (!waitForEffectCompletion)
             {
+                Debug.Log("[BattleAction] UseIdolActive resolved as action used.");
                 SetIdolActiveUsedThisTurn(owner, true);
                 RefreshAllUI();
             }
 
-            return;
+            return true;
         }
 
+        Debug.Log("[BattleAction] UseIdolActive did not consume action because effect was cancelled or failed.");
         SetSystemMessage("효과를 발동할 수 없습니다.");
+        return false;
     }
 
     private bool HasUsedIdolActiveThisTurn(BattleSlotOwner owner)
@@ -5305,6 +6720,37 @@ public class BattleManager : MonoBehaviour
             return idol.active != null && idol.active.Length > 0 && HasAnyEffectRef(idol.active);
 
         return false;
+    }
+
+    private string GetPrimaryActiveEffectRef(BaseCardData card, EffectTiming timing)
+    {
+        EffectData[] effects = null;
+
+        if (timing == EffectTiming.CharacterActive && card is CharacterCardData character)
+            effects = character.effects;
+        else if (timing == EffectTiming.IdolActive && card is IdolCardData idol)
+            effects = idol.active;
+
+        if (effects == null)
+            return "";
+
+        foreach (EffectData effect in effects)
+        {
+            if (effect == null)
+                continue;
+
+            if (!TryParseEffectTimingForBattleManager(effect.timing, out EffectTiming effectTiming) ||
+                effectTiming != timing)
+            {
+                continue;
+            }
+
+            string effectRef = GetEffectRefForBattleManager(effect);
+            if (!string.IsNullOrWhiteSpace(effectRef))
+                return effectRef;
+        }
+
+        return "";
     }
 
     private bool HasEffectAtTiming(EffectData[] effects, EffectTiming timing)
@@ -6232,24 +7678,11 @@ public class BattleManager : MonoBehaviour
         pendingContentCard = null;
         pendingContentHandIndex = -1;
 
-        if (effectManager == null)
-        {
-            SetSystemMessage("EffectManager가 연결되어 있지 않습니다.");
-            return;
-        }
+        string effectRef = effectManager != null
+            ? effectManager.GetPrimaryEffectRefFromExternal(card)
+            : "";
 
-        EffectActivationRequest request = new EffectActivationRequest
-        {
-            sourceCard = card,
-            owner = BattleSlotOwner.My,
-            timing = EffectTiming.Content,
-            sourceSlot = null,
-            targetSlot = null,
-            handIndex = handIndex,
-            consumeAction = true
-        };
-
-        effectManager.TryActivateEffect(request);
+        RequestUseContentActionFromExternal(card, handIndex, effectRef, EffectTiming.Content);
     }
 
     private void CancelPendingContentUse()
@@ -7165,7 +8598,230 @@ public class BattleManager : MonoBehaviour
 
     private void ConfirmTurnEnd()
     {
-        StartCoroutine(EndPlayerActionRoutine());
+        BattleAction action = CreateEndTurnAction();
+
+        if (actionExecutor == null)
+            actionExecutor = new BattleActionExecutor(this);
+
+        actionExecutor.ExecuteAction(action);
+    }
+
+    private BattleAction CreateEndTurnAction()
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.EndTurn
+        };
+
+        Debug.Log($"[BattleAction] Created EndTurn action. seq={action.actionSequence} actor={action.actor}");
+        return action;
+    }
+
+    private BattleAction CreateSummonFaceDownAction(BaseCardData card, BattleFieldSlot targetSlot)
+    {
+        int handIndex = FindHandCardIndexFromExternal(BattleSlotOwner.My, card);
+
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.SummonFaceDown,
+            handIndex = handIndex,
+            targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
+        };
+
+        Debug.Log($"[BattleAction] Created SummonFaceDown action. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        return action;
+    }
+
+    private BattleAction CreateSummonFaceUpAction(BaseCardData card, BattleFieldSlot targetSlot)
+    {
+        int handIndex = FindHandCardIndexFromExternal(BattleSlotOwner.My, card);
+
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.SummonFaceUp,
+            handIndex = handIndex,
+            targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
+        };
+
+        Debug.Log($"[BattleAction] Created SummonFaceUp action. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        return action;
+    }
+
+    private BattleAction CreateFlipSummonAction(BattleFieldSlot sourceSlot)
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.FlipSummon,
+            sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : ""
+        };
+
+        Debug.Log($"[BattleAction] Created FlipSummon action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}");
+        return action;
+    }
+
+    private BattleAction CreateMoveCharacterAction(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.MoveCharacter,
+            sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
+            targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
+        };
+
+        Debug.Log($"[BattleAction] Created MoveCharacter action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+        return action;
+    }
+
+    private BattleAction CreateStartCollabAction(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.StartCollab,
+            sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
+            targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
+        };
+
+        Debug.Log($"[BattleAction] Created StartCollab action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+        return action;
+    }
+
+    private BattleAction CreateUseContentAction(
+        BaseCardData card,
+        int handIndex,
+        string effectRef,
+        EffectTiming effectTiming)
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.UseContent,
+            handIndex = handIndex,
+            effectRef = effectRef ?? "",
+            effectTiming = effectTiming
+        };
+
+        Debug.Log($"[BattleAction] Created UseContent action. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, effectRef={action.effectRef}, timing={action.effectTiming}");
+        return action;
+    }
+
+    private BattleAction CreateUseCharacterActiveAction(BattleFieldSlot sourceSlot)
+    {
+        BaseCardData card = sourceSlot != null ? sourceSlot.characterCard : null;
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.UseCharacterActive,
+            sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
+            effectRef = GetPrimaryActiveEffectRef(card, EffectTiming.CharacterActive)
+        };
+
+        Debug.Log($"[BattleAction] Created UseCharacterActive action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, effectRef={action.effectRef}");
+        return action;
+    }
+
+    private BattleAction CreateUseIdolActiveAction(BattleSlotOwner owner)
+    {
+        BaseCardData idolCard = GetIdolCardFromExternal(owner);
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = owner,
+            actionType = BattleActionType.UseIdolActive,
+            effectRef = GetPrimaryActiveEffectRef(idolCard, EffectTiming.IdolActive)
+        };
+
+        Debug.Log($"[BattleAction] Created UseIdolActive action. seq={action.actionSequence}, actor={action.actor}, effectRef={action.effectRef}");
+        return action;
+    }
+
+    private BattleAction CreateSelectEffectTargetAction(string effectRef, BattleFieldSlot selectedSlot)
+    {
+        string targetSlotId = selectedSlot != null ? selectedSlot.GetSlotId() : "";
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.SelectEffectTarget,
+            effectRef = effectRef ?? "",
+            targetSlotId = targetSlotId,
+            selectedTargetIds = new List<string>()
+        };
+
+        if (!string.IsNullOrWhiteSpace(targetSlotId))
+            action.selectedTargetIds.Add(targetSlotId);
+
+        Debug.Log($"[BattleAction] Created SelectEffectTarget action. seq={action.actionSequence}, actor={action.actor}, effectRef={action.effectRef}, targetSlot={action.targetSlotId}");
+        return action;
+    }
+
+    private BattleAction CreateSelectCardOptionAction(string effectRef, int selectedIndex, string selectedCardId)
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.SelectCardOption,
+            effectRef = effectRef ?? "",
+            selectedIndexes = new List<int>(),
+            selectedCardIds = new List<string>()
+        };
+
+        action.selectedIndexes.Add(selectedIndex);
+
+        if (!string.IsNullOrWhiteSpace(selectedCardId))
+            action.selectedCardIds.Add(selectedCardId);
+
+        Debug.Log($"[BattleAction] Created SelectCardOption action. seq={action.actionSequence}, actor={action.actor}, effectRef={action.effectRef}, selectedIndex={selectedIndex}, selectedCardId={selectedCardId}");
+        return action;
+    }
+
+    private BattleAction CreateSelectMultipleCardOptionsAction(
+        string effectRef,
+        List<int> selectedIndexes,
+        List<string> selectedCardIds)
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.SelectMultipleCardOptions,
+            effectRef = effectRef ?? "",
+            selectedIndexes = selectedIndexes != null ? new List<int>(selectedIndexes) : new List<int>(),
+            selectedCardIds = selectedCardIds != null ? new List<string>(selectedCardIds) : new List<string>()
+        };
+
+        Debug.Log($"[BattleAction] Created SelectMultipleCardOptions action. seq={action.actionSequence}, actor={action.actor}, effectRef={action.effectRef}, selectedCount={action.selectedIndexes.Count}");
+        return action;
+    }
+
+    private BattleAction CreateSelectEffectChoiceAction(string effectRef, string choiceId, string choiceValue)
+    {
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.SelectEffectChoice,
+            effectRef = effectRef ?? "",
+            choiceId = choiceId ?? "",
+            choiceValue = choiceValue ?? ""
+        };
+
+        Debug.Log($"[BattleAction] Created SelectEffectChoice action. seq={action.actionSequence}, actor={action.actor}, effectRef={action.effectRef}, choiceId={action.choiceId}, choiceValue={action.choiceValue}");
+        return action;
     }
 
     private void CancelTurnEnd()

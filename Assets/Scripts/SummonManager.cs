@@ -53,6 +53,44 @@ public class SummonManager : MonoBehaviour
         return CanSummonBacksideByCost(card);
     }
 
+    public bool CanSummonBacksideFromExternal(BaseCardData card, out string failReason)
+    {
+        return CanSummonBackside(card, out failReason);
+    }
+
+    public bool ExecuteSummonFaceDownFromAction(BaseCardData characterCard, BattleFieldSlot targetSlot)
+    {
+        if (characterCard == null || targetSlot == null)
+        {
+            Debug.LogWarning("[BattleAction] SummonFaceDown failed: card or target slot is null");
+            return false;
+        }
+
+        return SummonCharacterBackside(targetSlot, characterCard);
+    }
+
+    public bool ExecuteSummonFaceUpFromAction(BaseCardData characterCard, BattleFieldSlot targetSlot)
+    {
+        if (characterCard == null || targetSlot == null)
+        {
+            Debug.LogWarning("[BattleAction] SummonFaceUp failed: card or target slot is null");
+            return false;
+        }
+
+        return SummonCharacterFront(targetSlot, characterCard);
+    }
+
+    public bool ExecuteFlipSummonFromAction(BattleFieldSlot sourceSlot)
+    {
+        if (sourceSlot == null)
+        {
+            Debug.LogWarning("[BattleAction] FlipSummon failed: source slot is null");
+            return false;
+        }
+
+        return FlipSummonCharacter(sourceSlot, sourceSlot.characterCard);
+    }
+
     public void ClearPending()
     {
         ClearPendingSummonChoice();
@@ -300,7 +338,7 @@ public class SummonManager : MonoBehaviour
             return;
         }
 
-        SummonCharacterFront(targetSlot, targetCard);
+        battleManager.RequestSummonFaceUpActionFromExternal(targetCard, targetSlot);
     }
 
     private void OnSelectBacksideSummonChoice()
@@ -351,7 +389,7 @@ public class SummonManager : MonoBehaviour
             return;
         }
 
-        SummonCharacterBackside(targetSlot, targetCard);
+        battleManager.RequestSummonFaceDownActionFromExternal(targetCard, targetSlot);
     }
 
     private void OnConfirmFlipSummon()
@@ -371,44 +409,45 @@ public class SummonManager : MonoBehaviour
             return;
         }
 
-        FlipSummonCharacter(pendingFlipSlot, pendingFlipCard);
+        if (!battleManager.RequestFlipSummonActionFromExternal(pendingFlipSlot))
+            ClearPendingFlipChoice();
     }
 
-    private void SummonCharacterBackside(BattleFieldSlot targetSlot, BaseCardData characterCard)
+    private bool SummonCharacterBackside(BattleFieldSlot targetSlot, BaseCardData characterCard)
     {
         if (targetSlot == null || characterCard == null)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("뒷면 출연 처리에 필요한 정보가 없습니다.");
-            return;
+            return false;
         }
 
         if (!battleManager.IsCardInHandFromExternal(BattleSlotOwner.My, characterCard))
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("내 손패에 없는 카드는 출연시킬 수 없습니다.");
-            return;
+            return false;
         }
 
         if (targetSlot.owner != BattleSlotOwner.My)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("내 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
+            return false;
         }
 
         if (!targetSlot.HasBroadcast)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
+            return false;
         }
 
         if (targetSlot.HasCharacter)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("이미 캐릭터가 있는 슬롯입니다.");
-            return;
+            return false;
         }
 
         string backsideFailReason;
@@ -416,14 +455,14 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal(backsideFailReason);
-            return;
+            return false;
         }
 
         if (battleManager.IsFaceDownSummonForbiddenByBroadcastFromExternal(targetSlot, out string broadcastBacksideFailReason))
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal(broadcastBacksideFailReason);
-            return;
+            return false;
         }
 
         targetSlot.SetCharacterCard(
@@ -439,7 +478,7 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("내 손패에서 출연 카드를 제거할 수 없습니다.");
-            return;
+            return false;
         }
 
         myHasSummonedFaceDownThisTurn = true;
@@ -453,43 +492,45 @@ public class SummonManager : MonoBehaviour
             $"{characterCard.name} 카드를 뒷면으로 출연시켰습니다.\n" +
             $"위치: ({targetSlot.x}, {targetSlot.y})"
         );
+
+        return true;
     }
 
-    private void SummonCharacterFront(BattleFieldSlot targetSlot, BaseCardData characterCard)
+    private bool SummonCharacterFront(BattleFieldSlot targetSlot, BaseCardData characterCard)
     {
         if (targetSlot == null || characterCard == null)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("앞면 출연 처리에 필요한 정보가 없습니다.");
-            return;
+            return false;
         }
 
         if (!battleManager.IsCardInHandFromExternal(BattleSlotOwner.My, characterCard))
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("내 손패에 없는 카드는 출연시킬 수 없습니다.");
-            return;
+            return false;
         }
 
         if (targetSlot.owner != BattleSlotOwner.My)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("내 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
+            return false;
         }
 
         if (!targetSlot.HasBroadcast)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.");
-            return;
+            return false;
         }
 
         if (targetSlot.HasCharacter)
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("이미 캐릭터가 있는 슬롯입니다.");
-            return;
+            return false;
         }
 
         int cost = GetCharacterAppearCost(characterCard);
@@ -498,7 +539,7 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("시청자가 부족하여 앞면 출연할 수 없습니다.");
-            return;
+            return false;
         }
 
         Sprite sprite = battleManager.LoadCardSpriteFromExternal(characterCard);
@@ -507,14 +548,14 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal($"{characterCard.name} 카드 이미지를 찾을 수 없습니다.");
-            return;
+            return false;
         }
 
         if (!battleManager.TryPayViewerCostFromExternal(BattleSlotOwner.My, cost))
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("시청자가 부족하여 앞면 출연할 수 없습니다.");
-            return;
+            return false;
         }
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, BattleSlotOwner.My);
@@ -525,7 +566,7 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingSummonChoice();
             battleManager.SetSystemMessageFromExternal("내 손패에서 출연 카드를 제거할 수 없습니다.");
-            return;
+            return false;
         }
 
         ClearPendingSummonChoice();
@@ -538,36 +579,37 @@ public class SummonManager : MonoBehaviour
             $"시청자 -{cost}";
 
         RequestOnAppearThenResolveAction(targetSlot, characterCard, actionMessage);
+        return true;
     }
 
-    private void FlipSummonCharacter(BattleFieldSlot targetSlot, BaseCardData characterCard)
+    private bool FlipSummonCharacter(BattleFieldSlot targetSlot, BaseCardData characterCard)
     {
         if (targetSlot == null || characterCard == null)
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal("플립 출연 처리에 필요한 정보가 없습니다.");
-            return;
+            return false;
         }
 
         if (targetSlot.characterOwner != BattleSlotOwner.My)
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal("내 캐릭터만 플립 출연할 수 있습니다.");
-            return;
+            return false;
         }
 
         if (!targetSlot.HasCharacter)
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal("플립 출연할 캐릭터가 없습니다.");
-            return;
+            return false;
         }
 
         if (!targetSlot.isCharacterFaceDown)
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal("이미 앞면 상태인 캐릭터입니다.");
-            return;
+            return false;
         }
 
         string turnFailReason;
@@ -575,7 +617,7 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal(turnFailReason);
-            return;
+            return false;
         }
 
         int cost = GetCharacterAppearCost(characterCard);
@@ -584,7 +626,7 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal("시청자가 부족하여 플립 출연할 수 없습니다.");
-            return;
+            return false;
         }
 
         Sprite sprite = battleManager.LoadCardSpriteFromExternal(characterCard);
@@ -593,14 +635,14 @@ public class SummonManager : MonoBehaviour
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal($"{characterCard.name} 카드 이미지를 찾을 수 없습니다.");
-            return;
+            return false;
         }
 
         if (!battleManager.TryPayViewerCostFromExternal(BattleSlotOwner.My, cost))
         {
             ClearPendingFlipChoice();
             battleManager.SetSystemMessageFromExternal("시청자가 부족하여 플립 출연할 수 없습니다.");
-            return;
+            return false;
         }
 
         targetSlot.SetCharacterCard(characterCard, sprite, false, targetSlot.characterOwner);
@@ -616,6 +658,7 @@ public class SummonManager : MonoBehaviour
             $"시청자 -{cost}";
 
         battleManager.ResolveMyActionUsedFromExternal(actionMessage);
+        return true;
     }
 
     private void RequestOnAppearThenResolveAction(

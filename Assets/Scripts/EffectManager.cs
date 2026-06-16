@@ -68,9 +68,11 @@ public class EffectActivationRequest
     public BaseCardData sourceCard;
     public BattleSlotOwner owner;
     public EffectTiming timing;
+    public EffectContext context;
     public BattleFieldSlot sourceSlot;
     public BattleFieldSlot targetSlot;
     public int handIndex = -1;
+    public string effectRef;
     public bool consumeAction;
     public Action<bool> onComplete;
 }
@@ -95,8 +97,39 @@ public class EffectManager : MonoBehaviour
     private int restReturnOnAppearDepth;
     private PendingOurTalesState pendingOurTales;
     private PendingPostCollabRebattleState pendingPostCollabRebattle;
+    private PendingUseContentActionState pendingUseContentAction;
+    private PendingCardOptionSelectionState pendingCardOptionSelection;
+    private PendingEffectChoiceState pendingEffectChoice;
     private readonly List<NegativeAmountInvertState> negativeAmountInvertStates =
         new List<NegativeAmountInvertState>();
+
+    private class PendingUseContentActionState
+    {
+        public BaseCardData card;
+        public int handIndex = -1;
+        public string effectRef;
+        public EffectTiming timing = EffectTiming.None;
+        public BattleSlotOwner owner = BattleSlotOwner.My;
+        public EffectContext context;
+        public Action onComplete;
+    }
+
+    private class PendingCardOptionSelectionState
+    {
+        public string effectRef;
+        public List<CardQuestionOption> options;
+        public Action<CardQuestionOption> onSelected;
+        public bool isResolving;
+    }
+
+    private class PendingEffectChoiceState
+    {
+        public string effectRef;
+        public string choiceId;
+        public HashSet<string> allowedValues;
+        public Action<string> onSelected;
+        public bool isResolving;
+    }
 
     private class PendingOurTalesState
     {
@@ -145,6 +178,10 @@ public class EffectManager : MonoBehaviour
 
         if (panel != null && panel.IsOpen())
             panel.Hide();
+
+        pendingUseContentAction = null;
+        pendingCardOptionSelection = null;
+        pendingEffectChoice = null;
     }
 
     public bool IsEffectRefImplementedFromExternal(string effectRef)
@@ -503,15 +540,27 @@ public class EffectManager : MonoBehaviour
             }
 
             List<CardQuestionOption> options = BuildOptionsFromCandidates(candidates);
-            bool opened = panel.TryShowOptions(
+            bool opened = TryShowCardOptionSelectionAsAction(
+                panel,
                 GetOptionalEffectQuestionMessage(timing),
                 options,
                 CanCancelEffectActivation(timing, candidates),
+                "",
                 selectedOption =>
                 {
                     EffectCandidate selectedCandidate = selectedOption != null
                         ? selectedOption.linkedCandidate
                         : null;
+
+                    if (TryRequestUseContentActionForOptionalEffect(
+                            timing,
+                            selectedCandidate,
+                            safeContext,
+                            completeOnce))
+                    {
+                        return;
+                    }
+
                     ResolveEffect(selectedCandidate, safeContext, completeOnce);
                 },
                 () =>
@@ -575,6 +624,404 @@ public class EffectManager : MonoBehaviour
 
         return timing == EffectTiming.OnRest &&
             candidate.card is CharacterCardData;
+    }
+
+    private bool TryRequestUseContentActionForOptionalEffect(
+        EffectTiming timing,
+        EffectCandidate candidate,
+        EffectContext context,
+        Action onComplete)
+    {
+        if (timing != EffectTiming.PreCollab &&
+            timing != EffectTiming.PostCollab)
+        {
+            return false;
+        }
+
+        if (candidate == null ||
+            candidate.card == null ||
+            candidate.sourceZone != EffectSourceZone.Hand)
+        {
+            return false;
+        }
+
+        if (battleManager == null)
+            return false;
+
+        PendingUseContentActionState previousPending = pendingUseContentAction;
+        PendingUseContentActionState currentPending = new PendingUseContentActionState
+        {
+            card = candidate.card,
+            handIndex = candidate.handIndex,
+            effectRef = candidate.refId ?? "",
+            timing = timing,
+            owner = candidate.owner,
+            context = NormalizeContext(context, timing),
+            onComplete = onComplete
+        };
+        pendingUseContentAction = currentPending;
+
+        bool requested = battleManager.RequestUseContentActionFromExternal(
+            candidate.card,
+            candidate.handIndex,
+            candidate.refId,
+            timing);
+
+        if (!requested)
+        {
+            if (pendingUseContentAction == currentPending)
+                pendingUseContentAction = previousPending;
+
+            battleManager.SetSystemMessageFromExternal("콘텐츠 액션을 생성할 수 없습니다.");
+            onComplete?.Invoke();
+        }
+
+        return true;
+    }
+
+    private bool TryShowCardOptionSelectionAsAction(
+        CardQuestionPanel panel,
+        string message,
+        List<CardQuestionOption> options,
+        bool canCancel,
+        string effectRef,
+        Action<CardQuestionOption> onSelected,
+        Action onCancel)
+    {
+        return TryShowCardOptionSelectionAsAction(
+            panel,
+            message,
+            options,
+            canCancel ? CardQuestionCancelPolicy.AllowCancel : CardQuestionCancelPolicy.DisallowCancel,
+            effectRef,
+            onSelected,
+            onCancel);
+    }
+
+    private bool TryShowCardOptionSelectionAsAction(
+        CardQuestionPanel panel,
+        string message,
+        List<CardQuestionOption> options,
+        CardQuestionCancelPolicy cancelPolicy,
+        string effectRef,
+        Action<CardQuestionOption> onSelected,
+        Action onCancel)
+    {
+        if (panel == null || battleManager == null)
+            return false;
+
+        List<CardQuestionOption> safeOptions = options != null
+            ? new List<CardQuestionOption>(options)
+            : new List<CardQuestionOption>();
+
+        PendingCardOptionSelectionState previousPending = pendingCardOptionSelection;
+        pendingCardOptionSelection = new PendingCardOptionSelectionState
+        {
+            effectRef = effectRef ?? "",
+            options = safeOptions,
+            onSelected = onSelected
+        };
+
+        bool opened = panel.TryShowOptions(
+            message,
+            safeOptions,
+            cancelPolicy,
+            selectedOption =>
+            {
+                int selectedIndex = safeOptions.IndexOf(selectedOption);
+                string selectedCardId = selectedOption != null && selectedOption.card != null
+                    ? selectedOption.card.id
+                    : "";
+
+                if (selectedIndex < 0)
+                {
+                    battleManager.SetSystemMessageFromExternal("선택한 카드 후보를 찾을 수 없습니다.");
+                    pendingCardOptionSelection = previousPending;
+                    onCancel?.Invoke();
+                    return;
+                }
+
+                battleManager.RequestSelectCardOptionActionFromExternal(
+                    effectRef,
+                    selectedIndex,
+                    selectedCardId);
+            },
+            () =>
+            {
+                pendingCardOptionSelection = previousPending;
+                onCancel?.Invoke();
+            });
+
+        if (!opened)
+            pendingCardOptionSelection = previousPending;
+
+        return opened;
+    }
+
+    private void BeginEffectChoiceSelection(
+        string effectRef,
+        string choiceId,
+        IEnumerable<string> allowedValues,
+        Action<string> onSelected)
+    {
+        pendingEffectChoice = new PendingEffectChoiceState
+        {
+            effectRef = effectRef ?? "",
+            choiceId = choiceId ?? "",
+            allowedValues = allowedValues != null
+                ? new HashSet<string>(allowedValues, StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            onSelected = onSelected
+        };
+    }
+
+    public bool CanExecuteSelectCardOptionFromAction(BattleAction action, out string failReason)
+    {
+        failReason = "";
+
+        if (pendingCardOptionSelection == null)
+        {
+            failReason = "대기 중인 카드 선택이 없습니다.";
+            return false;
+        }
+
+        if (pendingCardOptionSelection.isResolving)
+        {
+            failReason = "카드 선택을 처리 중입니다.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pendingCardOptionSelection.effectRef) &&
+            !string.Equals(pendingCardOptionSelection.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "대기 중인 효과와 카드 선택 액션의 effectRef가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (action.selectedIndexes == null || action.selectedIndexes.Count != 1)
+        {
+            failReason = "카드 선택 인덱스가 1개가 아닙니다.";
+            return false;
+        }
+
+        int selectedIndex = action.selectedIndexes[0];
+        if (pendingCardOptionSelection.options == null ||
+            selectedIndex < 0 ||
+            selectedIndex >= pendingCardOptionSelection.options.Count)
+        {
+            failReason = "카드 선택 인덱스가 후보 범위를 벗어났습니다.";
+            return false;
+        }
+
+        if (action.selectedCardIds != null && action.selectedCardIds.Count > 0)
+        {
+            BaseCardData candidateCard = pendingCardOptionSelection.options[selectedIndex] != null
+                ? pendingCardOptionSelection.options[selectedIndex].card
+                : null;
+            string candidateCardId = candidateCard != null ? candidateCard.id : "";
+
+            if (!string.IsNullOrWhiteSpace(action.selectedCardIds[0]) &&
+                !string.Equals(action.selectedCardIds[0], candidateCardId, StringComparison.OrdinalIgnoreCase))
+            {
+                failReason = "선택 카드 ID가 후보 카드와 일치하지 않습니다.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public bool ExecuteSelectCardOptionFromAction(BattleAction action)
+    {
+        string failReason;
+        if (!CanExecuteSelectCardOptionFromAction(action, out failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            Debug.LogWarning($"[BattleAction] SelectCardOption failed: {failReason}");
+            return false;
+        }
+
+        int selectedIndex = action.selectedIndexes[0];
+        CardQuestionOption selectedOption = pendingCardOptionSelection.options[selectedIndex];
+        Action<CardQuestionOption> selectedAction = pendingCardOptionSelection.onSelected;
+
+        pendingCardOptionSelection.isResolving = true;
+
+        try
+        {
+            pendingCardOptionSelection = null;
+            selectedAction?.Invoke(selectedOption);
+            return true;
+        }
+        finally
+        {
+            if (pendingCardOptionSelection != null)
+                pendingCardOptionSelection.isResolving = false;
+        }
+    }
+
+    public bool CanExecuteSelectMultipleCardOptionsFromAction(BattleAction action, out string failReason)
+    {
+        failReason = "복수 카드 선택 UI는 아직 Action 경유 대기 상태가 없습니다.";
+        return false;
+    }
+
+    public bool ExecuteSelectMultipleCardOptionsFromAction(BattleAction action)
+    {
+        Debug.LogWarning("[BattleAction] SelectMultipleCardOptions failed: no pending multiple-card selection implementation.");
+        return false;
+    }
+
+    public bool CanExecuteSelectEffectChoiceFromAction(BattleAction action, out string failReason)
+    {
+        failReason = "";
+
+        if (pendingEffectChoice == null)
+        {
+            failReason = "대기 중인 효과 분기 선택이 없습니다.";
+            return false;
+        }
+
+        if (pendingEffectChoice.isResolving)
+        {
+            failReason = "효과 분기 선택을 처리 중입니다.";
+            return false;
+        }
+
+        if (!string.Equals(pendingEffectChoice.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "대기 중인 효과와 분기 선택 액션의 effectRef가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (!string.Equals(pendingEffectChoice.choiceId, action.choiceId, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "대기 중인 choiceId와 분기 선택 액션이 일치하지 않습니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.choiceValue) ||
+            !pendingEffectChoice.allowedValues.Contains(action.choiceValue))
+        {
+            failReason = "허용되지 않은 분기 선택 값입니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool ExecuteSelectEffectChoiceFromAction(BattleAction action)
+    {
+        string failReason;
+        if (!CanExecuteSelectEffectChoiceFromAction(action, out failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            Debug.LogWarning($"[BattleAction] SelectEffectChoice failed: {failReason}");
+            return false;
+        }
+
+        Action<string> selectedAction = pendingEffectChoice.onSelected;
+        string choiceValue = action.choiceValue;
+
+        pendingEffectChoice.isResolving = true;
+
+        try
+        {
+            pendingEffectChoice = null;
+            selectedAction?.Invoke(choiceValue);
+            return true;
+        }
+        finally
+        {
+            if (pendingEffectChoice != null)
+                pendingEffectChoice.isResolving = false;
+        }
+    }
+
+    public bool CanUseContentActionFromExternal(
+        BaseCardData card,
+        int handIndex,
+        string effectRef,
+        BattleSlotOwner owner,
+        EffectTiming timing,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (timing == EffectTiming.Content)
+            return CanUseContentCardNow(card, owner, out failReason);
+
+        if (timing != EffectTiming.PreCollab &&
+            timing != EffectTiming.PostCollab)
+        {
+            failReason = $"지원하지 않는 콘텐츠 효과 타이밍입니다. timing={timing}";
+            return false;
+        }
+
+        if (!MatchesPendingUseContentAction(card, handIndex, effectRef, owner, timing))
+        {
+            failReason = timing == EffectTiming.PreCollab
+                ? "합방 전 콘텐츠 선택 대기 상태가 아닙니다."
+                : "합방 후 콘텐츠 선택 대기 상태가 아닙니다.";
+            return false;
+        }
+
+        EffectContext context = NormalizeContext(pendingUseContentAction.context, timing);
+        EffectCandidate candidate = BuildUseContentActionCandidate(card, handIndex, effectRef, owner, timing);
+        return CanActivateEffect(candidate, context, out failReason);
+    }
+
+    private bool MatchesPendingUseContentAction(
+        BaseCardData card,
+        int handIndex,
+        string effectRef,
+        BattleSlotOwner owner,
+        EffectTiming timing)
+    {
+        if (pendingUseContentAction == null)
+            return false;
+
+        if (pendingUseContentAction.timing != timing ||
+            pendingUseContentAction.owner != owner ||
+            pendingUseContentAction.handIndex != handIndex ||
+            pendingUseContentAction.card != card)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pendingUseContentAction.effectRef) &&
+            !string.Equals(pendingUseContentAction.effectRef, effectRef, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private EffectCandidate BuildUseContentActionCandidate(
+        BaseCardData card,
+        int handIndex,
+        string effectRef,
+        BattleSlotOwner owner,
+        EffectTiming timing)
+    {
+        return new EffectCandidate
+        {
+            card = card,
+            owner = owner,
+            sourceZone = EffectSourceZone.Hand,
+            sourceSlot = null,
+            targetSlot = pendingUseContentAction != null && pendingUseContentAction.context != null
+                ? pendingUseContentAction.context.targetSlot
+                : null,
+            handIndex = handIndex,
+            refId = !string.IsNullOrWhiteSpace(effectRef)
+                ? effectRef
+                : GetPrimaryEffectRef(card, timing),
+            sourceEffect = GetPrimaryEffectData(card, timing),
+            timing = ResolveCardEffectTiming(card, timing),
+            consumeAction = timing == EffectTiming.Content
+        };
     }
 
     private void ResolveCandidatesSequentially(
@@ -834,7 +1281,106 @@ public class EffectManager : MonoBehaviour
             return false;
         }
 
+        request.onComplete?.Invoke(true);
         return true;
+    }
+
+    public bool ExecuteUseContentFromAction(
+        BaseCardData contentCard,
+        int handIndex,
+        string effectRef,
+        EffectTiming effectTiming)
+    {
+        PendingUseContentActionState pendingAction = null;
+        if (effectTiming == EffectTiming.PreCollab ||
+            effectTiming == EffectTiming.PostCollab)
+        {
+            pendingAction = pendingUseContentAction;
+        }
+
+        Action<bool> completePendingAction = null;
+        if (pendingAction != null)
+        {
+            bool completed = false;
+            completePendingAction = success =>
+            {
+                if (completed)
+                    return;
+
+                completed = true;
+
+                if (pendingUseContentAction == pendingAction)
+                    pendingUseContentAction = null;
+
+                pendingAction.onComplete?.Invoke();
+            };
+        }
+
+        EffectContext actionContext = pendingAction != null
+            ? NormalizeContext(pendingAction.context, effectTiming)
+            : null;
+
+        EffectActivationRequest request = new EffectActivationRequest
+        {
+            sourceCard = contentCard,
+            owner = pendingAction != null ? pendingAction.owner : BattleSlotOwner.My,
+            timing = effectTiming,
+            context = actionContext,
+            sourceSlot = null,
+            targetSlot = actionContext != null ? actionContext.targetSlot : null,
+            handIndex = handIndex,
+            effectRef = effectRef,
+            consumeAction = effectTiming == EffectTiming.Content,
+            onComplete = completePendingAction
+        };
+
+        bool started = TryActivateEffect(request);
+        if (!started && completePendingAction != null)
+            completePendingAction(false);
+
+        return started;
+    }
+
+    public bool IsWaitingForEffectTargetSelectionFromExternal()
+    {
+        return battleManager != null && battleManager.IsFieldSlotSelectionModeActiveFromExternal;
+    }
+
+    public bool IsValidPendingEffectTargetFromExternal(
+        BattleAction action,
+        BattleFieldSlot selectedSlot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (battleManager == null)
+        {
+            failReason = "BattleManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        if (action != null && selectedSlot != null &&
+            !string.Equals(action.targetSlotId, selectedSlot.GetSlotId(), StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "선택 액션의 대상 슬롯과 선택 슬롯이 일치하지 않습니다.";
+            return false;
+        }
+
+        BattleFieldSlot resolvedSlot;
+        return battleManager.CanExecuteSelectEffectTargetAction(action, out resolvedSlot, out failReason);
+    }
+
+    public bool ExecuteSelectEffectTargetFromAction(BattleAction action, BattleFieldSlot selectedSlot)
+    {
+        string failReason;
+        if (!IsValidPendingEffectTargetFromExternal(action, selectedSlot, out failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            Debug.LogWarning($"[BattleAction] SelectEffectTarget failed: {failReason}");
+            return false;
+        }
+
+        return battleManager.ExecuteSelectEffectTargetFromAction(action);
     }
 
     public bool CanUseContentCardNow(
@@ -1756,7 +2302,8 @@ public class EffectManager : MonoBehaviour
             {
                 battleManager?.SetSystemMessageFromExternal($"{candidate.card.name} 효과를 취소했습니다.");
                 onComplete?.Invoke(false);
-            }
+            },
+            candidate != null ? candidate.refId : ""
         );
 
         if (!opened)
@@ -1965,7 +2512,8 @@ public class EffectManager : MonoBehaviour
             {
                 battleManager?.SetSystemMessageFromExternal($"{candidate.card.name} 효과를 취소했습니다.");
                 onComplete?.Invoke(false);
-            });
+            },
+            candidate != null ? candidate.refId : "");
 
         if (!opened)
         {
@@ -2238,7 +2786,8 @@ public class EffectManager : MonoBehaviour
                 {
                     selectedSlot = null;
                     slotSelected = true;
-                });
+                },
+                candidate != null ? candidate.refId : "");
 
             if (opened)
             {
@@ -2464,7 +3013,8 @@ public class EffectManager : MonoBehaviour
             {
                 battleManager?.SetSystemMessageFromExternal($"{candidate.card.name} 효과를 취소했습니다.");
                 onComplete?.Invoke(false);
-            }
+            },
+            candidate != null ? candidate.refId : ""
         );
 
         if (!opened)
@@ -3506,12 +4056,28 @@ public class EffectManager : MonoBehaviour
             return;
         }
 
-        bool opened = panel.TryShowOptions(
+        string effectRef = !string.IsNullOrWhiteSpace(candidate.refId)
+            ? candidate.refId
+            : GetPrimaryEffectRef(candidate.card, candidate.timing);
+
+        BeginEffectChoiceSelection(
+            effectRef,
+            "tabiIdolEnhance",
+            new[] { "basic" },
+            choiceValue =>
+            {
+                ResolveBasicFetchTabiCard(candidate, tabiTag, onComplete);
+            });
+
+        bool opened = TryShowCardOptionSelectionAsAction(
+            panel,
             $"강화하려면 자신 방송의 앞면 {bunnyTag} 캐릭터 1장을 선택하세요.\n기본 효과만 사용하려면 취소하세요.",
             BuildSlotOptionsFromSlots(bunnySlots),
             true,
+            effectRef,
             selectedOption =>
             {
+                pendingEffectChoice = null;
                 BattleFieldSlot selectedSlot = selectedOption != null
                     ? selectedOption.linkedSlot
                     : null;
@@ -3525,12 +4091,16 @@ public class EffectManager : MonoBehaviour
             },
             () =>
             {
-                ResolveBasicFetchTabiCard(candidate, tabiTag, onComplete);
+                battleManager.RequestSelectEffectChoiceActionFromExternal(
+                    effectRef,
+                    "tabiIdolEnhance",
+                    "basic");
             }
         );
 
         if (!opened)
         {
+            pendingEffectChoice = null;
             battleManager?.SetSystemMessageFromExternal("카드 선택창을 열 수 없어 아이돌 액티브를 발동할 수 없습니다.");
             onComplete?.Invoke(false);
         }
@@ -3592,7 +4162,10 @@ public class EffectManager : MonoBehaviour
                     return;
                 }
 
-                CompleteEffectResolution($"{candidate.card.name} 발동: {message}", false, null);
+                CompleteEffectResolution(
+                    $"{candidate.card.name} 발동: {message}",
+                    ShouldConsumeAction(candidate, null),
+                    null);
                 onComplete?.Invoke(true);
             });
     }
@@ -3612,7 +4185,10 @@ public class EffectManager : MonoBehaviour
             {
                 if (!tabiSuccess)
                 {
-                    battleManager?.SetSystemMessageFromExternal($"#뿡댕이 퇴장은 완료했습니다.\n{tabiMessage}");
+                    CompleteEffectResolution(
+                        $"#뿡댕이 퇴장은 완료했습니다.\n{tabiMessage}",
+                        ShouldConsumeAction(candidate, null),
+                        null);
                     onComplete?.Invoke(true);
                     return;
                 }
@@ -3630,7 +4206,7 @@ public class EffectManager : MonoBehaviour
 
                         message += $"\n{bunnyMessage}";
 
-                        CompleteEffectResolution(message, false, null);
+                        CompleteEffectResolution(message, ShouldConsumeAction(candidate, null), null);
                         onComplete?.Invoke(true);
                     });
             });
@@ -3667,10 +4243,12 @@ public class EffectManager : MonoBehaviour
             return;
         }
 
-        bool opened = panel.TryShowOptions(
+        bool opened = TryShowCardOptionSelectionAsAction(
+            panel,
             questionMessage,
             BuildCardOptions(candidates),
             cancelPolicy,
+            $"deckSelect:{tag}",
             selectedOption =>
             {
                 BaseCardData selectedCard = selectedOption != null ? selectedOption.card : null;
@@ -4196,7 +4774,8 @@ public class EffectManager : MonoBehaviour
             () =>
             {
                 FinishCallFromRestByTagToEmptyPlatforms(candidate, tag, placedCount, returnedCharacters, onComplete);
-            }
+            },
+            candidate != null ? candidate.refId : ""
         );
 
         if (!opened)
@@ -4418,10 +4997,14 @@ public class EffectManager : MonoBehaviour
             return;
         }
 
-        bool opened = panel.TryShowOptions(
+        bool opened = TryShowCardOptionSelectionAsAction(
+            panel,
             "덱으로 되돌릴 카드를 선택하세요.",
             BuildCardOptions(candidates),
             true,
+            !string.IsNullOrWhiteSpace(candidate.refId)
+                ? candidate.refId
+                : GetPrimaryEffectRef(candidate.card, candidate.timing),
             selectedOption =>
             {
                 BaseCardData selectedCard = selectedOption != null ? selectedOption.card : null;
@@ -5333,10 +5916,12 @@ public class EffectManager : MonoBehaviour
 
         List<CardQuestionOption> options = BuildHandOptions(owner, hand);
 
-        bool opened = panel.TryShowOptions(
+        bool opened = TryShowCardOptionSelectionAsAction(
+            panel,
             $"버릴 카드를 선택하세요. ({remainingCount}장 남음)",
             options,
             false,
+            "discardCards",
             selectedOption =>
             {
                 BaseCardData discardCard = selectedOption != null
@@ -5431,10 +6016,14 @@ public class EffectManager : MonoBehaviour
 
         List<CardQuestionOption> options = BuildHandOptions(owner, hand);
 
-        bool opened = panel.TryShowOptions(
+        bool opened = TryShowCardOptionSelectionAsAction(
+            panel,
             "버릴 카드를 선택하세요.",
             options,
             true,
+            context != null && context.sourceEffect != null
+                ? GetEffectRef(context.sourceEffect)
+                : "discardActiveFetch",
             selectedOption =>
             {
                 BaseCardData discardCard = selectedOption != null
@@ -5683,17 +6272,28 @@ public class EffectManager : MonoBehaviour
             return false;
         }
 
-        context = new EffectContext
-        {
-            battleManager = battleManager,
-            actingOwner = request.owner,
-            timing = request.timing,
-            sourceSlot = request.sourceSlot,
-            targetSlot = request.targetSlot,
-            sourceCard = request.sourceCard,
-            sourceEffect = GetPrimaryEffectData(request.sourceCard, request.timing),
-            consumeAction = ShouldConsumeActionForTiming(request.timing, request.consumeAction)
-        };
+        context = request.context != null
+            ? NormalizeContext(request.context, request.timing)
+            : new EffectContext();
+
+        context.battleManager = battleManager;
+        if (context.collaborationManager == null && battleManager != null)
+            context.collaborationManager = battleManager.collaborationManager;
+
+        context.actingOwner = request.owner;
+        context.timing = request.timing;
+        context.consumeAction = ShouldConsumeActionForTiming(request.timing, request.consumeAction);
+
+        if (request.sourceSlot != null)
+            context.sourceSlot = request.sourceSlot;
+
+        if (request.targetSlot != null)
+            context.targetSlot = request.targetSlot;
+
+        if (context.sourceCard == null || request.timing == EffectTiming.Content)
+            context.sourceCard = request.sourceCard;
+
+        context.sourceEffect = GetPrimaryEffectData(request.sourceCard, request.timing);
 
         candidate = new EffectCandidate
         {
@@ -5701,11 +6301,13 @@ public class EffectManager : MonoBehaviour
             owner = request.owner,
             sourceZone = ResolveRequestSourceZone(request),
             sourceSlot = request.sourceSlot,
-            targetSlot = request.targetSlot,
+            targetSlot = request.targetSlot != null ? request.targetSlot : context.targetSlot,
             handIndex = request.sourceSlot == null
                 ? ResolveRequestHandIndex(request)
                 : -1,
-            refId = GetPrimaryEffectRef(request.sourceCard, request.timing),
+            refId = !string.IsNullOrWhiteSpace(request.effectRef)
+                ? request.effectRef
+                : GetPrimaryEffectRef(request.sourceCard, request.timing),
             sourceEffect = GetPrimaryEffectData(request.sourceCard, request.timing),
             timing = request.timing,
             consumeAction = ShouldConsumeActionForTiming(request.timing, request.consumeAction)
@@ -5722,8 +6324,13 @@ public class EffectManager : MonoBehaviour
         if (request.sourceSlot != null)
             return EffectSourceZone.Field;
 
-        if (request.timing == EffectTiming.Content)
+        if (request.handIndex >= 0 ||
+            request.timing == EffectTiming.Content ||
+            request.timing == EffectTiming.PreCollab ||
+            request.timing == EffectTiming.PostCollab)
+        {
             return EffectSourceZone.Hand;
+        }
 
         return EffectSourceZone.Field;
     }

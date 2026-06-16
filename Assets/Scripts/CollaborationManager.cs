@@ -112,6 +112,11 @@ public class CollaborationManager : MonoBehaviour
         return StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.Normal);
     }
 
+    public bool ExecuteStartCollabFromAction(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        return StartCollaboration(sourceSlot, targetSlot);
+    }
+
     public bool StartEffectMoveCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
     {
         return StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.EffectMove);

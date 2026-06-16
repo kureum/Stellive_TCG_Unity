@@ -23,6 +23,11 @@ public class BattleFieldSlot : MonoBehaviour,
     public int x;
     public int y;
 
+    public string GetSlotId()
+    {
+        return $"{owner}_{x}_{y}";
+    }
+
     [Header("Setup Button")]
     public Button setupButton;
     public TMP_Text setupButtonText;

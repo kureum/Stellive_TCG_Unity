@@ -37,6 +37,45 @@ public class MovementManager : MonoBehaviour
         ClearAllMoveState();
     }
 
+    public bool CanMoveCharacterFromExternal(
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        BaseCardData card = sourceSlot != null ? sourceSlot.characterCard : null;
+
+        if (!CanStartMoveFromSlot(sourceSlot, card, out failReason))
+            return false;
+
+        return CanMoveToSlot(sourceSlot, targetSlot, out failReason);
+    }
+
+    public bool ExecuteMoveCharacterFromAction(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        string failReason;
+        if (!CanMoveCharacterFromExternal(sourceSlot, targetSlot, out failReason))
+        {
+            Debug.LogWarning($"[BattleAction] MoveCharacter failed: {failReason}");
+            battleManager.SetSystemMessageFromExternal($"이동할 수 없습니다.\n{failReason}");
+            ClearAllMoveState();
+            return false;
+        }
+
+        BaseCardData card = sourceSlot.characterCard;
+        bool isDoubleStepMove = IsDoubleStepMoveCharacter(card);
+        string moveMessage = ExecuteMoveStep(sourceSlot, targetSlot, card, !isDoubleStepMove);
+
+        ClearPendingMoveChoiceState();
+        battleManager.RefreshAllUIFromExternal();
+
+        if (TryStartDoubleStepFollowUp(targetSlot, card, moveMessage))
+            return true;
+
+        ClearAllMoveState();
+        battleManager.ResolveMyActionUsedFromExternal(moveMessage);
+        return true;
+    }
+
     private void Awake()
     {
         if (battleManager == null)
@@ -279,12 +318,13 @@ public class MovementManager : MonoBehaviour
             return;
         }
 
-        BattleFieldSlot guestSlot = pendingMoveFromSlot;
-        BattleFieldSlot hostSlot = pendingMoveToSlot;
+        BattleFieldSlot fromSlot = pendingMoveFromSlot;
+        BattleFieldSlot toSlot = pendingMoveToSlot;
 
-        ClearAllMoveState();
+        ClearPendingMoveChoiceState();
 
-        battleManager.collaborationManager.StartCollaboration(guestSlot, hostSlot);
+        if (!battleManager.RequestStartCollabActionFromExternal(fromSlot, toSlot))
+            ClearAllMoveState();
     }
 
     private void CancelPendingCollaboration()
@@ -319,18 +359,11 @@ public class MovementManager : MonoBehaviour
 
         BattleFieldSlot fromSlot = pendingMoveFromSlot;
         BattleFieldSlot toSlot = pendingMoveToSlot;
-        BaseCardData card = pendingMoveCard;
 
-        bool isDoubleStepMove = IsDoubleStepMoveCharacter(card);
-        string moveMessage = ExecuteMoveStep(fromSlot, toSlot, card, !isDoubleStepMove);
         ClearPendingMoveChoiceState();
-        battleManager.RefreshAllUIFromExternal();
 
-        if (TryStartDoubleStepFollowUp(toSlot, card, moveMessage))
-            return;
-
-        ClearAllMoveState();
-        battleManager.ResolveMyActionUsedFromExternal(moveMessage);
+        if (!battleManager.RequestMoveCharacterActionFromExternal(fromSlot, toSlot))
+            ClearAllMoveState();
     }
 
     private void CancelPendingMove()
