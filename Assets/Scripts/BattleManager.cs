@@ -167,6 +167,7 @@ public class BattleManager : MonoBehaviour
 
     private BattlePlayerSide currentActionSide;
     private int nextActionSequence = 1;
+    private int nextCardInstanceSequence = 1;
     private BattleActionExecutor actionExecutor;
     private int consecutivePassCount = 0;
     private bool isRestZonePanelOpen = false;
@@ -428,6 +429,8 @@ public class BattleManager : MonoBehaviour
         isBattleEnded = false;
         isVictoryTiebreakerActive = false;
         turnCount = 1;
+        nextActionSequence = 1;
+        nextCardInstanceSequence = 1;
 
         if (!LoadCardDatabase())
             return;
@@ -454,8 +457,8 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        myPlayer = CreatePlayerRuntime("나", myPreset);
-        enemyPlayer = CreatePlayerRuntime("상대", enemyPreset);
+        myPlayer = CreatePlayerRuntime("나", myPreset, BattleSlotOwner.My);
+        enemyPlayer = CreatePlayerRuntime("상대", enemyPreset, BattleSlotOwner.Enemy);
 
         if (myPlayer == null || enemyPlayer == null)
             return;
@@ -548,7 +551,10 @@ public class BattleManager : MonoBehaviour
         return preset;
     }
 
-    private BattlePlayerRuntime CreatePlayerRuntime(string playerName, DeckPresetSaveData preset)
+    private BattlePlayerRuntime CreatePlayerRuntime(
+        string playerName,
+        DeckPresetSaveData preset,
+        BattleSlotOwner owner)
     {
         BattlePlayerRuntime player = new BattlePlayerRuntime();
         player.playerName = playerName;
@@ -556,13 +562,15 @@ public class BattleManager : MonoBehaviour
 
         foreach (string cardId in preset.cardIds)
         {
-            BaseCardData card = FindCardById(cardId);
+            BaseCardData sourceCard = FindCardById(cardId);
 
-            if (card == null)
+            if (sourceCard == null)
             {
                 Debug.LogWarning($"프리셋에 저장된 카드 ID를 찾을 수 없습니다: {cardId}");
                 continue;
             }
+
+            BaseCardData card = CreateRuntimeCardInstance(sourceCard, owner.ToString());
 
             switch (card.kind)
             {
@@ -592,6 +600,56 @@ public class BattleManager : MonoBehaviour
         }
 
         return player;
+    }
+
+    private BaseCardData CreateRuntimeCardInstance(BaseCardData sourceCard, string ownerLabel)
+    {
+        if (sourceCard == null)
+            return null;
+
+        string json = JsonUtility.ToJson(sourceCard);
+        BaseCardData runtimeCard;
+
+        switch (sourceCard.kind)
+        {
+            case "Idol":
+                runtimeCard = JsonUtility.FromJson<IdolCardData>(json);
+                break;
+
+            case "Broadcast":
+                runtimeCard = JsonUtility.FromJson<BroadcastCardData>(json);
+                break;
+
+            case "Character":
+                runtimeCard = JsonUtility.FromJson<CharacterCardData>(json);
+                break;
+
+            case "Content":
+                runtimeCard = JsonUtility.FromJson<ContentCardData>(json);
+                break;
+
+            default:
+                runtimeCard = JsonUtility.FromJson<BaseCardData>(json);
+                break;
+        }
+
+        if (runtimeCard == null)
+            return null;
+
+        runtimeCard.cardInstanceId = BuildCardInstanceId(ownerLabel, runtimeCard.id);
+        return runtimeCard;
+    }
+
+    private string BuildCardInstanceId(string ownerLabel, string cardId)
+    {
+        string safeOwner = string.IsNullOrWhiteSpace(ownerLabel)
+            ? "player"
+            : ownerLabel.Trim();
+        string safeCardId = string.IsNullOrWhiteSpace(cardId)
+            ? "unknown"
+            : cardId.Trim();
+
+        return $"{safeOwner}-{nextCardInstanceSequence++}-{safeCardId}";
     }
 
     private BaseCardData FindCardById(string cardId)
@@ -857,10 +915,11 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        targetPlayer.hand.Add(card);
+        BaseCardData runtimeCard = CreateRuntimeCardInstance(card, owner.ToString());
+        targetPlayer.hand.Add(runtimeCard);
         RefreshAllUI();
 
-        message = $"Cheat give: {card.id} -> {FormatCheatOwner(owner)} hand";
+        message = $"Cheat give: {runtimeCard.id} ({runtimeCard.cardInstanceId}) -> {FormatCheatOwner(owner)} hand";
         return true;
     }
 
@@ -941,12 +1000,109 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        targetSlot.SetCharacterCard(card, sprite, false, owner);
+        BaseCardData runtimeCard = CreateRuntimeCardInstance(card, owner.ToString());
+        targetSlot.SetCharacterCard(runtimeCard, sprite, false, owner);
         ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
         RefreshAllUI();
 
-        message = $"Cheat summon: {card.id} -> {FormatCheatOwner(owner)} {coord.Trim()}";
+        message = $"Cheat summon: {runtimeCard.id} ({runtimeCard.cardInstanceId}) -> {FormatCheatOwner(owner)} {coord.Trim()}";
         return true;
+    }
+
+    public void DebugPrintCardInstanceIdState()
+    {
+        Dictionary<string, List<string>> locationsByInstanceId =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        List<string> missingLocations = new List<string>();
+
+        CollectCardInstanceIds("My", myPlayer, myBattleSlots, locationsByInstanceId, missingLocations);
+        CollectCardInstanceIds("Enemy", enemyPlayer, enemyBattleSlots, locationsByInstanceId, missingLocations);
+
+        int duplicateCount = 0;
+        foreach (KeyValuePair<string, List<string>> pair in locationsByInstanceId)
+        {
+            if (pair.Value.Count <= 1)
+                continue;
+
+            duplicateCount++;
+            Debug.LogWarning($"[CardInstanceIdCheck] duplicate cardInstanceId={pair.Key}: {string.Join(", ", pair.Value)}");
+        }
+
+        foreach (string location in missingLocations)
+            Debug.LogWarning($"[CardInstanceIdCheck] missing cardInstanceId: {location}");
+
+        Debug.Log(
+            $"[CardInstanceIdCheck] totalIds={locationsByInstanceId.Count}, " +
+            $"duplicateIds={duplicateCount}, missingIds={missingLocations.Count}"
+        );
+    }
+
+    private void CollectCardInstanceIds(
+        string ownerLabel,
+        BattlePlayerRuntime player,
+        List<BattleFieldSlot> fieldSlots,
+        Dictionary<string, List<string>> locationsByInstanceId,
+        List<string> missingLocations)
+    {
+        if (player != null)
+        {
+            AddCardInstanceLocation(player.idolCard, $"{ownerLabel}.idol", locationsByInstanceId, missingLocations);
+            AddCardInstanceLocations(player.broadcastDeck, $"{ownerLabel}.broadcastDeck", locationsByInstanceId, missingLocations);
+            AddCardInstanceLocations(player.mainDeck, $"{ownerLabel}.mainDeck", locationsByInstanceId, missingLocations);
+            AddCardInstanceLocations(player.hand, $"{ownerLabel}.hand", locationsByInstanceId, missingLocations);
+            AddCardInstanceLocations(player.restZone, $"{ownerLabel}.restZone", locationsByInstanceId, missingLocations);
+        }
+
+        if (fieldSlots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in fieldSlots)
+        {
+            if (slot == null)
+                continue;
+
+            string slotId = slot.GetSlotId();
+            AddCardInstanceLocation(slot.broadcastCard, $"{ownerLabel}.field.{slotId}.broadcast", locationsByInstanceId, missingLocations);
+            AddCardInstanceLocation(slot.characterCard, $"{ownerLabel}.field.{slotId}.character", locationsByInstanceId, missingLocations);
+            AddCardInstanceLocation(slot.contentCard, $"{ownerLabel}.field.{slotId}.content", locationsByInstanceId, missingLocations);
+        }
+    }
+
+    private void AddCardInstanceLocations(
+        IReadOnlyList<BaseCardData> cards,
+        string zoneLabel,
+        Dictionary<string, List<string>> locationsByInstanceId,
+        List<string> missingLocations)
+    {
+        if (cards == null)
+            return;
+
+        for (int i = 0; i < cards.Count; i++)
+            AddCardInstanceLocation(cards[i], $"{zoneLabel}[{i}]", locationsByInstanceId, missingLocations);
+    }
+
+    private void AddCardInstanceLocation(
+        BaseCardData card,
+        string location,
+        Dictionary<string, List<string>> locationsByInstanceId,
+        List<string> missingLocations)
+    {
+        if (card == null)
+            return;
+
+        if (string.IsNullOrWhiteSpace(card.cardInstanceId))
+        {
+            missingLocations.Add($"{location} {card.id}/{card.name}");
+            return;
+        }
+
+        if (!locationsByInstanceId.TryGetValue(card.cardInstanceId, out List<string> locations))
+        {
+            locations = new List<string>();
+            locationsByInstanceId.Add(card.cardInstanceId, locations);
+        }
+
+        locations.Add($"{location} {card.id}/{card.name}");
     }
 
     private BattleFieldSlot FindBattleSlot(BattleSlotOwner owner, int x, int y)
@@ -1951,6 +2107,11 @@ public class BattleManager : MonoBehaviour
         return IsBattleBusy();
     }
 
+    public bool IsGameOverFromExternal()
+    {
+        return IsGameOver();
+    }
+
     public string GetBattleBusyReasonFromExternal()
     {
         return GetBattleBusyReason();
@@ -2441,6 +2602,227 @@ public class BattleManager : MonoBehaviour
         return targetPlayer.hand.IndexOf(card);
     }
 
+    public BaseCardData FindHandCardByInstanceId(BattleSlotOwner owner, string cardInstanceId)
+    {
+        int index = FindHandIndexByInstanceId(owner, cardInstanceId);
+        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(owner);
+
+        if (hand == null || index < 0 || index >= hand.Count)
+            return null;
+
+        return hand[index];
+    }
+
+    public int FindHandIndexByInstanceId(BattleSlotOwner owner, string cardInstanceId)
+    {
+        if (string.IsNullOrWhiteSpace(cardInstanceId))
+            return -1;
+
+        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(owner);
+        if (hand == null)
+            return -1;
+
+        for (int i = 0; i < hand.Count; i++)
+        {
+            BaseCardData card = hand[i];
+            if (card != null &&
+                string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    public BaseCardData FindCardByInstanceIdFromAnyKnownZone(
+        BattleSlotOwner perspectiveOrOwner,
+        string cardInstanceId)
+    {
+        if (string.IsNullOrWhiteSpace(cardInstanceId))
+            return null;
+
+        BaseCardData card = FindCardByInstanceIdInPlayerZones(myPlayer, cardInstanceId);
+        if (card != null)
+            return card;
+
+        card = FindCardByInstanceIdInPlayerZones(enemyPlayer, cardInstanceId);
+        if (card != null)
+            return card;
+
+        card = FindCardByInstanceIdInFieldSlots(myBattleSlots, cardInstanceId);
+        if (card != null)
+            return card;
+
+        return FindCardByInstanceIdInFieldSlots(enemyBattleSlots, cardInstanceId);
+    }
+
+    private BaseCardData FindCardByInstanceIdInPlayerZones(
+        BattlePlayerRuntime player,
+        string cardInstanceId)
+    {
+        if (player == null)
+            return null;
+
+        BaseCardData card = FindCardByInstanceIdInList(player.broadcastDeck, cardInstanceId);
+        if (card != null)
+            return card;
+
+        card = FindCardByInstanceIdInList(player.mainDeck, cardInstanceId);
+        if (card != null)
+            return card;
+
+        card = FindCardByInstanceIdInList(player.hand, cardInstanceId);
+        if (card != null)
+            return card;
+
+        card = FindCardByInstanceIdInList(player.restZone, cardInstanceId);
+        if (card != null)
+            return card;
+
+        if (player.idolCard != null &&
+            string.Equals(player.idolCard.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return player.idolCard;
+        }
+
+        return null;
+    }
+
+    private BaseCardData FindCardByInstanceIdInList(
+        List<BaseCardData> cards,
+        string cardInstanceId)
+    {
+        if (cards == null)
+            return null;
+
+        foreach (BaseCardData card in cards)
+        {
+            if (card != null &&
+                string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return card;
+            }
+        }
+
+        return null;
+    }
+
+    private BaseCardData FindCardByInstanceIdInFieldSlots(
+        List<BattleFieldSlot> slots,
+        string cardInstanceId)
+    {
+        if (slots == null)
+            return null;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null)
+                continue;
+
+            if (slot.broadcastCard != null &&
+                string.Equals(slot.broadcastCard.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return slot.broadcastCard;
+            }
+
+            if (slot.characterCard != null &&
+                string.Equals(slot.characterCard.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return slot.characterCard;
+            }
+
+            if (slot.contentCard != null &&
+                string.Equals(slot.contentCard.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return slot.contentCard;
+            }
+        }
+
+        return null;
+    }
+
+    public BattleFieldSlot FindFieldSlotBySlotId(string slotId)
+    {
+        return FindSlotById(slotId);
+    }
+
+    public BattleFieldSlot FindFieldSlotByCharacterInstanceId(BattleSlotOwner owner, string cardInstanceId)
+    {
+        if (string.IsNullOrWhiteSpace(cardInstanceId))
+            return null;
+
+        List<BattleFieldSlot> slots = GetBattleSlots(owner);
+        if (slots == null)
+            return null;
+
+        return slots.FirstOrDefault(slot =>
+            slot != null &&
+            slot.characterCard != null &&
+            string.Equals(slot.characterCard.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool TryResolveHandCardFromAction(
+        BattleAction action,
+        out BaseCardData card,
+        out int handIndex,
+        out string failReason)
+    {
+        card = null;
+        handIndex = -1;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "BattleAction이 비어 있습니다.";
+            return false;
+        }
+
+        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(action.actor);
+        if (hand == null)
+        {
+            failReason = "손패 정보를 찾을 수 없습니다.";
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(action.cardInstanceId))
+        {
+            handIndex = FindHandIndexByInstanceId(action.actor, action.cardInstanceId);
+            if (handIndex < 0)
+            {
+                failReason = $"손패에서 카드 instanceId를 찾을 수 없습니다. cardInstanceId={action.cardInstanceId}";
+                return false;
+            }
+
+            card = hand[handIndex];
+            if (card == null)
+            {
+                failReason = "손패 카드 데이터가 없습니다.";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (action.handIndex < 0 || action.handIndex >= hand.Count)
+        {
+            failReason = "유효하지 않은 손패 인덱스입니다.";
+            return false;
+        }
+
+        handIndex = action.handIndex;
+        card = hand[handIndex];
+
+        if (card == null)
+        {
+            failReason = "손패 카드 데이터가 없습니다.";
+            return false;
+        }
+
+        Debug.LogWarning($"[BattleAction] cardInstanceId가 없어 handIndex fallback을 사용합니다. actionType={action.actionType}, handIndex={action.handIndex}");
+        return true;
+    }
+
     public bool IsCardInHandAtIndexFromExternal(
         BattleSlotOwner owner,
         int handIndex,
@@ -2620,6 +3002,111 @@ public class BattleManager : MonoBehaviour
             return Array.Empty<BaseCardData>();
 
         return new List<BaseCardData>(targetPlayer.mainDeck);
+    }
+
+    public List<string> GetMainDeckOrderIds(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        List<string> orderIds = new List<string>();
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null)
+            return orderIds;
+
+        foreach (BaseCardData card in targetPlayer.mainDeck)
+        {
+            if (card == null)
+                continue;
+
+            orderIds.Add(!string.IsNullOrWhiteSpace(card.cardInstanceId)
+                ? card.cardInstanceId
+                : card.id);
+        }
+
+        return orderIds;
+    }
+
+    public bool ApplyMainDeckOrderFromExternal(
+        BattleSlotOwner owner,
+        List<string> orderedCardInstanceIds)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null || targetPlayer.mainDeck == null)
+        {
+            Debug.LogWarning($"[BattleActionResult] ApplyMainDeckOrder failed: player deck is null. owner={owner}");
+            return false;
+        }
+
+        if (orderedCardInstanceIds == null)
+        {
+            Debug.LogWarning("[BattleActionResult] ApplyMainDeckOrder failed: ordered ids are null.");
+            return false;
+        }
+
+        if (orderedCardInstanceIds.Count != targetPlayer.mainDeck.Count)
+        {
+            Debug.LogWarning($"[BattleActionResult] ApplyMainDeckOrder failed: count mismatch. owner={owner}, ids={orderedCardInstanceIds.Count}, deck={targetPlayer.mainDeck.Count}");
+            return false;
+        }
+
+        Dictionary<string, BaseCardData> cardsByInstanceId =
+            new Dictionary<string, BaseCardData>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (BaseCardData card in targetPlayer.mainDeck)
+        {
+            if (card == null || string.IsNullOrWhiteSpace(card.cardInstanceId))
+            {
+                Debug.LogWarning($"[BattleActionResult] ApplyMainDeckOrder failed: deck contains card without instance id. owner={owner}");
+                return false;
+            }
+
+            if (cardsByInstanceId.ContainsKey(card.cardInstanceId))
+            {
+                Debug.LogWarning($"[BattleActionResult] ApplyMainDeckOrder failed: duplicate deck card id. owner={owner}, cardInstanceId={card.cardInstanceId}");
+                return false;
+            }
+
+            cardsByInstanceId.Add(card.cardInstanceId, card);
+        }
+
+        HashSet<string> seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        List<BaseCardData> reorderedDeck = new List<BaseCardData>();
+
+        foreach (string cardInstanceId in orderedCardInstanceIds)
+        {
+            if (string.IsNullOrWhiteSpace(cardInstanceId))
+            {
+                Debug.LogWarning("[BattleActionResult] ApplyMainDeckOrder failed: ordered ids contain empty value.");
+                return false;
+            }
+
+            if (!seenIds.Add(cardInstanceId))
+            {
+                Debug.LogWarning($"[BattleActionResult] ApplyMainDeckOrder failed: duplicate ordered id. cardInstanceId={cardInstanceId}");
+                return false;
+            }
+
+            if (!cardsByInstanceId.TryGetValue(cardInstanceId, out BaseCardData card))
+            {
+                Debug.LogWarning($"[BattleActionResult] ApplyMainDeckOrder failed: unknown cardInstanceId={cardInstanceId}");
+                return false;
+            }
+
+            reorderedDeck.Add(card);
+        }
+
+        targetPlayer.mainDeck.Clear();
+        targetPlayer.mainDeck.AddRange(reorderedDeck);
+        RefreshAllUI();
+        Debug.Log($"[BattleActionResult] Applied main deck order. owner={owner}, count={reorderedDeck.Count}");
+        return true;
     }
 
     public bool RemoveCardFromMainDeckFromExternal(BattleSlotOwner owner, BaseCardData card)
@@ -4744,9 +5231,10 @@ public class BattleManager : MonoBehaviour
     public bool ExecuteUseContentFromAction(BattleAction action)
     {
         BaseCardData contentCard;
+        int resolvedHandIndex;
         string failReason;
 
-        if (!CanExecuteUseContentAction(action, out contentCard, out failReason))
+        if (!CanExecuteUseContentAction(action, out contentCard, out resolvedHandIndex, out failReason))
         {
             Debug.LogWarning($"[BattleAction] UseContent failed: {failReason}");
             SetSystemMessage(failReason);
@@ -4761,16 +5249,18 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        Debug.Log($"[BattleActionExecutor] Execute UseContent. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, effectRef={action.effectRef}, timing={action.effectTiming}");
-        return effectManager.ExecuteUseContentFromAction(contentCard, action.handIndex, action.effectRef, action.effectTiming);
+        Debug.Log($"[BattleActionExecutor] Execute UseContent. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, handIndex={action.handIndex}, resolvedHandIndex={resolvedHandIndex}, effectRef={action.effectRef}, timing={action.effectTiming}");
+        return effectManager.ExecuteUseContentFromAction(contentCard, resolvedHandIndex, action.effectRef, action.effectTiming);
     }
 
     private bool CanExecuteUseContentAction(
         BattleAction action,
         out BaseCardData contentCard,
+        out int resolvedHandIndex,
         out string failReason)
     {
         contentCard = null;
+        resolvedHandIndex = -1;
         failReason = "";
 
         if (action == null)
@@ -4819,17 +5309,8 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(action.actor);
-        if (hand == null || action.handIndex < 0 || action.handIndex >= hand.Count)
+        if (!TryResolveHandCardFromAction(action, out contentCard, out resolvedHandIndex, out failReason))
         {
-            failReason = "유효하지 않은 손패 인덱스입니다.";
-            return false;
-        }
-
-        contentCard = hand[action.handIndex];
-        if (contentCard == null)
-        {
-            failReason = "손패 카드 데이터가 없습니다.";
             return false;
         }
 
@@ -4868,7 +5349,7 @@ public class BattleManager : MonoBehaviour
 
         bool canUse = effectManager.CanUseContentActionFromExternal(
             contentCard,
-            action.handIndex,
+            resolvedHandIndex,
             action.effectRef,
             action.actor,
             action.effectTiming,
@@ -5303,9 +5784,10 @@ public class BattleManager : MonoBehaviour
     {
         BaseCardData card;
         BattleFieldSlot targetSlot;
+        int resolvedHandIndex;
         string failReason;
 
-        if (!CanExecuteSummonFaceUpAction(action, out card, out targetSlot, out failReason))
+        if (!CanExecuteSummonFaceUpAction(action, out card, out targetSlot, out resolvedHandIndex, out failReason))
         {
             Debug.LogWarning($"[BattleAction] SummonFaceUp failed: {failReason}");
             SetSystemMessage(failReason);
@@ -5320,7 +5802,7 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        Debug.Log($"[BattleActionExecutor] Execute SummonFaceUp. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        Debug.Log($"[BattleActionExecutor] Execute SummonFaceUp. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, handIndex={action.handIndex}, resolvedHandIndex={resolvedHandIndex}, targetSlot={action.targetSlotId}");
         return summonManager.ExecuteSummonFaceUpFromAction(card, targetSlot);
     }
 
@@ -5328,10 +5810,12 @@ public class BattleManager : MonoBehaviour
         BattleAction action,
         out BaseCardData card,
         out BattleFieldSlot targetSlot,
+        out int resolvedHandIndex,
         out string failReason)
     {
         card = null;
         targetSlot = null;
+        resolvedHandIndex = -1;
         failReason = "";
 
         if (action == null)
@@ -5370,17 +5854,8 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(action.actor);
-        if (hand == null || action.handIndex < 0 || action.handIndex >= hand.Count)
+        if (!TryResolveHandCardFromAction(action, out card, out resolvedHandIndex, out failReason))
         {
-            failReason = "유효하지 않은 손패 인덱스입니다.";
-            return false;
-        }
-
-        card = hand[action.handIndex];
-        if (card == null)
-        {
-            failReason = "손패 카드 데이터가 없습니다.";
             return false;
         }
 
@@ -5435,9 +5910,10 @@ public class BattleManager : MonoBehaviour
     {
         BaseCardData card;
         BattleFieldSlot targetSlot;
+        int resolvedHandIndex;
         string failReason;
 
-        if (!CanExecuteSummonFaceDownAction(action, out card, out targetSlot, out failReason))
+        if (!CanExecuteSummonFaceDownAction(action, out card, out targetSlot, out resolvedHandIndex, out failReason))
         {
             Debug.LogWarning($"[BattleAction] SummonFaceDown failed: {failReason}");
             SetSystemMessage(failReason);
@@ -5452,7 +5928,7 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        Debug.Log($"[BattleActionExecutor] Execute SummonFaceDown. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        Debug.Log($"[BattleActionExecutor] Execute SummonFaceDown. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, handIndex={action.handIndex}, resolvedHandIndex={resolvedHandIndex}, targetSlot={action.targetSlotId}");
         return summonManager.ExecuteSummonFaceDownFromAction(card, targetSlot);
     }
 
@@ -5460,10 +5936,12 @@ public class BattleManager : MonoBehaviour
         BattleAction action,
         out BaseCardData card,
         out BattleFieldSlot targetSlot,
+        out int resolvedHandIndex,
         out string failReason)
     {
         card = null;
         targetSlot = null;
+        resolvedHandIndex = -1;
         failReason = "";
 
         if (action == null)
@@ -5502,17 +5980,8 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        IReadOnlyList<BaseCardData> hand = GetHandCardsFromExternal(action.actor);
-        if (hand == null || action.handIndex < 0 || action.handIndex >= hand.Count)
+        if (!TryResolveHandCardFromAction(action, out card, out resolvedHandIndex, out failReason))
         {
-            failReason = "유효하지 않은 손패 인덱스입니다.";
-            return false;
-        }
-
-        card = hand[action.handIndex];
-        if (card == null)
-        {
-            failReason = "손패 카드 데이터가 없습니다.";
             return false;
         }
 
@@ -8629,10 +9098,11 @@ public class BattleManager : MonoBehaviour
             actor = BattleSlotOwner.My,
             actionType = BattleActionType.SummonFaceDown,
             handIndex = handIndex,
+            cardInstanceId = card != null ? card.cardInstanceId : "",
             targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
         };
 
-        Debug.Log($"[BattleAction] Created SummonFaceDown action. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        Debug.Log($"[BattleAction] Created SummonFaceDown action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
         return action;
     }
 
@@ -8646,10 +9116,11 @@ public class BattleManager : MonoBehaviour
             actor = BattleSlotOwner.My,
             actionType = BattleActionType.SummonFaceUp,
             handIndex = handIndex,
+            cardInstanceId = card != null ? card.cardInstanceId : "",
             targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
         };
 
-        Debug.Log($"[BattleAction] Created SummonFaceUp action. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
+        Debug.Log($"[BattleAction] Created SummonFaceUp action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, handIndex={action.handIndex}, targetSlot={action.targetSlotId}");
         return action;
     }
 
@@ -8660,10 +9131,11 @@ public class BattleManager : MonoBehaviour
             actionSequence = nextActionSequence++,
             actor = BattleSlotOwner.My,
             actionType = BattleActionType.FlipSummon,
+            cardInstanceId = sourceSlot != null && sourceSlot.characterCard != null ? sourceSlot.characterCard.cardInstanceId : "",
             sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : ""
         };
 
-        Debug.Log($"[BattleAction] Created FlipSummon action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}");
+        Debug.Log($"[BattleAction] Created FlipSummon action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, sourceSlot={action.sourceSlotId}");
         return action;
     }
 
@@ -8674,11 +9146,12 @@ public class BattleManager : MonoBehaviour
             actionSequence = nextActionSequence++,
             actor = BattleSlotOwner.My,
             actionType = BattleActionType.MoveCharacter,
+            cardInstanceId = sourceSlot != null && sourceSlot.characterCard != null ? sourceSlot.characterCard.cardInstanceId : "",
             sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
             targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
         };
 
-        Debug.Log($"[BattleAction] Created MoveCharacter action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+        Debug.Log($"[BattleAction] Created MoveCharacter action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
         return action;
     }
 
@@ -8689,11 +9162,12 @@ public class BattleManager : MonoBehaviour
             actionSequence = nextActionSequence++,
             actor = BattleSlotOwner.My,
             actionType = BattleActionType.StartCollab,
+            cardInstanceId = sourceSlot != null && sourceSlot.characterCard != null ? sourceSlot.characterCard.cardInstanceId : "",
             sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
             targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
         };
 
-        Debug.Log($"[BattleAction] Created StartCollab action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+        Debug.Log($"[BattleAction] Created StartCollab action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
         return action;
     }
 
@@ -8709,11 +9183,12 @@ public class BattleManager : MonoBehaviour
             actor = BattleSlotOwner.My,
             actionType = BattleActionType.UseContent,
             handIndex = handIndex,
+            cardInstanceId = card != null ? card.cardInstanceId : "",
             effectRef = effectRef ?? "",
             effectTiming = effectTiming
         };
 
-        Debug.Log($"[BattleAction] Created UseContent action. seq={action.actionSequence}, actor={action.actor}, handIndex={action.handIndex}, effectRef={action.effectRef}, timing={action.effectTiming}");
+        Debug.Log($"[BattleAction] Created UseContent action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, handIndex={action.handIndex}, effectRef={action.effectRef}, timing={action.effectTiming}");
         return action;
     }
 
@@ -8725,11 +9200,12 @@ public class BattleManager : MonoBehaviour
             actionSequence = nextActionSequence++,
             actor = BattleSlotOwner.My,
             actionType = BattleActionType.UseCharacterActive,
+            cardInstanceId = card != null ? card.cardInstanceId : "",
             sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
             effectRef = GetPrimaryActiveEffectRef(card, EffectTiming.CharacterActive)
         };
 
-        Debug.Log($"[BattleAction] Created UseCharacterActive action. seq={action.actionSequence}, actor={action.actor}, sourceSlot={action.sourceSlotId}, effectRef={action.effectRef}");
+        Debug.Log($"[BattleAction] Created UseCharacterActive action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, sourceSlot={action.sourceSlotId}, effectRef={action.effectRef}");
         return action;
     }
 
@@ -8741,10 +9217,11 @@ public class BattleManager : MonoBehaviour
             actionSequence = nextActionSequence++,
             actor = owner,
             actionType = BattleActionType.UseIdolActive,
+            cardInstanceId = idolCard != null ? idolCard.cardInstanceId : "",
             effectRef = GetPrimaryActiveEffectRef(idolCard, EffectTiming.IdolActive)
         };
 
-        Debug.Log($"[BattleAction] Created UseIdolActive action. seq={action.actionSequence}, actor={action.actor}, effectRef={action.effectRef}");
+        Debug.Log($"[BattleAction] Created UseIdolActive action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, effectRef={action.effectRef}");
         return action;
     }
 

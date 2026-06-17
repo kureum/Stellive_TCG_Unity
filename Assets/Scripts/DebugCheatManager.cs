@@ -267,6 +267,48 @@ public class DebugCheatManager : MonoBehaviour
                 success = ExecuteActionStateCheat(out message);
                 break;
 
+            case "battleactiontest":
+            case "actionserialization":
+                success = ExecuteBattleActionSerializationTestCheat(out message);
+                break;
+
+            case "actionidguide":
+                success = ExecuteActionIdGuideCheat(out message);
+                break;
+
+            case "actionidcheck":
+                success = ExecuteActionIdCheckCheat(out message);
+                break;
+
+            case "actionvalidatortest":
+                success = ExecuteActionValidatorTestCheat(out message);
+                break;
+
+            case "randomusageguide":
+                success = ExecuteRandomUsageGuideCheat(out message);
+                break;
+
+            case "actionresulttest":
+                success = ExecuteActionResultTestCheat(out message);
+                break;
+
+            case "hostrandompolicy":
+                success = ExecuteHostRandomPolicyCheat(out message);
+                break;
+
+            case "actionresultapplytest":
+                success = ExecuteActionResultApplyTestCheat(out message);
+                break;
+
+            case "actionpipelinetest":
+            case "networksimtest":
+                success = ExecuteActionPipelineTestCheat(out message);
+                break;
+
+            case "mockguestjoin":
+                success = ExecuteMockGuestJoinCheat(parts, out message);
+                break;
+
             case "summon":
                 success = ExecuteSummonCheat(parts, out message);
                 break;
@@ -411,6 +453,134 @@ public class DebugCheatManager : MonoBehaviour
         return true;
     }
 
+    private bool ExecuteBattleActionSerializationTestCheat(out string message)
+    {
+        if (battleManager == null)
+            battleManager = FindAnyObjectByType<BattleManager>();
+
+        bool result = BattleActionSerializationTester.RunAll(battleManager);
+        message = result
+            ? "BattleAction 직렬화 테스트가 통과했습니다. 자세한 결과는 로그를 확인하세요."
+            : "BattleAction 직렬화 테스트가 실패했습니다. 경고 로그를 확인하세요.";
+        return result;
+    }
+
+    private bool ExecuteActionIdGuideCheat(out string message)
+    {
+        BattleActionFieldUsageGuide.LogSummary();
+        message = "BattleAction ID 필드 사용 가이드를 로그로 출력했습니다.";
+        return true;
+    }
+
+    private bool ExecuteActionIdCheckCheat(out string message)
+    {
+        if (battleManager == null)
+            battleManager = FindAnyObjectByType<BattleManager>();
+
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
+        battleManager.DebugPrintCardInstanceIdState();
+        message = "현재 카드 instanceId 상태를 로그로 출력했습니다.";
+        return true;
+    }
+
+    private bool ExecuteActionValidatorTestCheat(out string message)
+    {
+        if (battleManager == null)
+            battleManager = FindAnyObjectByType<BattleManager>();
+
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
+        bool result = BattleActionValidatorTester.Run(battleManager);
+        message = result
+            ? "BattleAction Validator 테스트를 로그로 출력했습니다."
+            : "BattleAction Validator 테스트 중 예상과 다른 결과가 있습니다. 경고 로그를 확인하세요.";
+        return result;
+    }
+
+    private bool ExecuteRandomUsageGuideCheat(out string message)
+    {
+        BattleRandomUsageGuide.LogSummary();
+        message = "랜덤 사용 지점과 온라인 동기화 정책 가이드를 로그로 출력했습니다.";
+        return true;
+    }
+
+    private bool ExecuteActionResultTestCheat(out string message)
+    {
+        bool result = BattleActionResultTester.RunAll();
+        message = result
+            ? "BattleActionResult 직렬화 테스트가 통과했습니다. 자세한 결과는 로그를 확인하세요."
+            : "BattleActionResult 직렬화 테스트가 실패했습니다. 경고 로그를 확인하세요.";
+        return result;
+    }
+
+    private bool ExecuteHostRandomPolicyCheat(out string message)
+    {
+        BattleRandomUsageGuide.LogHostConfirmedPolicy();
+        message = "호스트 확정 랜덤 정책을 로그로 출력했습니다.";
+        return true;
+    }
+
+    private bool ExecuteActionResultApplyTestCheat(out string message)
+    {
+        if (battleManager == null)
+            battleManager = FindAnyObjectByType<BattleManager>();
+
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
+        bool result = BattleActionResultTester.RunApplyTests(battleManager);
+        message = result
+            ? "BattleActionResult 적용 테스트가 통과했습니다. 자세한 결과는 로그를 확인하세요."
+            : "BattleActionResult 적용 테스트가 실패했습니다. 경고 로그를 확인하세요.";
+        return result;
+    }
+
+    private bool ExecuteActionPipelineTestCheat(out string message)
+    {
+        if (battleManager == null)
+            battleManager = FindAnyObjectByType<BattleManager>();
+
+        if (battleManager == null)
+        {
+            message = "Cheat failed: BattleManager not found";
+            return false;
+        }
+
+        BattleActionPipelineTester tester = new BattleActionPipelineTester(battleManager);
+        tester.RunAllTests();
+        message = "BattleAction 송수신 시뮬레이션 테스트를 로그로 출력했습니다.";
+        return true;
+    }
+
+    private bool ExecuteMockGuestJoinCheat(string[] parts, out string message)
+    {
+        LobbyManager lobbyManager = FindAnyObjectByType<LobbyManager>();
+        if (lobbyManager == null)
+        {
+            message = "Cheat failed: LobbyManager not found";
+            return false;
+        }
+
+        string roomCode = parts != null && parts.Length > 1 ? parts[1] : "";
+        bool result = lobbyManager.DebugMockGuestJoin(roomCode);
+        message = result
+            ? "Mock guest join 처리 완료"
+            : "Mock guest join 실패";
+        return result;
+    }
+
     private bool TryParseTargetOwner(string value, out BattleSlotOwner owner)
     {
         owner = BattleSlotOwner.My;
@@ -451,7 +621,18 @@ public class DebugCheatManager : MonoBehaviour
             "audit\n" +
             "audit detail\n" +
             "unbusy\n" +
-            "actionstate";
+            "actionstate\n" +
+            "battleactiontest\n" +
+            "actionidguide\n" +
+            "actionidcheck\n" +
+            "actionvalidatortest\n" +
+            "randomusageguide\n" +
+            "actionresulttest\n" +
+            "hostrandompolicy\n" +
+            "actionresultapplytest\n" +
+            "actionpipelinetest\n" +
+            "networksimtest\n" +
+            "mockguestjoin ROOMCODE";
     }
 
     private void ExecuteBroadcastAutoSetupCheat()

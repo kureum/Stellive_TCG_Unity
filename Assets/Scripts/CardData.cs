@@ -13,6 +13,9 @@ public class CardDatabase
 [Serializable]
 public class BaseCardData
 {
+    // Runtime-only identifier assigned when a battle deck is instantiated.
+    // This distinguishes duplicate copies of the same card id for online actions.
+    public string cardInstanceId;
     public string id;
     public string name;
     public string kind;

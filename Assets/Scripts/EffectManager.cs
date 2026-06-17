@@ -730,7 +730,7 @@ public class EffectManager : MonoBehaviour
             {
                 int selectedIndex = safeOptions.IndexOf(selectedOption);
                 string selectedCardId = selectedOption != null && selectedOption.card != null
-                    ? selectedOption.card.id
+                    ? GetActionCardIdentifier(selectedOption.card)
                     : "";
 
                 if (selectedIndex < 0)
@@ -798,34 +798,10 @@ public class EffectManager : MonoBehaviour
             return false;
         }
 
-        if (action.selectedIndexes == null || action.selectedIndexes.Count != 1)
+        int selectedIndex;
+        if (!TryResolveSingleCardOptionIndex(action, out selectedIndex, out failReason))
         {
-            failReason = "카드 선택 인덱스가 1개가 아닙니다.";
             return false;
-        }
-
-        int selectedIndex = action.selectedIndexes[0];
-        if (pendingCardOptionSelection.options == null ||
-            selectedIndex < 0 ||
-            selectedIndex >= pendingCardOptionSelection.options.Count)
-        {
-            failReason = "카드 선택 인덱스가 후보 범위를 벗어났습니다.";
-            return false;
-        }
-
-        if (action.selectedCardIds != null && action.selectedCardIds.Count > 0)
-        {
-            BaseCardData candidateCard = pendingCardOptionSelection.options[selectedIndex] != null
-                ? pendingCardOptionSelection.options[selectedIndex].card
-                : null;
-            string candidateCardId = candidateCard != null ? candidateCard.id : "";
-
-            if (!string.IsNullOrWhiteSpace(action.selectedCardIds[0]) &&
-                !string.Equals(action.selectedCardIds[0], candidateCardId, StringComparison.OrdinalIgnoreCase))
-            {
-                failReason = "선택 카드 ID가 후보 카드와 일치하지 않습니다.";
-                return false;
-            }
         }
 
         return true;
@@ -841,7 +817,14 @@ public class EffectManager : MonoBehaviour
             return false;
         }
 
-        int selectedIndex = action.selectedIndexes[0];
+        int selectedIndex;
+        if (!TryResolveSingleCardOptionIndex(action, out selectedIndex, out failReason))
+        {
+            battleManager?.SetSystemMessageFromExternal(failReason);
+            Debug.LogWarning($"[BattleAction] SelectCardOption failed: {failReason}");
+            return false;
+        }
+
         CardQuestionOption selectedOption = pendingCardOptionSelection.options[selectedIndex];
         Action<CardQuestionOption> selectedAction = pendingCardOptionSelection.onSelected;
 
@@ -864,6 +847,87 @@ public class EffectManager : MonoBehaviour
     {
         failReason = "복수 카드 선택 UI는 아직 Action 경유 대기 상태가 없습니다.";
         return false;
+    }
+
+    private bool TryResolveSingleCardOptionIndex(
+        BattleAction action,
+        out int selectedIndex,
+        out string failReason)
+    {
+        selectedIndex = -1;
+        failReason = "";
+
+        if (pendingCardOptionSelection == null || pendingCardOptionSelection.options == null)
+        {
+            failReason = "대기 중인 카드 선택 후보가 없습니다.";
+            return false;
+        }
+
+        if (action.selectedCardIds != null && action.selectedCardIds.Count > 0)
+        {
+            string selectedCardIdentifier = action.selectedCardIds[0];
+            if (!string.IsNullOrWhiteSpace(selectedCardIdentifier))
+            {
+                for (int i = 0; i < pendingCardOptionSelection.options.Count; i++)
+                {
+                    BaseCardData candidateCard = pendingCardOptionSelection.options[i] != null
+                        ? pendingCardOptionSelection.options[i].card
+                        : null;
+
+                    if (MatchesActionCardIdentifier(candidateCard, selectedCardIdentifier))
+                    {
+                        selectedIndex = i;
+
+                        if (action.selectedIndexes != null &&
+                            action.selectedIndexes.Count > 0 &&
+                            action.selectedIndexes[0] != selectedIndex)
+                        {
+                            Debug.LogWarning($"[BattleAction] SelectCardOption selectedIndexes fallback differs from selectedCardIds. selectedCardIdIndex={selectedIndex}, selectedIndex={action.selectedIndexes[0]}");
+                        }
+
+                        return true;
+                    }
+                }
+
+                failReason = "선택 카드 ID가 후보 카드와 일치하지 않습니다.";
+                return false;
+            }
+        }
+
+        if (action.selectedIndexes == null || action.selectedIndexes.Count != 1)
+        {
+            failReason = "카드 선택 인덱스가 1개가 아닙니다.";
+            return false;
+        }
+
+        selectedIndex = action.selectedIndexes[0];
+        if (selectedIndex < 0 || selectedIndex >= pendingCardOptionSelection.options.Count)
+        {
+            failReason = "카드 선택 인덱스가 후보 범위를 벗어났습니다.";
+            return false;
+        }
+
+        Debug.LogWarning($"[BattleAction] selectedCardIds가 없어 selectedIndexes fallback을 사용합니다. selectedIndex={selectedIndex}");
+        return true;
+    }
+
+    private string GetActionCardIdentifier(BaseCardData card)
+    {
+        if (card == null)
+            return "";
+
+        return !string.IsNullOrWhiteSpace(card.cardInstanceId)
+            ? card.cardInstanceId
+            : card.id;
+    }
+
+    private bool MatchesActionCardIdentifier(BaseCardData card, string identifier)
+    {
+        if (card == null || string.IsNullOrWhiteSpace(identifier))
+            return false;
+
+        return string.Equals(card.cardInstanceId, identifier, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(card.id, identifier, StringComparison.OrdinalIgnoreCase);
     }
 
     public bool ExecuteSelectMultipleCardOptionsFromAction(BattleAction action)
@@ -2693,6 +2757,10 @@ public class EffectManager : MonoBehaviour
             return;
         }
 
+        // Online mode should not re-roll this random on non-host.
+        // Host should resolve selected hand card instance id and include it in
+        // BattleActionResult.resolvedRandomCardIds. Non-host should apply the
+        // provided cardInstanceId instead of calling Random.Range again.
         int randomHandIndex = UnityEngine.Random.Range(0, opponentHand.Count);
         BaseCardData selectedCard = opponentHand[randomHandIndex];
 

@@ -3,10 +3,13 @@ using UnityEngine;
 public class BattleActionExecutor
 {
     private readonly BattleManager battleManager;
+    private readonly BattleActionValidator validator;
 
     public BattleActionExecutor(BattleManager battleManager)
     {
         this.battleManager = battleManager;
+        if (battleManager != null)
+            validator = new BattleActionValidator(battleManager);
     }
 
     public bool ExecuteAction(BattleAction action)
@@ -23,6 +26,23 @@ public class BattleActionExecutor
         {
             Debug.LogWarning("[BattleActionExecutor] BattleManager is null");
             return false;
+        }
+
+        if (validator != null)
+        {
+            BattleActionValidationResult validationResult = validator.Validate(action);
+            if (validationResult == null || !validationResult.isValid)
+            {
+                string reason = validationResult != null
+                    ? validationResult.reason
+                    : "Validation result is null";
+                Debug.LogWarning($"[BattleActionExecutor] Validation failed. actionType={action.actionType}, reason={reason}");
+                return false;
+            }
+        }
+        else
+        {
+            Debug.LogWarning("[BattleActionExecutor] Validator is null. Execute without pre-validation.");
         }
 
         switch (action.actionType)
