@@ -11,6 +11,7 @@ public class LobbyManager : MonoBehaviour
 
     [Header("Room Code UI")]
     [SerializeField] private bool createMissingRoomUiAtRuntime = true;
+    [SerializeField] private bool handOffRoomUiToPhotonLobbyManager = true;
     [SerializeField] private Button codeInputButton;
     [SerializeField] private GameObject roomNumberPanel;
     [SerializeField] private TMP_InputField roomNumberInputField;
@@ -42,10 +43,19 @@ public class LobbyManager : MonoBehaviour
     private void Awake()
     {
         localUserId = $"local-{SystemInfo.deviceUniqueIdentifier}";
+        bool photonRoomFlowActive =
+            handOffRoomUiToPhotonLobbyManager &&
+            GetComponent("PhotonLobbyManager") != null;
+
         ResolvePresetButtonsIfNeeded();
-        ResolveRoomUiIfNeeded();
-        SetupRoomUi();
-        SetRoomState(LobbyRoomState.Idle);
+
+        if (!photonRoomFlowActive)
+        {
+            ResolveRoomUiIfNeeded();
+            SetupRoomUi();
+            SetRoomState(LobbyRoomState.Idle);
+        }
+
         BattleStartSettings.SetLocalTestMode();
         RefreshPresetButtonHighlights();
     }
