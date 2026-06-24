@@ -439,9 +439,22 @@ public class BattleManager : MonoBehaviour
         if (myPreset == null)
             return;
 
-        DeckPresetSaveData enemyPreset = LoadPreset(enemyPresetIndex);
-        if (enemyPreset == null)
-            return;
+        DeckPresetSaveData enemyPreset;
+        if (BattleStartSettings.IsOnlineBattle)
+        {
+            // OnlineBattleSession replaces the opponent idol with the actor-mapped remote deck info.
+            // The local preset is only a temporary runtime scaffold until later deck/runtime sync phases.
+            enemyPreset = myPreset;
+            Debug.Log(
+                "[OnlineBattleSession] 온라인 상대 런타임은 로컬 덱으로 임시 초기화합니다. " +
+                "상대 IdolSlot은 DeckInfoExchange 수신 후 교체됩니다.");
+        }
+        else
+        {
+            enemyPreset = LoadPreset(enemyPresetIndex);
+            if (enemyPreset == null)
+                return;
+        }
 
         if (!myPreset.isValidForPlay)
         {
@@ -450,7 +463,7 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (!enemyPreset.isValidForPlay)
+        if (!BattleStartSettings.IsOnlineBattle && !enemyPreset.isValidForPlay)
         {
             SetSystemMessage($"상대 덱은 아직 미완성 덱입니다.\n{enemyPreset.validationMessage}");
             Debug.LogWarning($"상대 미완성 덱으로 배틀을 시작할 수 없습니다: {enemyPreset.validationMessage}");
@@ -755,6 +768,7 @@ public class BattleManager : MonoBehaviour
         }
 
         SetupRestZoneButtons();
+        ConfigureBroadcastButtonsForLocalPlayer();
     }
 
     private void StartBroadcastSetupPhase(string myDeckName, string enemyDeckName)
@@ -830,12 +844,23 @@ public class BattleManager : MonoBehaviour
             if (slot == null)
                 continue;
 
-            bool canPlace =
-                currentPhase == BattlePhase.BroadcastSetup &&
-                currentSetupSide == BattlePlayerSide.Enemy &&
-                CanPlaceBroadcast(BattlePlayerSide.Enemy, slot);
+            slot.SetSetupButtonVisible(false);
+        }
+    }
 
-            slot.SetSetupButtonVisible(canPlace);
+    private void ConfigureBroadcastButtonsForLocalPlayer()
+    {
+        HideOpponentBroadcastControls();
+    }
+
+    private void HideOpponentBroadcastControls()
+    {
+        foreach (BattleFieldSlot slot in enemyBattleSlots)
+        {
+            if (slot == null)
+                continue;
+
+            slot.SetSetupButtonVisible(false);
         }
     }
 
@@ -1261,6 +1286,12 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
+        if (currentSetupSide != BattlePlayerSide.My ||
+            slot.owner != BattleSlotOwner.My)
+        {
+            return;
+        }
+
         if (!CanPlaceBroadcast(currentSetupSide, slot))
         {
             SetSystemMessage("이 슬롯에는 방송 카드를 설치할 수 없습니다.");
@@ -1302,6 +1333,13 @@ public class BattleManager : MonoBehaviour
 
     private void OpenBroadcastSelectPanel(BattlePlayerSide side, BattleFieldSlot targetSlot)
     {
+        if (side != BattlePlayerSide.My ||
+            targetSlot == null ||
+            targetSlot.owner != BattleSlotOwner.My)
+        {
+            return;
+        }
+
         BattlePlayerRuntime player = GetPlayer(side);
 
         if (player == null)
@@ -1423,6 +1461,14 @@ public class BattleManager : MonoBehaviour
         if (selectedBroadcastTargetSlot == null)
         {
             SetSystemMessage("방송 카드를 설치할 슬롯이 선택되어 있지 않습니다.");
+            return;
+        }
+
+        if (currentSetupSide != BattlePlayerSide.My ||
+            selectedBroadcastTargetSlot.owner != BattleSlotOwner.My)
+        {
+            CloseBroadcastSelectPanel();
+            selectedBroadcastTargetSlot = null;
             return;
         }
 
@@ -2120,6 +2166,53 @@ public class BattleManager : MonoBehaviour
     public Sprite LoadCardSpriteFromExternal(BaseCardData card)
     {
         return LoadCardSprite(card);
+    }
+
+    public bool TryApplyOnlineIdolCardsFromExternal(
+        string localIdolCardId,
+        string remoteIdolCardId)
+    {
+        if (!BattleStartSettings.IsOnlineBattle ||
+            myPlayer == null ||
+            enemyPlayer == null ||
+            allCards == null ||
+            allCards.Count == 0)
+        {
+            return false;
+        }
+
+        BaseCardData localSourceCard = FindCardById(localIdolCardId);
+        BaseCardData remoteSourceCard = FindCardById(remoteIdolCardId);
+
+        if (!(localSourceCard is IdolCardData) || !(remoteSourceCard is IdolCardData))
+        {
+            Debug.LogWarning(
+                $"[OnlineBattleSession] IdolSlot 적용 실패. " +
+                $"localId={localIdolCardId}, remoteId={remoteIdolCardId}");
+            return false;
+        }
+
+        myPlayer.idolCard = CreateRuntimeCardInstance(localSourceCard, BattleSlotOwner.My.ToString());
+        enemyPlayer.idolCard = CreateRuntimeCardInstance(remoteSourceCard, BattleSlotOwner.Enemy.ToString());
+
+        SetZoneCardVisual(
+            myIdolSlot,
+            myPlayer.idolCard,
+            false,
+            cardToSelect => SelectCard(cardToSelect),
+            false,
+            cardToActivate => RequestIdolActive(BattleSlotOwner.My));
+
+        SetZoneCardVisual(
+            enemyIdolSlot,
+            enemyPlayer.idolCard,
+            false,
+            cardToSelect => SelectCard(cardToSelect),
+            true);
+
+        SetZoneLabel(myIdolSlot, myPlayer.idolCard.name);
+        SetZoneLabel(enemyIdolSlot, enemyPlayer.idolCard.name);
+        return true;
     }
 
     public Sprite GetCardBackSpriteFromExternal()

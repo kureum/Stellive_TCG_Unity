@@ -1,6 +1,5 @@
 using System;
-using System.Collections.Generic;
-using ExitGames.Client.Photon;
+using System.Collections;
 using Photon.Pun;
 using Photon.Realtime;
 using TMPro;
@@ -8,11 +7,23 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
-public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
+public class PhotonLobbyManager : MonoBehaviourPunCallbacks
 {
-    private const byte HelloEventCode = 1;
     private const int RoomCodeLength = 6;
     private const int MaxCreateRoomAttempts = 5;
+    private const string BattleSceneName = "BattleScene";
+    private const string HostWaitingMessage = "상대의 입장을 기다리고 있습니다.";
+    private const string OpponentEnteredMessage = "상대가 입장했습니다.";
+    private const string StartingBattleMessage = "배틀을 시작합니다.";
+    private const float BattleStartMessageDuration = 0.5f;
+
+    private enum RoomPanelMode
+    {
+        Closed,
+        Join,
+        HostWaiting,
+        GuestInRoom
+    }
 
     [Header("Photon")]
     [SerializeField] private string gameVersion = "stellive-tcg-lobby-v1";
@@ -29,29 +40,31 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
     [SerializeField] private TMP_Text roomCodeText;
     [SerializeField] private TMP_Text roleText;
     [SerializeField] private TMP_Text playerCountText;
-    [SerializeField] private TMP_Text networkLogText;
 
-    [Header("Online Test Buttons")]
+    [Header("Online Room Buttons")]
     [SerializeField] private Button createRoomButton;
-    [SerializeField] private Button sendHelloButton;
     [SerializeField] private bool createMissingOnlineButtonsAtRuntime = true;
 
     [Header("Lobby Buttons To Lock In Room")]
     [SerializeField] private Button[] lobbyButtonsToLock;
 
-    private readonly List<string> logLines = new List<string>();
     private string pendingCreateRoomCode = "";
     private int createRoomAttemptCount;
     private bool isJoiningRoom;
+    private bool isCreateRoomPending;
+    private bool cancelCreateRoomRequested;
+    private bool isLoadingBattleScene;
+    private bool hasStartedBattleLoadAsHost;
+    private RoomPanelMode roomPanelMode = RoomPanelMode.Closed;
 
     private void Awake()
     {
+        PhotonNetwork.AutomaticallySyncScene = true;
         ResolveReferencesIfNeeded();
         CreateMissingOnlineButtonsIfNeeded();
         ConfigureInputField();
         WireButtons();
-        SetRoomPanelActive(false);
-        SetRoomControls(false, false, true);
+        ResetRoomPanel();
         SetLobbyButtonsInteractable(true);
         UpdateLobbyStatusText("Photon 연결 준비 중...");
     }
@@ -81,7 +94,7 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
     {
         EnsureNickName();
 
-        PhotonNetwork.AutomaticallySyncScene = false;
+        PhotonNetwork.AutomaticallySyncScene = true;
         PhotonNetwork.GameVersion = gameVersion;
 
         if (PhotonNetwork.IsConnectedAndReady)
@@ -96,6 +109,15 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
     public void CreateRoom()
     {
+        if (isCreateRoomPending)
+        {
+            UpdateLobbyStatusText(
+                cancelCreateRoomRequested
+                    ? "이전 방 생성 취소를 처리 중입니다."
+                    : "방을 생성 중입니다.");
+            return;
+        }
+
         if (!PhotonNetwork.IsConnectedAndReady)
         {
             UpdateLobbyStatusText("Photon 연결이 아직 준비되지 않았습니다.");
@@ -110,11 +132,15 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
         }
 
         createRoomAttemptCount = 0;
+        cancelCreateRoomRequested = false;
         TryCreateRoomWithNewCode();
     }
 
     public void JoinRoom()
     {
+        if (roomPanelMode != RoomPanelMode.Join)
+            return;
+
         string roomCode = roomNumberInputField != null ? roomNumberInputField.text.Trim() : "";
 
         if (!IsValidRoomCode(roomCode))
@@ -144,6 +170,9 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
     public void LeaveRoom()
     {
+        if (isLoadingBattleScene)
+            return;
+
         if (PhotonNetwork.InRoom)
         {
             UpdateRoomStateText("방에서 나가는 중...");
@@ -151,30 +180,16 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
             return;
         }
 
-        ResetToLobbyUi("로비 대기 중입니다.");
-    }
-
-    public void SendHello()
-    {
-        if (!PhotonNetwork.InRoom)
+        if (isCreateRoomPending)
         {
-            UpdateLobbyStatusText("hello를 보내려면 먼저 방에 입장해야 합니다.");
+            cancelCreateRoomRequested = true;
+            ResetRoomPanel();
+            SetLobbyButtonsInteractable(true);
+            UpdateLobbyStatusText("방 생성을 취소하고 로비로 돌아갑니다.");
             return;
         }
 
-        string message = $"{PhotonNetwork.NickName}: hello";
-        RaiseEventOptions eventOptions = new RaiseEventOptions
-        {
-            Receivers = ReceiverGroup.All
-        };
-
-        bool sent = PhotonNetwork.RaiseEvent(
-            HelloEventCode,
-            message,
-            eventOptions,
-            SendOptions.SendReliable);
-
-        AppendNetworkLog(sent ? $"Sent {message}" : "hello 전송 실패");
+        ResetToLobbyUi("로비 대기 중입니다.");
     }
 
     public void UpdateLobbyStatusText(string message)
@@ -204,7 +219,25 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
         if (playerCountText != null)
             playerCountText.text = $"{playerCount}/{maxPlayers}";
 
-        UpdateRoomStateText($"RoomCode {roomCode} | {role} | {playerCount}/{maxPlayers}");
+        if (isLoadingBattleScene)
+        {
+            SetRoomControls(false, false, false);
+            SetStatusText(StartingBattleMessage);
+            return;
+        }
+
+        if (PhotonNetwork.IsMasterClient)
+        {
+            ShowHostWaitingPanel(roomCode);
+            SetStatusText(playerCount >= maxPlayers ? OpponentEnteredMessage : HostWaitingMessage);
+        }
+        else
+        {
+            roomPanelMode = RoomPanelMode.GuestInRoom;
+            SetRoomPanelActive(true);
+            SetRoomControls(false, false, true);
+            UpdateRoomStateText($"RoomCode {roomCode} | {role} | {playerCount}/{maxPlayers}");
+        }
     }
 
     public void UpdateRoomStateText(string message)
@@ -230,44 +263,79 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
     public override void OnCreatedRoom()
     {
-        UpdateRoomStateText($"방 생성 완료. RoomCode {PhotonNetwork.CurrentRoom.Name}. 상대 입장 대기 중...");
+        isCreateRoomPending = false;
+
+        if (cancelCreateRoomRequested)
+        {
+            if (PhotonNetwork.InRoom)
+                PhotonNetwork.LeaveRoom();
+            return;
+        }
+
+        string roomCode = PhotonNetwork.CurrentRoom != null
+            ? PhotonNetwork.CurrentRoom.Name
+            : pendingCreateRoomCode;
+
+        ShowHostWaitingPanel(roomCode);
     }
 
     public override void OnCreateRoomFailed(short returnCode, string message)
     {
+        if (cancelCreateRoomRequested)
+        {
+            isCreateRoomPending = false;
+            pendingCreateRoomCode = "";
+            ResetToLobbyUi("방 생성을 취소했습니다. 로비 대기 중입니다.");
+            return;
+        }
+
         if (createRoomAttemptCount < MaxCreateRoomAttempts)
         {
-            AppendNetworkLog($"RoomCode 중복 또는 생성 실패. 재시도 중... ({returnCode}: {message})");
+            LogNetworkState($"RoomCode 중복 또는 생성 실패. 재시도 중... ({returnCode}: {message})");
             TryCreateRoomWithNewCode();
             return;
         }
 
+        isCreateRoomPending = false;
         pendingCreateRoomCode = "";
-        SetLobbyButtonsInteractable(true);
-        UpdateLobbyStatusText($"방 생성 실패: {message} ({returnCode})");
+        ResetToLobbyUi($"방 생성 실패: {message} ({returnCode})");
     }
 
     public override void OnJoinedRoom()
     {
         isJoiningRoom = false;
+        isCreateRoomPending = false;
 
-        SetRoomPanelActive(true);
-        SetRoomControls(false, false, true);
-        SetLobbyButtonsInteractable(false);
+        if (cancelCreateRoomRequested)
+        {
+            if (PhotonNetwork.InRoom)
+                PhotonNetwork.LeaveRoom();
+            return;
+        }
 
         if (PhotonNetwork.IsMasterClient)
+        {
             BattleStartSettings.SetOnlineHostMode(PhotonNetwork.CurrentRoom.Name);
+            ShowHostWaitingPanel(PhotonNetwork.CurrentRoom.Name);
+        }
         else
+        {
             BattleStartSettings.SetOnlineClientMode(PhotonNetwork.CurrentRoom.Name);
+            roomPanelMode = RoomPanelMode.GuestInRoom;
+            SetRoomPanelActive(true);
+            SetRoomControls(false, false, true);
+        }
 
-        AppendNetworkLog($"Joined room {PhotonNetwork.CurrentRoom.Name}");
+        SetLobbyButtonsInteractable(false);
+        LogNetworkState($"Joined room {PhotonNetwork.CurrentRoom.Name}");
         UpdateRoomStateText();
+        TryStartBattleWhenRoomReady();
     }
 
     public override void OnJoinRoomFailed(short returnCode, string message)
     {
         isJoiningRoom = false;
-        SetRoomControls(true, true, true);
+        SetRoomPanelModeForJoin(false);
         UpdateLobbyStatusText($"방 입장 실패: {message} ({returnCode})");
     }
 
@@ -276,48 +344,147 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
         BattleStartSettings.ClearOnlineSettings();
         pendingCreateRoomCode = "";
         isJoiningRoom = false;
+        isCreateRoomPending = false;
+        cancelCreateRoomRequested = false;
+        isLoadingBattleScene = false;
+        hasStartedBattleLoadAsHost = false;
         ResetToLobbyUi("방에서 나왔습니다. 로비 대기 중입니다.");
     }
 
     public override void OnPlayerEnteredRoom(Player newPlayer)
     {
-        AppendNetworkLog($"{newPlayer.NickName} entered room");
+        LogNetworkState($"{newPlayer.NickName} entered room");
         UpdateRoomStateText();
+        TryStartBattleWhenRoomReady();
     }
 
     public override void OnPlayerLeftRoom(Player otherPlayer)
     {
-        AppendNetworkLog($"{otherPlayer.NickName} left room");
+        LogNetworkState($"{otherPlayer.NickName} left room");
+
+        if (PhotonNetwork.CurrentRoom == null || PhotonNetwork.CurrentRoom.PlayerCount < 2)
+        {
+            SetLoadingBattleSceneState(false);
+            hasStartedBattleLoadAsHost = false;
+
+            if (PhotonNetwork.IsMasterClient && PhotonNetwork.CurrentRoom != null)
+                PhotonNetwork.CurrentRoom.IsOpen = true;
+        }
+
         UpdateRoomStateText();
     }
 
     public override void OnMasterClientSwitched(Player newMasterClient)
     {
-        AppendNetworkLog($"MasterClient switched to {newMasterClient.NickName}");
+        LogNetworkState($"MasterClient switched to {newMasterClient.NickName}");
         UpdateRoomStateText();
+        TryStartBattleWhenRoomReady();
     }
 
     public override void OnDisconnected(DisconnectCause cause)
     {
         BattleStartSettings.ClearOnlineSettings();
+        pendingCreateRoomCode = "";
+        isJoiningRoom = false;
+        isCreateRoomPending = false;
+        cancelCreateRoomRequested = false;
+        isLoadingBattleScene = false;
+        hasStartedBattleLoadAsHost = false;
+        ResetRoomPanel();
         SetLobbyButtonsInteractable(true);
-        SetRoomControls(false, false, true);
         UpdateLobbyStatusText($"Photon 연결 해제: {cause}");
     }
 
-    public void OnEvent(EventData photonEvent)
+    private void TryStartBattleWhenRoomReady()
     {
-        if (photonEvent.Code != HelloEventCode)
+        if (!PhotonNetwork.InRoom ||
+            PhotonNetwork.CurrentRoom == null ||
+            PhotonNetwork.CurrentRoom.PlayerCount != 2)
+        {
+            return;
+        }
+
+        bool enteredLoadingState = !isLoadingBattleScene;
+        if (enteredLoadingState)
+        {
+            SetStatusText(OpponentEnteredMessage);
+            SetLoadingBattleSceneState(true);
+        }
+
+        if (PhotonNetwork.IsMasterClient)
+            StartOnlineBattleAsHost();
+        else if (enteredLoadingState)
+            StartCoroutine(ShowStartingBattleMessageAfterDelay());
+    }
+
+    private void StartOnlineBattleAsHost()
+    {
+        if (!PhotonNetwork.IsMasterClient ||
+            !PhotonNetwork.InRoom ||
+            PhotonNetwork.CurrentRoom == null ||
+            hasStartedBattleLoadAsHost)
+        {
+            return;
+        }
+
+        hasStartedBattleLoadAsHost = true;
+        SetRoomClosedForBattleStart();
+        StartCoroutine(LoadBattleSceneAfterStatusUpdate());
+    }
+
+    private void SetRoomClosedForBattleStart()
+    {
+        if (PhotonNetwork.CurrentRoom == null)
             return;
 
-        string message = photonEvent.CustomData as string ?? photonEvent.CustomData?.ToString() ?? "";
-        AppendNetworkLog($"Received {message}");
+        PhotonNetwork.CurrentRoom.IsOpen = false;
+        PhotonNetwork.CurrentRoom.IsVisible = false;
+    }
+
+    private void SetLoadingBattleSceneState(bool loading)
+    {
+        isLoadingBattleScene = loading;
+        SetRoomControls(false, false, !loading);
+        SetLobbyButtonsInteractable(false);
+    }
+
+    private IEnumerator LoadBattleSceneAfterStatusUpdate()
+    {
+        yield return new WaitForSecondsRealtime(BattleStartMessageDuration);
+
+        if (!PhotonNetwork.IsMasterClient ||
+            !PhotonNetwork.InRoom ||
+            PhotonNetwork.CurrentRoom == null ||
+            PhotonNetwork.CurrentRoom.PlayerCount != 2)
+        {
+            SetLoadingBattleSceneState(false);
+            hasStartedBattleLoadAsHost = false;
+
+            if (PhotonNetwork.IsMasterClient && PhotonNetwork.CurrentRoom != null)
+                PhotonNetwork.CurrentRoom.IsOpen = true;
+
+            UpdateRoomStateText();
+            yield break;
+        }
+
+        SetStatusText(StartingBattleMessage);
+        yield return null;
+        PhotonNetwork.LoadLevel(BattleSceneName);
+    }
+
+    private IEnumerator ShowStartingBattleMessageAfterDelay()
+    {
+        yield return new WaitForSecondsRealtime(BattleStartMessageDuration);
+
+        if (isLoadingBattleScene && PhotonNetwork.InRoom)
+            SetStatusText(StartingBattleMessage);
     }
 
     private void TryCreateRoomWithNewCode()
     {
         createRoomAttemptCount++;
         pendingCreateRoomCode = GenerateRoomCode();
+        isCreateRoomPending = true;
 
         RoomOptions roomOptions = new RoomOptions
         {
@@ -327,9 +494,7 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
         };
 
         SetLobbyButtonsInteractable(false);
-        SetRoomPanelActive(true);
-        SetRoomControls(false, false, true);
-        UpdateLobbyStatusText($"RoomCode {pendingCreateRoomCode} 생성 중...");
+        ShowHostWaitingPanel(pendingCreateRoomCode);
         PhotonNetwork.CreateRoom(pendingCreateRoomCode, roomOptions);
     }
 
@@ -346,23 +511,14 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
     private void OpenJoinRoomPanel()
     {
-        SetRoomPanelActive(true);
-        SetRoomControls(true, true, true);
-
-        if (roomNumberInputField != null)
-        {
-            roomNumberInputField.text = "";
-            roomNumberInputField.ActivateInputField();
-            roomNumberInputField.Select();
-        }
-
-        UpdateLobbyStatusText("입장할 6자리 RoomCode를 입력하세요.");
+        ShowJoinRoomPanel();
     }
 
     private void ResetToLobbyUi(string message)
     {
-        SetRoomPanelActive(false);
-        SetRoomControls(true, true, true);
+        isLoadingBattleScene = false;
+        hasStartedBattleLoadAsHost = false;
+        ResetRoomPanel();
         SetLobbyButtonsInteractable(true);
 
         if (roomCodeText != null)
@@ -375,6 +531,62 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
             playerCountText.text = "";
 
         UpdateLobbyStatusText(message);
+    }
+
+    private void ShowHostWaitingPanel(string roomCode)
+    {
+        SetRoomPanelModeForHostWaiting(roomCode);
+        SetRoomPanelActive(true);
+    }
+
+    private void ShowJoinRoomPanel()
+    {
+        SetRoomPanelActive(true);
+        SetRoomPanelModeForJoin(true);
+        UpdateLobbyStatusText("입장할 6자리 RoomCode를 입력하세요.");
+    }
+
+    private void ResetRoomPanel()
+    {
+        roomPanelMode = RoomPanelMode.Closed;
+
+        if (roomNumberInputField != null)
+            roomNumberInputField.text = "";
+
+        SetRoomControls(true, true, true);
+        SetRoomPanelActive(false);
+    }
+
+    private void SetRoomPanelModeForHostWaiting(string roomCode)
+    {
+        roomPanelMode = RoomPanelMode.HostWaiting;
+
+        if (roomNumberInputField != null)
+            roomNumberInputField.text = roomCode ?? "";
+
+        SetRoomControls(false, false, true);
+        SetStatusText(HostWaitingMessage);
+    }
+
+    private void SetRoomPanelModeForJoin(bool clearInput)
+    {
+        roomPanelMode = RoomPanelMode.Join;
+
+        if (roomNumberInputField != null)
+        {
+            if (clearInput)
+                roomNumberInputField.text = "";
+
+            roomNumberInputField.interactable = true;
+
+            if (clearInput)
+            {
+                roomNumberInputField.ActivateInputField();
+                roomNumberInputField.Select();
+            }
+        }
+
+        SetRoomControls(true, true, true);
     }
 
     private void ResolveReferencesIfNeeded()
@@ -400,9 +612,6 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
             roomGuideText = FindSceneComponent<TMP_Text>("RoomGuideText")
                 ?? FindSceneComponent<TMP_Text>("RoomGuideText (TMP)");
 
-        if (networkLogText == null)
-            networkLogText = FindSceneComponent<TMP_Text>("NetworkLogText");
-
         if (roomCodeText == null)
             roomCodeText = FindSceneComponent<TMP_Text>("RoomCodeText");
 
@@ -414,9 +623,6 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
         if (createRoomButton == null)
             createRoomButton = FindSceneComponent<Button>("CreateRoomButton");
-
-        if (sendHelloButton == null)
-            sendHelloButton = FindSceneComponent<Button>("SendHelloButton");
 
         if (lobbyButtonsToLock == null || lobbyButtonsToLock.Length == 0)
         {
@@ -439,8 +645,6 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
             return;
 
         Transform gameRoomPanel = FindSceneTransform("GameRoomPanel");
-        Transform roomPanel = roomNumberPanel != null ? roomNumberPanel.transform : null;
-
         if (createRoomButton == null && gameRoomPanel != null)
         {
             createRoomButton = CreateRuntimeButton(
@@ -451,26 +655,6 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
                 new Vector2(333f, 70f));
         }
 
-        if (sendHelloButton == null && roomPanel != null)
-        {
-            sendHelloButton = CreateRuntimeButton(
-                roomPanel,
-                "SendHelloButton",
-                "hello",
-                new Vector2(0f, -108f),
-                new Vector2(180f, 44f));
-        }
-
-        if (networkLogText == null && roomPanel != null)
-        {
-            networkLogText = CreateRuntimeText(
-                roomPanel,
-                "NetworkLogText",
-                "",
-                new Vector2(0f, -154f),
-                new Vector2(900f, 64f),
-                22f);
-        }
     }
 
     private void ConfigureInputField()
@@ -511,11 +695,6 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
             roomCancelButton.onClick.AddListener(LeaveRoom);
         }
 
-        if (sendHelloButton != null)
-        {
-            sendHelloButton.onClick.RemoveListener(SendHello);
-            sendHelloButton.onClick.AddListener(SendHello);
-        }
     }
 
     private void UnwireButtons()
@@ -531,9 +710,6 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
 
         if (roomCancelButton != null)
             roomCancelButton.onClick.RemoveListener(LeaveRoom);
-
-        if (sendHelloButton != null)
-            sendHelloButton.onClick.RemoveListener(SendHello);
 
         if (roomNumberInputField != null)
             roomNumberInputField.onValueChanged.RemoveListener(OnRoomCodeInputValueChanged);
@@ -614,10 +790,7 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
             numberEnterButton.interactable = enterInteractable && !isJoiningRoom;
 
         if (roomCancelButton != null)
-            roomCancelButton.interactable = cancelInteractable;
-
-        if (sendHelloButton != null)
-            sendHelloButton.interactable = PhotonNetwork.InRoom;
+            roomCancelButton.interactable = cancelInteractable && !isLoadingBattleScene;
     }
 
     private void SetLobbyButtonsInteractable(bool interactable)
@@ -648,19 +821,10 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks, IOnEventCallback
         Debug.Log($"[PhotonLobby] {message}");
     }
 
-    private void AppendNetworkLog(string message)
+    private void LogNetworkState(string message)
     {
         if (string.IsNullOrWhiteSpace(message))
             return;
-
-        logLines.Add(message);
-        while (logLines.Count > 5)
-            logLines.RemoveAt(0);
-
-        if (networkLogText != null)
-            networkLogText.text = string.Join("\n", logLines);
-        else
-            SetStatusText(message);
 
         Debug.Log($"[PhotonLobby] {message}");
     }
