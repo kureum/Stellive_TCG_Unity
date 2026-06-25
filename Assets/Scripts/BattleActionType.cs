@@ -1,6 +1,8 @@
 public enum BattleActionType
 {
     EndTurn,
+    PlaceBroadcast,
+    StartMainGame,
     SummonFaceUp,
     SummonFaceDown,
     FlipSummon,

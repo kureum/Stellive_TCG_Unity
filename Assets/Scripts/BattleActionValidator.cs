@@ -21,6 +21,9 @@ public class BattleActionValidator
             case BattleActionType.EndTurn:
                 return ValidateEndTurn(action);
 
+            case BattleActionType.PlaceBroadcast:
+                return ValidatePlaceBroadcast(action);
+
             case BattleActionType.SummonFaceDown:
                 return ValidateSummonFaceDown(action);
 
@@ -96,6 +99,20 @@ public class BattleActionValidator
             return BattleActionValidationResult.Invalid("Cannot end turn for a player that does not have action priority.");
 
         return BattleActionValidationResult.Valid();
+    }
+
+    private BattleActionValidationResult ValidatePlaceBroadcast(BattleAction action)
+    {
+        if (battleManager.CanPlaceBroadcastFromExternal(
+                action.actor,
+                action.cardInstanceId,
+                action.targetSlotId,
+                out string failReason))
+        {
+            return BattleActionValidationResult.Valid();
+        }
+
+        return BattleActionValidationResult.Invalid(failReason);
     }
 
     private BattleActionValidationResult ValidateSummonFaceDown(BattleAction action)

@@ -12,9 +12,10 @@ using UnityEngine;
 
 public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
 {
+    public static OnlineBattleSession Instance { get; private set; }
+
     public const byte DeckInfoExchangeEventCode = 20;
 
-    // Reserved for the next online milestones. They are intentionally unused in this step.
     public const byte BattleActionRequestEventCode = 21;
     public const byte BattleActionResultEventCode = 22;
 
@@ -32,6 +33,8 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
     public NetworkDeckInfoDto LocalDeckInfo { get; private set; }
     public NetworkDeckInfoDto RemoteDeckInfo { get; private set; }
     public bool AreBothDeckInfosReady => LocalDeckInfo != null && RemoteDeckInfo != null;
+    public bool IsOnlineBattleActive => isOnlineBattleActive;
+    public bool WasOnlineBattleSession { get; private set; }
 
     private readonly Dictionary<int, NetworkDeckInfoDto> deckInfoByActorNumber =
         new Dictionary<int, NetworkDeckInfoDto>();
@@ -40,9 +43,21 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
     private bool hasAppliedIdolSlots;
     private bool isApplyingIdolSlots;
     private bool hasRespondedToRemoteDeckInfo;
+    private BattleActionResolver actionResolver;
+    private BattleActionResultApplier resultApplier;
+    private bool isOnlineBattleActive;
+    private bool isEndingOnlineBattle;
+    private bool hasBroadcastStartMainGameResult;
+    private int authoritativeBroadcastSetupFirstActorNumber;
 
     private string SaveFilePath =>
         Path.Combine(Application.persistentDataPath, "deck_presets.json");
+
+    private void Awake()
+    {
+        Instance = this;
+        WasOnlineBattleSession = BattleStartSettings.IsOnlineBattle;
+    }
 
     private IEnumerator Start()
     {
@@ -59,11 +74,16 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             yield break;
         }
 
+        isOnlineBattleActive = true;
+
         if (battleManager == null)
             battleManager = GetComponent<BattleManager>();
 
         if (battleManager == null)
             battleManager = FindAnyObjectByType<BattleManager>();
+
+        actionResolver = new BattleActionResolver(battleManager);
+        resultApplier = new BattleActionResultApplier(battleManager);
 
         RefreshActorMapping();
 
@@ -86,6 +106,8 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
 
     public override void OnDisable()
     {
+        EndOnlineBattleSession("OnlineBattleSession disabled", true);
+
         if (exchangeRoutine != null)
         {
             StopCoroutine(exchangeRoutine);
@@ -95,8 +117,17 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         base.OnDisable();
     }
 
+    private void OnDestroy()
+    {
+        if (Instance == this)
+            Instance = null;
+    }
+
     public override void OnPlayerEnteredRoom(Player newPlayer)
     {
+        if (!isOnlineBattleActive)
+            return;
+
         RefreshActorMapping();
 
         if (LocalDeckInfo != null)
@@ -105,24 +136,58 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
 
     public override void OnPlayerLeftRoom(Player otherPlayer)
     {
+        if (!isOnlineBattleActive)
+            return;
+
         deckInfoByActorNumber.Remove(otherPlayer.ActorNumber);
         RemoteDeckInfo = null;
         hasAppliedIdolSlots = false;
         isApplyingIdolSlots = false;
         hasRespondedToRemoteDeckInfo = false;
         RefreshActorMapping();
+
+        if (battleManager != null)
+            battleManager.EndOnlineBattleFromExternal("상대 플레이어가 온라인 배틀에서 퇴장했습니다.");
+
+        EndOnlineBattleSession("Remote player left BattleScene", true);
     }
 
     public override void OnMasterClientSwitched(Player newMasterClient)
     {
+        if (!isOnlineBattleActive)
+            return;
+
         RefreshActorMapping();
+    }
+
+    public override void OnLeftRoom()
+    {
+        isOnlineBattleActive = false;
+        isEndingOnlineBattle = false;
+        BattleStartSettings.ClearOnlineSettings();
     }
 
     public void OnEvent(EventData photonEvent)
     {
-        if (photonEvent.Code != DeckInfoExchangeEventCode)
+        if (!isOnlineBattleActive)
             return;
 
+        switch (photonEvent.Code)
+        {
+            case DeckInfoExchangeEventCode:
+                HandleDeckInfoExchange(photonEvent);
+                break;
+            case BattleActionRequestEventCode:
+                HandleBattleActionRequest(photonEvent);
+                break;
+            case BattleActionResultEventCode:
+                HandleBattleActionResult(photonEvent);
+                break;
+        }
+    }
+
+    private void HandleDeckInfoExchange(EventData photonEvent)
+    {
         string json = photonEvent.CustomData as string;
         if (string.IsNullOrWhiteSpace(json))
         {
@@ -170,6 +235,182 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         }
     }
 
+    private void HandleBattleActionRequest(EventData photonEvent)
+    {
+        if (!IsHost || actionResolver == null)
+            return;
+
+        BattleAction action = BattleActionSerializer.FromJson(photonEvent.CustomData as string);
+        if (action == null)
+            return;
+
+        action.actor = photonEvent.Sender == LocalActorNumber
+            ? BattleSlotOwner.My
+            : BattleSlotOwner.Enemy;
+        action.targetSlotId = ConvertSlotIdToOwner(action.targetSlotId, action.actor);
+
+        Debug.Log($"[OnlineBattle] Host received BattleActionRequest: {action.actionType}");
+
+        BattleActionResult result = actionResolver.ResolveActionAsHost(action);
+        if (!result.isAccepted && action.actionType == BattleActionType.PlaceBroadcast)
+            Debug.LogWarning($"[OnlineBattle] PlaceBroadcast rejected: reason={result.rejectReason}");
+
+        BroadcastBattleActionResult(BattleActionResultSerializer.ToJson(result));
+    }
+
+    private void HandleBattleActionResult(EventData photonEvent)
+    {
+        BattleActionResult result =
+            BattleActionResultSerializer.FromJson(photonEvent.CustomData as string);
+        if (result == null || resultApplier == null)
+            return;
+
+        if (!IsHost)
+        {
+            result.actor = InvertOwner(result.actor);
+            if (result.requestActionType == BattleActionType.StartMainGame)
+                result.currentTurnPlayer = InvertOwner(result.currentTurnPlayer);
+            ConvertResultSlotIdsToLocalPerspective(result);
+        }
+
+        if (result.requestActionType == BattleActionType.StartMainGame)
+            Debug.Log("[OnlineBattle] Received StartMainGameResult.");
+
+        resultApplier.Apply(result);
+
+        if (IsHost &&
+            result.isAccepted &&
+            result.requestActionType == BattleActionType.PlaceBroadcast)
+        {
+            TryBroadcastStartMainGameResult();
+        }
+    }
+
+    private void TryBroadcastStartMainGameResult()
+    {
+        if (!PhotonNetwork.IsMasterClient)
+        {
+            Debug.Log(
+                "[OnlineBattle] Skip StartMainGame completion check because this client is not Host.");
+            return;
+        }
+
+        if (hasBroadcastStartMainGameResult || battleManager == null)
+            return;
+
+        bool isComplete =
+            battleManager.IsBroadcastSetupCompleteForBothPlayersFromExternal(
+                out int hostPlaced,
+                out int hostRequired,
+                out int clientPlaced,
+                out int clientRequired);
+
+        Debug.Log(
+            $"[OnlineBattle] Checking broadcast setup completion: " +
+            $"host={hostPlaced}/{hostRequired} client={clientPlaced}/{clientRequired}");
+
+        if (!isComplete)
+            return;
+
+        Debug.Log("[OnlineBattle] Broadcast setup complete for both players.");
+
+        BattleActionResult startResult =
+            battleManager.CreateStartMainGameResultFromExternal();
+        string json = BattleActionResultSerializer.ToJson(startResult);
+        if (string.IsNullOrWhiteSpace(json))
+            return;
+
+        hasBroadcastStartMainGameResult = true;
+        Debug.Log("[OnlineBattle] Broadcasting StartMainGameResult.");
+
+        if (!BroadcastBattleActionResult(json))
+            hasBroadcastStartMainGameResult = false;
+    }
+
+    public bool SendBattleActionRequest(string actionJson)
+    {
+        if (!isOnlineBattleActive ||
+            !PhotonNetwork.InRoom ||
+            string.IsNullOrWhiteSpace(actionJson))
+            return false;
+
+        bool sent = PhotonNetwork.RaiseEvent(
+            BattleActionRequestEventCode,
+            actionJson,
+            new RaiseEventOptions { Receivers = ReceiverGroup.MasterClient },
+            SendOptions.SendReliable);
+
+        if (sent)
+            Debug.Log("[OnlineBattle] Sent BattleActionRequest: PlaceBroadcast");
+        return sent;
+    }
+
+    public bool BroadcastBattleActionResult(string resultJson)
+    {
+        if (!isOnlineBattleActive ||
+            !IsHost ||
+            !PhotonNetwork.InRoom ||
+            string.IsNullOrWhiteSpace(resultJson))
+            return false;
+
+        BattleActionResult result = BattleActionResultSerializer.FromJson(resultJson);
+        bool sent = PhotonNetwork.RaiseEvent(
+            BattleActionResultEventCode,
+            resultJson,
+            new RaiseEventOptions { Receivers = ReceiverGroup.All },
+            SendOptions.SendReliable);
+
+        if (sent && result != null)
+        {
+            Debug.Log(
+                $"[OnlineBattle] Broadcast BattleActionResult: " +
+                $"{result.requestActionType} accepted={result.isAccepted}");
+        }
+
+        return sent;
+    }
+
+    public void EndOnlineBattleSession(string reason, bool leaveRoom)
+    {
+        if (!WasOnlineBattleSession)
+            return;
+
+        if (isEndingOnlineBattle)
+            return;
+
+        isEndingOnlineBattle = true;
+        isOnlineBattleActive = false;
+
+        if (exchangeRoutine != null)
+        {
+            StopCoroutine(exchangeRoutine);
+            exchangeRoutine = null;
+        }
+
+        Debug.Log($"[OnlineBattleSession] Session ended. reason={reason}");
+        BattleStartSettings.ClearOnlineSettings();
+
+        if (leaveRoom && PhotonNetwork.InRoom)
+            PhotonNetwork.LeaveRoom();
+    }
+
+    public static void EndActiveSessionBeforeSceneChange(string reason)
+    {
+        if (Instance != null)
+        {
+            Instance.EndOnlineBattleSession(reason, true);
+            return;
+        }
+
+        if (BattleStartSettings.IsOnlineBattle)
+        {
+            BattleStartSettings.ClearOnlineSettings();
+
+            if (PhotonNetwork.InRoom)
+                PhotonNetwork.LeaveRoom();
+        }
+    }
+
     private IEnumerator ExchangeDeckInfoUntilReady()
     {
         for (int attempt = 1; attempt <= MaxExchangeAttempts && !AreBothDeckInfosReady; attempt++)
@@ -195,6 +436,18 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
     {
         if (LocalDeckInfo == null || !PhotonNetwork.InRoom)
             return;
+
+        if (IsHost)
+        {
+            if (authoritativeBroadcastSetupFirstActorNumber <= 0)
+            {
+                authoritativeBroadcastSetupFirstActorNumber =
+                    ChooseBroadcastSetupFirstActorNumberAsHost();
+            }
+
+            LocalDeckInfo.broadcastSetupFirstActorNumber =
+                authoritativeBroadcastSetupFirstActorNumber;
+        }
 
         string json = JsonUtility.ToJson(LocalDeckInfo);
         RaiseEventOptions options = new RaiseEventOptions
@@ -312,8 +565,17 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             idolCardId = idolCardId,
             broadcastCardIds = broadcastCardIds.ToArray(),
             mainDeckCardIds = mainDeckCardIds.ToArray(),
-            deckHash = ComputeDeckHash(selectedDeckId, preset.cardIds)
+            deckHash = ComputeDeckHash(selectedDeckId, preset.cardIds),
+            broadcastSetupFirstActorNumber = IsHost
+                ? ChooseBroadcastSetupFirstActorNumberAsHost()
+                : 0
         };
+
+        if (IsHost)
+        {
+            authoritativeBroadcastSetupFirstActorNumber =
+                deckInfo.broadcastSetupFirstActorNumber;
+        }
 
         if (usedFallback)
         {
@@ -464,9 +726,11 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             return;
         }
 
-        if (!battleManager.TryApplyOnlineIdolCardsFromExternal(
-                LocalDeckInfo.idolCardId,
-                RemoteDeckInfo.idolCardId))
+        if (!battleManager.TryInitializeOnlineBattleRuntimeFromExternal(
+                LocalActorNumber,
+                LocalDeckInfo,
+                RemoteActorNumber,
+                RemoteDeckInfo))
         {
             isApplyingIdolSlots = true;
             StartCoroutine(RetryApplySynchronizedIdolSlots());
@@ -474,6 +738,7 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         }
 
         hasAppliedIdolSlots = true;
+        ApplyHostBroadcastSetupFirstActor();
         Debug.Log(
             $"[OnlineBattleSession] IdolSlot 동기화 완료. " +
             $"my={LocalDeckInfo.idolCardId}, opponent={RemoteDeckInfo.idolCardId}");
@@ -481,16 +746,21 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
 
     private IEnumerator RetryApplySynchronizedIdolSlots()
     {
-        for (int attempt = 0; attempt < 10 && !hasAppliedIdolSlots; attempt++)
+        for (int attempt = 0;
+             attempt < 120 && isOnlineBattleActive && !hasAppliedIdolSlots;
+             attempt++)
         {
             yield return null;
 
             if (battleManager != null &&
-                battleManager.TryApplyOnlineIdolCardsFromExternal(
-                    LocalDeckInfo.idolCardId,
-                    RemoteDeckInfo.idolCardId))
+                battleManager.TryInitializeOnlineBattleRuntimeFromExternal(
+                    LocalActorNumber,
+                    LocalDeckInfo,
+                    RemoteActorNumber,
+                    RemoteDeckInfo))
             {
                 hasAppliedIdolSlots = true;
+                ApplyHostBroadcastSetupFirstActor();
                 Debug.Log(
                     $"[OnlineBattleSession] 지연 후 IdolSlot 동기화 완료. " +
                     $"my={LocalDeckInfo.idolCardId}, opponent={RemoteDeckInfo.idolCardId}");
@@ -504,6 +774,111 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             Debug.LogWarning(
                 $"[OnlineBattleSession] BattleManager 준비 대기 후에도 IdolSlot을 적용하지 못했습니다. " +
                 $"my={LocalDeckInfo?.idolCardId}, opponent={RemoteDeckInfo?.idolCardId}");
+        }
+    }
+
+    private void ApplyHostBroadcastSetupFirstActor()
+    {
+        NetworkDeckInfoDto hostInfo = IsHost ? LocalDeckInfo : RemoteDeckInfo;
+        if (battleManager == null || hostInfo == null)
+        {
+            return;
+        }
+
+        int firstActorNumber = hostInfo.broadcastSetupFirstActorNumber;
+        if (firstActorNumber <= 0)
+        {
+            Debug.LogWarning(
+                "[OnlineBattle] Host deck info has no broadcast setup first actorNumber.");
+            return;
+        }
+
+        if (!TryConvertActorNumberToLocalOwner(
+                firstActorNumber,
+                out BattleSlotOwner localOwner))
+        {
+            return;
+        }
+
+        Debug.Log(
+            $"[OnlineBattle] Apply broadcast setup first actor: " +
+            $"firstActorNumber={firstActorNumber}, localActor={LocalActorNumber}, " +
+            $"remoteActor={RemoteActorNumber}, localOwner={localOwner}, isHost={IsHost}");
+
+        battleManager.ApplyOnlineBroadcastSetupFirstActorFromExternal(localOwner);
+    }
+
+    private int ChooseBroadcastSetupFirstActorNumberAsHost()
+    {
+        if (!IsHost || LocalActorNumber <= 0)
+            return 0;
+
+        int selectedActorNumber = RemoteActorNumber > 0 &&
+            UnityEngine.Random.Range(0, 2) == 1
+                ? RemoteActorNumber
+                : LocalActorNumber;
+
+        Debug.Log(
+            $"[OnlineBattle] Host selected broadcast setup first actorNumber=" +
+            $"{selectedActorNumber}. hostActor={LocalActorNumber}, " +
+            $"remoteActor={RemoteActorNumber}");
+        return selectedActorNumber;
+    }
+
+    private bool TryConvertActorNumberToLocalOwner(
+        int actorNumber,
+        out BattleSlotOwner owner)
+    {
+        if (actorNumber == LocalActorNumber)
+        {
+            owner = BattleSlotOwner.My;
+            return true;
+        }
+
+        if (actorNumber == RemoteActorNumber)
+        {
+            owner = BattleSlotOwner.Enemy;
+            return true;
+        }
+
+        owner = BattleSlotOwner.Enemy;
+        Debug.LogWarning(
+            $"[OnlineBattle] Unknown actorNumber={actorNumber}, " +
+            $"local={LocalActorNumber}, remote={RemoteActorNumber}");
+        return false;
+    }
+
+    private static BattleSlotOwner InvertOwner(BattleSlotOwner owner)
+    {
+        return owner == BattleSlotOwner.My
+            ? BattleSlotOwner.Enemy
+            : BattleSlotOwner.My;
+    }
+
+    private static string ConvertSlotIdToOwner(string slotId, BattleSlotOwner owner)
+    {
+        if (string.IsNullOrWhiteSpace(slotId))
+            return slotId;
+
+        string[] parts = slotId.Split('_');
+        if (parts.Length != 3)
+            return slotId;
+
+        return $"{owner}_{parts[1]}_{parts[2]}";
+    }
+
+    private static void ConvertResultSlotIdsToLocalPerspective(BattleActionResult result)
+    {
+        if (result.affectedSlotIds != null)
+        {
+            for (int i = 0; i < result.affectedSlotIds.Count; i++)
+                result.affectedSlotIds[i] = ConvertSlotIdToOwner(result.affectedSlotIds[i], result.actor);
+        }
+
+        if (result.resolvedTargetSlotIds != null)
+        {
+            for (int i = 0; i < result.resolvedTargetSlotIds.Count; i++)
+                result.resolvedTargetSlotIds[i] = ConvertSlotIdToOwner(result.resolvedTargetSlotIds[i], result.actor);
         }
     }
 }

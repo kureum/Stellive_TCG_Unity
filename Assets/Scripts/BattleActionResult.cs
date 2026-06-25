@@ -18,6 +18,15 @@ public class BattleActionResult
     public List<string> enemyMainDeckOrderIds = new List<string>();
     public string firstActor = "";
     public string broadcastSetupFirstActor = "";
+    public BattleSlotOwner currentTurnPlayer;
+    public int turnCount;
+    public string nextPhase = "";
+    public int hostViewerCount;
+    public int clientViewerCount;
+    public int hostHandCount;
+    public int clientHandCount;
+    public int hostDeckCount;
+    public int clientDeckCount;
 
     public List<string> movedCardIds = new List<string>();
     public List<string> affectedCardIds = new List<string>();

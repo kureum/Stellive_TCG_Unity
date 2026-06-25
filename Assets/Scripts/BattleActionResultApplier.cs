@@ -38,8 +38,12 @@ public class BattleActionResultApplier
 
         Debug.LogWarning($"[BattleActionResultApplier] Rejected actionSequence={result.actionSequence}, actionType={result.requestActionType}, reason={reason}");
 
-        if (battleManager != null && !string.IsNullOrWhiteSpace(result.message))
-            battleManager.SetSystemMessageFromExternal(result.message);
+        if (battleManager != null)
+        {
+            battleManager.HandleRejectedActionResultFromExternal(result);
+            battleManager.SetSystemMessageFromExternal(
+                !string.IsNullOrWhiteSpace(result.message) ? result.message : reason);
+        }
     }
 
     private void ApplyAccepted(BattleActionResult result)
@@ -54,10 +58,44 @@ public class BattleActionResultApplier
 
         switch (result.requestActionType)
         {
+            case BattleActionType.PlaceBroadcast:
+                ApplyPlaceBroadcastResult(result);
+                break;
+
+            case BattleActionType.StartMainGame:
+                ApplyStartMainGameResult(result);
+                break;
+
             default:
                 // TODO: Add ActionType-specific result application as host results become richer.
                 break;
         }
+    }
+
+    private void ApplyPlaceBroadcastResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        string cardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
+            ? result.affectedCardIds[0]
+            : "";
+        string targetSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+            ? result.affectedSlotIds[0]
+            : "";
+
+        battleManager.ApplyPlaceBroadcastFromResult(
+            result.actor,
+            cardInstanceId,
+            targetSlotId);
+    }
+
+    private void ApplyStartMainGameResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        battleManager.ApplyStartMainGameFromResult(result);
     }
 
     private void ApplyDeckOrders(BattleActionResult result)

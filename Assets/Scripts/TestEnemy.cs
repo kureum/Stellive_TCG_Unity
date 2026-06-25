@@ -27,6 +27,12 @@ public class TestEnemy : MonoBehaviour
 
     private void Awake()
     {
+        if (IsOnlineBattle())
+        {
+            enabled = false;
+            return;
+        }
+
         if (battleManager == null)
             battleManager = FindAnyObjectByType<BattleManager>();
 
@@ -39,6 +45,12 @@ public class TestEnemy : MonoBehaviour
 
     private void Update()
     {
+        if (IsOnlineBattle())
+        {
+            enabled = false;
+            return;
+        }
+
         if (battleManager == null)
             return;
 
@@ -136,6 +148,9 @@ public class TestEnemy : MonoBehaviour
         EffectContext context,
         Action onComplete)
     {
+        if (IsOnlineBattle())
+            return false;
+
         if (battleManager == null || battleManager.effectManager == null)
             return false;
 
@@ -153,6 +168,13 @@ public class TestEnemy : MonoBehaviour
 
         ResolveCandidatesSequentially(candidates, context, 0, onComplete);
         return true;
+    }
+
+    private bool IsOnlineBattle()
+    {
+        return BattleStartSettings.IsOnlineBattle ||
+            (OnlineBattleSession.Instance != null &&
+             OnlineBattleSession.Instance.WasOnlineBattleSession);
     }
 
     private bool AreAllCandidatesTestEnemyMandatoryEffects(

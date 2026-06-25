@@ -5,11 +5,13 @@ public class SceneLoader : MonoBehaviour
 {
     public void LoadTitleScene()
     {
+        EndOnlineBattleSessionIfNeeded("LoadTitleScene");
         SceneManager.LoadScene("TitleScene");
     }
 
     public void LoadDeckBuilderScene()
     {
+        EndOnlineBattleSessionIfNeeded("LoadDeckBuilderScene");
         SceneManager.LoadScene("DeckBuilderScene");
     }
 
@@ -20,6 +22,12 @@ public class SceneLoader : MonoBehaviour
 
     public void LoadBattleLobbyScene()
     {
+        EndOnlineBattleSessionIfNeeded("LoadBattleLobbyScene");
         SceneManager.LoadScene("BattleLobbyScene");
+    }
+
+    private void EndOnlineBattleSessionIfNeeded(string reason)
+    {
+        OnlineBattleSession.EndActiveSessionBeforeSceneChange(reason);
     }
 }

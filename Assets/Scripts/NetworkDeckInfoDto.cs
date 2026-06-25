@@ -11,4 +11,6 @@ public class NetworkDeckInfoDto
     public string[] broadcastCardIds;
     public string[] mainDeckCardIds;
     public string deckHash;
+    public string broadcastSetupFirstActor;
+    public int broadcastSetupFirstActorNumber;
 }

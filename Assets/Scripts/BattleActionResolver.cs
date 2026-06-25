@@ -42,8 +42,18 @@ public class BattleActionResolver
 
         result.isAccepted = true;
         result.message = $"Host accepted {action.actionType}";
-        result.playerMainDeckOrderIds = battleManager.GetMainDeckOrderIds(BattleSlotOwner.My);
-        result.enemyMainDeckOrderIds = battleManager.GetMainDeckOrderIds(BattleSlotOwner.Enemy);
+
+        if (action.actionType == BattleActionType.PlaceBroadcast)
+        {
+            result.affectedCardIds.Add(action.cardInstanceId);
+            result.affectedSlotIds.Add(action.targetSlotId);
+        }
+
+        if (action.actionType != BattleActionType.PlaceBroadcast)
+        {
+            result.playerMainDeckOrderIds = battleManager.GetMainDeckOrderIds(BattleSlotOwner.My);
+            result.enemyMainDeckOrderIds = battleManager.GetMainDeckOrderIds(BattleSlotOwner.Enemy);
+        }
 
         if (action.selectedTargetIds != null)
             result.resolvedTargetSlotIds.AddRange(action.selectedTargetIds);

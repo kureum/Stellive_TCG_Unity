@@ -167,6 +167,10 @@ public class BattleManager : MonoBehaviour
 
     private BattlePlayerSide currentActionSide;
     private int nextActionSequence = 1;
+    private bool onlineBroadcastRequestPending;
+    private bool onlineBroadcastSetupReady;
+    private bool isReadyForOnlineRuntimeInitialization;
+    private bool hasInitializedOnlineRuntime;
     private int nextCardInstanceSequence = 1;
     private BattleActionExecutor actionExecutor;
     private int consecutivePassCount = 0;
@@ -276,7 +280,53 @@ public class BattleManager : MonoBehaviour
         if (battleResultPanel != null)
             battleResultPanel.SetActive(false);
 
+        isReadyForOnlineRuntimeInitialization = true;
+
+        if (BattleStartSettings.IsOnlineBattle)
+        {
+            EnterOnlineBattleWaitingState();
+            return;
+        }
+
         StartBattleSetup();
+    }
+
+    private void EnterOnlineBattleWaitingState()
+    {
+        currentPhase = BattlePhase.None;
+        firstPlayerSide = BattlePlayerSide.My;
+        currentSetupSide = BattlePlayerSide.My;
+        currentActionSide = BattlePlayerSide.My;
+        myPlayer = null;
+        enemyPlayer = null;
+        myBroadcastPlacedCount = 0;
+        enemyBroadcastPlacedCount = 0;
+        myRequiredBroadcastCount = 0;
+        enemyRequiredBroadcastCount = 0;
+        turnCount = 1;
+        nextActionSequence = 1;
+        nextCardInstanceSequence = 1;
+        onlineBroadcastRequestPending = false;
+        onlineBroadcastSetupReady = false;
+        hasInitializedOnlineRuntime = false;
+        isGameOver = false;
+        isBattleEnded = false;
+        isVictoryTiebreakerActive = false;
+
+        SetBattleBusy(false, "EnterOnlineBattleWaitingState");
+        ResolveFieldSlots();
+        InitializeFieldSlots();
+        CloseBroadcastSelectPanel();
+        CloseRestZonePanel();
+        RefreshBroadcastSetupButtons();
+
+        if (turnEndButton != null)
+            turnEndButton.interactable = false;
+
+        SetSystemMessage(
+            "온라인 배틀 정보를 기다리고 있습니다.\n" +
+            "양쪽 덱 정보가 준비되면 방송 설치 단계를 시작합니다.");
+        Debug.Log("[OnlineBattleSession] BattleManager entered online waiting state.");
     }
 
     private void Update()
@@ -324,6 +374,7 @@ public class BattleManager : MonoBehaviour
             if (!isBattleEnded)
                 return;
 
+            OnlineBattleSession.EndActiveSessionBeforeSceneChange("Battle result panel exit");
             SceneManager.LoadScene("BattleLobbyScene");
         });
     }
@@ -416,6 +467,14 @@ public class BattleManager : MonoBehaviour
 
     private void StartBattleSetup()
     {
+        if (BattleStartSettings.IsOnlineBattle)
+        {
+            Debug.LogWarning(
+                "[OnlineBattleSession] Ignored local StartBattleSetup in online mode.");
+            EnterOnlineBattleWaitingState();
+            return;
+        }
+
         SetSystemMessage("배틀 준비를 시작합니다.");
 
         if (BattleStartSettings.HasSelectedMyPreset)
@@ -431,6 +490,8 @@ public class BattleManager : MonoBehaviour
         turnCount = 1;
         nextActionSequence = 1;
         nextCardInstanceSequence = 1;
+        onlineBroadcastRequestPending = false;
+        onlineBroadcastSetupReady = !BattleStartSettings.IsOnlineBattle;
 
         if (!LoadCardDatabase())
             return;
@@ -781,9 +842,17 @@ public class BattleManager : MonoBehaviour
         myRequiredBroadcastCount = GetRequiredBroadcastCount(myPlayer);
         enemyRequiredBroadcastCount = GetRequiredBroadcastCount(enemyPlayer);
 
-        firstPlayerSide = UnityEngine.Random.Range(0, 2) == 0
-            ? BattlePlayerSide.My
-            : BattlePlayerSide.Enemy;
+        if (BattleStartSettings.IsOnlineBattle)
+        {
+            firstPlayerSide = BattlePlayerSide.My;
+            onlineBroadcastSetupReady = false;
+        }
+        else
+        {
+            firstPlayerSide = UnityEngine.Random.Range(0, 2) == 0
+                ? BattlePlayerSide.My
+                : BattlePlayerSide.Enemy;
+        }
 
         currentSetupSide = firstPlayerSide;
 
@@ -798,13 +867,17 @@ public class BattleManager : MonoBehaviour
             SimpleMessageExitDirection.LeftToRight
         ));
 
+        string setupOwnerMessage = BattleStartSettings.IsOnlineBattle
+            ? "Host의 선공 actorNumber를 동기화하고 있습니다."
+            : $"선공권: {GetSideName(firstPlayerSide)}\n" +
+              $"현재 설치권: {GetSideName(currentSetupSide)}";
+
         SetSystemMessage(
             $"내 덱 불러오기 완료: {myDeckName}\n" +
             $"상대 덱 불러오기 완료: {enemyDeckName}\n" +
             $"서로 시작 패 5장을 드로우했습니다.\n\n" +
             $"방송 카드 설치 단계입니다.\n" +
-            $"선공권: {GetSideName(firstPlayerSide)}\n" +
-            $"현재 설치권: {GetSideName(currentSetupSide)}"
+            setupOwnerMessage
         );
     }
 
@@ -826,17 +899,26 @@ public class BattleManager : MonoBehaviour
 
     private void RefreshBroadcastSetupButtons()
     {
+        int visibleButtonCount = 0;
+        bool localCanPlace =
+            currentPhase == BattlePhase.BroadcastSetup &&
+            currentSetupSide == BattlePlayerSide.My &&
+            (!BattleStartSettings.IsOnlineBattle || onlineBroadcastSetupReady) &&
+            !onlineBroadcastRequestPending &&
+            !IsBattleBusy();
+
         foreach (BattleFieldSlot slot in myBattleSlots)
         {
             if (slot == null)
                 continue;
 
             bool canPlace =
-                currentPhase == BattlePhase.BroadcastSetup &&
-                currentSetupSide == BattlePlayerSide.My &&
+                localCanPlace &&
                 CanPlaceBroadcast(BattlePlayerSide.My, slot);
 
             slot.SetSetupButtonVisible(canPlace);
+            if (canPlace)
+                visibleButtonCount++;
         }
 
         foreach (BattleFieldSlot slot in enemyBattleSlots)
@@ -846,6 +928,11 @@ public class BattleManager : MonoBehaviour
 
             slot.SetSetupButtonVisible(false);
         }
+
+        Debug.Log(
+            $"[BattleManager] Broadcast setup UI refresh: phase={currentPhase}, " +
+            $"currentSetupOwner={currentSetupSide}, localCanPlace={localCanPlace}, " +
+            $"visibleButtonCount={visibleButtonCount}");
     }
 
     private void ConfigureBroadcastButtonsForLocalPlayer()
@@ -1282,6 +1369,7 @@ public class BattleManager : MonoBehaviour
 
         if (currentPhase != BattlePhase.BroadcastSetup)
         {
+            Debug.Log("[BattleManager] Ignored broadcast placement input because phase is not BroadcastSetup.");
             SetSystemMessage("현재는 방송 카드 설치 단계가 아닙니다.");
             return;
         }
@@ -1333,6 +1421,12 @@ public class BattleManager : MonoBehaviour
 
     private void OpenBroadcastSelectPanel(BattlePlayerSide side, BattleFieldSlot targetSlot)
     {
+        if (currentPhase != BattlePhase.BroadcastSetup)
+        {
+            Debug.Log("[BattleManager] Ignored broadcast placement input because phase is not BroadcastSetup.");
+            return;
+        }
+
         if (side != BattlePlayerSide.My ||
             targetSlot == null ||
             targetSlot.owner != BattleSlotOwner.My)
@@ -1454,6 +1548,7 @@ public class BattleManager : MonoBehaviour
 
         if (currentPhase != BattlePhase.BroadcastSetup)
         {
+            Debug.Log("[BattleManager] Ignored broadcast placement input because phase is not BroadcastSetup.");
             SetSystemMessage("현재는 방송 카드 설치 단계가 아닙니다.");
             return;
         }
@@ -1501,6 +1596,12 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
+        if (BattleStartSettings.IsOnlineBattle)
+        {
+            RequestPlaceBroadcastOnline(card, selectedBroadcastTargetSlot);
+            return;
+        }
+
         Sprite sprite = LoadCardSprite(card);
 
         selectedBroadcastTargetSlot.SetBroadcastCard(card, sprite);
@@ -1518,27 +1619,459 @@ public class BattleManager : MonoBehaviour
 
         RefreshAllUI();
 
-        AdvanceBroadcastSetupTurn(placedMessage);
+        AdvanceBroadcastSetupTurn(currentSetupSide, placedMessage);
     }
 
-    private void AdvanceBroadcastSetupTurn(string previousActionMessage)
+    private void RequestPlaceBroadcastOnline(BaseCardData card, BattleFieldSlot targetSlot)
+    {
+        if (currentPhase != BattlePhase.BroadcastSetup)
+        {
+            Debug.Log("[BattleManager] Ignored broadcast placement input because phase is not BroadcastSetup.");
+            return;
+        }
+
+        if (onlineBroadcastRequestPending)
+        {
+            SetSystemMessage("방송 카드 설치 결과를 기다리고 있습니다.");
+            return;
+        }
+
+        OnlineBattleSession session = FindAnyObjectByType<OnlineBattleSession>();
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return;
+        }
+
+        BattleAction action = new BattleAction
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            actionType = BattleActionType.PlaceBroadcast,
+            cardInstanceId = card != null ? card.cardInstanceId : "",
+            targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
+        };
+
+        Debug.Log(
+            $"[OnlineBattle] PlaceBroadcastAction created: actor={action.actor}, " +
+            $"card={action.cardInstanceId}, slot={action.targetSlotId}");
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("방송 카드 설치 요청 전송에 실패했습니다.");
+            return;
+        }
+
+        onlineBroadcastRequestPending = true;
+        selectedBroadcastTargetSlot = null;
+        CloseBroadcastSelectPanel();
+        RefreshBroadcastSetupButtons();
+        SetSystemMessage("Host의 방송 카드 설치 판정을 기다리고 있습니다.");
+    }
+
+    public bool CanPlaceBroadcastFromExternal(
+        BattleSlotOwner actor,
+        string cardInstanceId,
+        string targetSlotId,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (currentPhase != BattlePhase.BroadcastSetup)
+        {
+            failReason = "Battle is not in BroadcastSetup phase.";
+            return false;
+        }
+
+        BattlePlayerSide side = actor == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+
+        if (currentSetupSide != side)
+        {
+            failReason = $"Broadcast setup priority mismatch. current={currentSetupSide}, actor={actor}";
+            return false;
+        }
+
+        BattlePlayerRuntime player = GetPlayer(side);
+        if (player == null || player.broadcastDeck == null)
+        {
+            failReason = "Broadcast deck is not available.";
+            return false;
+        }
+
+        BaseCardData card = player.broadcastDeck.FirstOrDefault(candidate =>
+            candidate != null &&
+            string.Equals(candidate.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase));
+        if (card == null)
+        {
+            failReason = $"Broadcast card is not in actor deck: {cardInstanceId}";
+            return false;
+        }
+
+        if (!string.Equals(card.kind, "Broadcast", StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "PlaceBroadcast requires a Broadcast card.";
+            return false;
+        }
+
+        BattleFieldSlot targetSlot = FindSlotById(targetSlotId);
+        if (targetSlot == null)
+        {
+            failReason = $"Target slot not found: {targetSlotId}";
+            return false;
+        }
+
+        if (!CanPlaceBroadcast(side, targetSlot))
+        {
+            failReason = "Target slot does not satisfy broadcast placement rules.";
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool ApplyPlaceBroadcastFromResult(
+        BattleSlotOwner actor,
+        string cardInstanceId,
+        string targetSlotId)
+    {
+        if (currentPhase != BattlePhase.BroadcastSetup)
+        {
+            Debug.Log("[BattleManager] Ignored broadcast placement input because phase is not BroadcastSetup.");
+            return false;
+        }
+
+        BattlePlayerSide side = actor == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        BattlePlayerRuntime player = GetPlayer(side);
+        BattleFieldSlot targetSlot = FindSlotById(targetSlotId);
+
+        if (player == null || player.broadcastDeck == null || targetSlot == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Apply PlaceBroadcastResult failed: actor={actor}, " +
+                $"card={cardInstanceId}, slot={targetSlotId}");
+            return false;
+        }
+
+        BaseCardData card = player.broadcastDeck.FirstOrDefault(candidate =>
+            candidate != null &&
+            string.Equals(candidate.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase));
+        if (card == null || targetSlot.HasBroadcast)
+            return false;
+
+        targetSlot.SetBroadcastCard(card, LoadCardSprite(card));
+        player.broadcastDeck.Remove(card);
+        AddBroadcastPlacedCount(side, 1);
+        onlineBroadcastRequestPending = false;
+        selectedBroadcastTargetSlot = null;
+        CloseBroadcastSelectPanel();
+
+        if (IsBattleBusy())
+            SetBattleBusy(false, "PlaceBroadcastResult applied");
+
+        string placedMessage =
+            $"{GetSideName(side)}가 ({targetSlot.x}, {targetSlot.y}) 슬롯에\n" +
+            $"{card.name} 방송 카드를 설치했습니다.";
+
+        Debug.Log(
+            $"[OnlineBattle] Before advance setup turn: appliedActor={actor}, " +
+            $"currentSetupOwner={currentSetupSide}, phase={currentPhase}, " +
+            $"waitingOnline={onlineBroadcastRequestPending}, busy={IsBattleBusy()}");
+
+        RefreshAllUI();
+        AdvanceBroadcastSetupTurn(side, placedMessage);
+
+        Debug.Log(
+            $"[OnlineBattle] After advance setup turn: nextSetupOwner={currentSetupSide}, " +
+            $"phase={currentPhase}, waitingOnline={onlineBroadcastRequestPending}, " +
+            $"busy={IsBattleBusy()}");
+
+        Debug.Log(
+            $"[OnlineBattle] Applied PlaceBroadcastResult: actor={actor}, " +
+            $"card={cardInstanceId}, slot={targetSlotId}");
+        return true;
+    }
+
+    public void HandleRejectedActionResultFromExternal(BattleActionResult result)
+    {
+        if (result == null ||
+            result.requestActionType != BattleActionType.PlaceBroadcast)
+        {
+            return;
+        }
+
+        onlineBroadcastRequestPending = false;
+        selectedBroadcastTargetSlot = null;
+        CloseBroadcastSelectPanel();
+
+        if (IsBattleBusy())
+            SetBattleBusy(false, "PlaceBroadcastResult rejected");
+
+        RefreshBroadcastSetupButtons();
+    }
+
+    public bool TryApplyOnlineBroadcastDecksFromExternal(
+        int localActorNumber,
+        string[] localBroadcastCardIds,
+        int remoteActorNumber,
+        string[] remoteBroadcastCardIds)
+    {
+        if (myPlayer == null || enemyPlayer == null)
+            return false;
+
+        return RebuildOnlineBroadcastDeck(
+                myPlayer,
+                localActorNumber,
+                localBroadcastCardIds) &&
+            RebuildOnlineBroadcastDeck(
+                enemyPlayer,
+                remoteActorNumber,
+            remoteBroadcastCardIds);
+    }
+
+    public bool TryInitializeOnlineBattleRuntimeFromExternal(
+        int localActorNumber,
+        NetworkDeckInfoDto localDeckInfo,
+        int remoteActorNumber,
+        NetworkDeckInfoDto remoteDeckInfo)
+    {
+        if (!isReadyForOnlineRuntimeInitialization ||
+            !BattleStartSettings.IsOnlineBattle ||
+            localActorNumber <= 0 ||
+            remoteActorNumber <= 0 ||
+            localDeckInfo == null ||
+            remoteDeckInfo == null)
+        {
+            return false;
+        }
+
+        if (hasInitializedOnlineRuntime)
+            return true;
+
+        if ((allCards == null || allCards.Count == 0) && !LoadCardDatabase())
+            return false;
+
+        BattlePlayerRuntime localPlayer = CreateOnlinePlayerRuntime(
+            "나",
+            localActorNumber,
+            localDeckInfo);
+        BattlePlayerRuntime remotePlayer = CreateOnlinePlayerRuntime(
+            "상대",
+            remoteActorNumber,
+            remoteDeckInfo);
+
+        if (localPlayer == null || remotePlayer == null)
+            return false;
+
+        myPlayer = localPlayer;
+        enemyPlayer = remotePlayer;
+
+        ResolveFieldSlots();
+        InitializeFieldSlots();
+
+        DrawCards(myPlayer, 5);
+        DrawCards(enemyPlayer, 5);
+
+        selectedBroadcastTargetSlot = null;
+        onlineBroadcastRequestPending = false;
+        myBroadcastPlacedCount = 0;
+        enemyBroadcastPlacedCount = 0;
+        myRequiredBroadcastCount = GetRequiredBroadcastCount(myPlayer);
+        enemyRequiredBroadcastCount = GetRequiredBroadcastCount(enemyPlayer);
+
+        hasInitializedOnlineRuntime = true;
+        StartBroadcastSetupPhase(localDeckInfo.deckName, remoteDeckInfo.deckName);
+
+        Debug.Log(
+            $"[OnlineBattleSession] Online runtime initialized. " +
+            $"localActor={localActorNumber}, remoteActor={remoteActorNumber}, " +
+            $"myMainDeck={myPlayer.mainDeck.Count}, enemyMainDeck={enemyPlayer.mainDeck.Count}, " +
+            $"myBroadcastDeck={myPlayer.broadcastDeck.Count}, " +
+            $"enemyBroadcastDeck={enemyPlayer.broadcastDeck.Count}");
+        return true;
+    }
+
+    private BattlePlayerRuntime CreateOnlinePlayerRuntime(
+        string playerName,
+        int actorNumber,
+        NetworkDeckInfoDto deckInfo)
+    {
+        if (deckInfo == null || actorNumber <= 0)
+            return null;
+
+        BaseCardData idolSource = FindCardById(deckInfo.idolCardId);
+        if (!(idolSource is IdolCardData))
+        {
+            Debug.LogWarning(
+                $"[OnlineBattleSession] Online runtime idol not found. " +
+                $"actor={actorNumber}, idol={deckInfo.idolCardId}");
+            return null;
+        }
+
+        BattlePlayerRuntime player = new BattlePlayerRuntime
+        {
+            playerName = playerName,
+            viewers = 0,
+            idolCard = CreateOnlineRuntimeCard(
+                idolSource,
+                actorNumber,
+                "Idol",
+                1)
+        };
+
+        if (!AddOnlineRuntimeCards(
+                player.broadcastDeck,
+                deckInfo.broadcastCardIds,
+                actorNumber,
+                "Broadcast"))
+        {
+            return null;
+        }
+
+        if (!AddOnlineRuntimeCards(
+                player.mainDeck,
+                deckInfo.mainDeckCardIds,
+                actorNumber,
+                "Main"))
+        {
+            return null;
+        }
+
+        return player;
+    }
+
+    private bool AddOnlineRuntimeCards(
+        List<BaseCardData> target,
+        string[] cardIds,
+        int actorNumber,
+        string zoneName)
+    {
+        if (target == null)
+            return false;
+
+        target.Clear();
+        string[] safeCardIds = cardIds ?? Array.Empty<string>();
+
+        for (int i = 0; i < safeCardIds.Length; i++)
+        {
+            BaseCardData sourceCard = FindCardById(safeCardIds[i]);
+            if (sourceCard == null)
+            {
+                Debug.LogWarning(
+                    $"[OnlineBattleSession] Online runtime card not found. " +
+                    $"actor={actorNumber}, zone={zoneName}, card={safeCardIds[i]}");
+                return false;
+            }
+
+            BaseCardData runtimeCard = CreateOnlineRuntimeCard(
+                sourceCard,
+                actorNumber,
+                zoneName,
+                i + 1);
+            if (runtimeCard == null)
+                return false;
+
+            target.Add(runtimeCard);
+        }
+
+        return true;
+    }
+
+    private BaseCardData CreateOnlineRuntimeCard(
+        BaseCardData sourceCard,
+        int actorNumber,
+        string zoneName,
+        int sequence)
+    {
+        BaseCardData runtimeCard =
+            CreateRuntimeCardInstance(sourceCard, $"Actor{actorNumber}");
+        if (runtimeCard == null)
+            return null;
+
+        runtimeCard.cardInstanceId =
+            $"Actor{actorNumber}-{zoneName}-{sequence}-{runtimeCard.id}";
+        return runtimeCard;
+    }
+
+    private bool RebuildOnlineBroadcastDeck(
+        BattlePlayerRuntime player,
+        int actorNumber,
+        string[] cardIds)
+    {
+        if (player == null || actorNumber <= 0)
+            return false;
+
+        player.broadcastDeck.Clear();
+        string[] safeCardIds = cardIds ?? Array.Empty<string>();
+
+        for (int i = 0; i < safeCardIds.Length; i++)
+        {
+            BaseCardData sourceCard = FindCardById(safeCardIds[i]);
+            if (sourceCard == null || !string.Equals(sourceCard.kind, "Broadcast", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            BaseCardData runtimeCard = CreateRuntimeCardInstance(sourceCard, $"Actor{actorNumber}");
+            runtimeCard.cardInstanceId = $"Actor{actorNumber}-Broadcast-{i + 1}-{runtimeCard.id}";
+            player.broadcastDeck.Add(runtimeCard);
+        }
+
+        return true;
+    }
+
+    public BattleSlotOwner GetBroadcastSetupFirstActorFromExternal()
+    {
+        return firstPlayerSide == BattlePlayerSide.My
+            ? BattleSlotOwner.My
+            : BattleSlotOwner.Enemy;
+    }
+
+    public void ApplyOnlineBroadcastSetupFirstActorFromExternal(BattleSlotOwner localActor)
+    {
+        firstPlayerSide = localActor == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        currentSetupSide = firstPlayerSide;
+        onlineBroadcastSetupReady = true;
+        Debug.Log(
+            $"[OnlineBattle] Applied first setup owner to BattleManager: " +
+            $"localOwner={localActor}, currentSetupOwner={currentSetupSide}");
+        RefreshBroadcastSetupButtons();
+    }
+
+    private void AdvanceBroadcastSetupTurn(
+        BattlePlayerSide placedSide,
+        string previousActionMessage)
     {
         if (IsBroadcastSetupComplete())
         {
+            if (BattleStartSettings.IsOnlineBattle)
+            {
+                onlineBroadcastRequestPending = false;
+                RefreshBroadcastSetupButtons();
+                SetSystemMessage(
+                    $"{previousActionMessage}\n\n" +
+                    "양쪽 방송 설치가 완료되었습니다.\n" +
+                    "Host의 본게임 시작 판정을 기다리고 있습니다.");
+                return;
+            }
+
             StartMainGame(previousActionMessage);
             return;
         }
 
-        BattlePlayerSide previousSide = currentSetupSide;
-        BattlePlayerSide nextSide = GetOppositeSide(previousSide);
+        BattlePlayerSide nextSide = GetOppositeSide(placedSide);
 
         if (!IsBroadcastSetupPlayerComplete(nextSide))
         {
             currentSetupSide = nextSide;
         }
-        else if (!IsBroadcastSetupPlayerComplete(previousSide))
+        else if (!IsBroadcastSetupPlayerComplete(placedSide))
         {
-            currentSetupSide = previousSide;
+            currentSetupSide = placedSide;
         }
 
         RefreshBroadcastSetupButtons();
@@ -1593,6 +2126,124 @@ public class BattleManager : MonoBehaviour
             $"현재 행동권: {GetSideName(currentActionSide)}\n" +
             "손패의 캐릭터 카드를 드래그하거나, 행동 종료 버튼으로 패스할 수 있습니다."
         );
+    }
+
+    public bool IsBroadcastSetupCompleteForBothPlayersFromExternal(
+        out int hostPlaced,
+        out int hostRequired,
+        out int clientPlaced,
+        out int clientRequired)
+    {
+        hostPlaced = myBroadcastPlacedCount;
+        hostRequired = myRequiredBroadcastCount;
+        clientPlaced = enemyBroadcastPlacedCount;
+        clientRequired = enemyRequiredBroadcastCount;
+
+        return currentPhase == BattlePhase.BroadcastSetup &&
+            IsBroadcastSetupComplete();
+    }
+
+    public BattleActionResult CreateStartMainGameResultFromExternal()
+    {
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = nextActionSequence++,
+            actor = BattleSlotOwner.My,
+            requestActionType = BattleActionType.StartMainGame,
+            isAccepted = true,
+            message = "방송 설치가 완료되어 본게임을 시작합니다.",
+            currentTurnPlayer = firstPlayerSide == BattlePlayerSide.My
+                ? BattleSlotOwner.My
+                : BattleSlotOwner.Enemy,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString()
+        };
+
+        if (myPlayer != null)
+        {
+            result.hostViewerCount = myPlayer.viewers;
+            result.hostHandCount = myPlayer.hand != null ? myPlayer.hand.Count : 0;
+            result.hostDeckCount = myPlayer.mainDeck != null ? myPlayer.mainDeck.Count : 0;
+        }
+
+        if (enemyPlayer != null)
+        {
+            result.clientViewerCount = enemyPlayer.viewers;
+            result.clientHandCount = enemyPlayer.hand != null ? enemyPlayer.hand.Count : 0;
+            result.clientDeckCount = enemyPlayer.mainDeck != null ? enemyPlayer.mainDeck.Count : 0;
+        }
+
+        return result;
+    }
+
+    public void ApplyStartMainGameFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        if (currentPhase == BattlePhase.MainGame)
+        {
+            Debug.Log("[BattleManager] Ignored duplicate StartMainGameResult.");
+            return;
+        }
+
+        if (currentPhase != BattlePhase.BroadcastSetup)
+        {
+            Debug.LogWarning(
+                $"[BattleManager] Cannot apply StartMainGameResult from phase={currentPhase}.");
+            return;
+        }
+
+        bool localIsHost =
+            OnlineBattleSession.Instance != null &&
+            OnlineBattleSession.Instance.IsHost;
+
+        if (myPlayer != null)
+        {
+            myPlayer.viewers = localIsHost
+                ? result.hostViewerCount
+                : result.clientViewerCount;
+        }
+
+        if (enemyPlayer != null)
+        {
+            enemyPlayer.viewers = localIsHost
+                ? result.clientViewerCount
+                : result.hostViewerCount;
+        }
+
+        turnCount = Mathf.Max(1, result.turnCount);
+        firstPlayerSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        onlineBroadcastRequestPending = false;
+        onlineBroadcastSetupReady = false;
+
+        StartMainGame(
+            string.IsNullOrWhiteSpace(result.message)
+                ? "방송 설치가 완료되어 본게임을 시작합니다."
+                : result.message);
+
+        int expectedMyHand = localIsHost
+            ? result.hostHandCount
+            : result.clientHandCount;
+        int expectedEnemyHand = localIsHost
+            ? result.clientHandCount
+            : result.hostHandCount;
+        int expectedMyDeck = localIsHost
+            ? result.hostDeckCount
+            : result.clientDeckCount;
+        int expectedEnemyDeck = localIsHost
+            ? result.clientDeckCount
+            : result.hostDeckCount;
+
+        Debug.Log(
+            $"[BattleManager] Entered online main game phase. " +
+            $"currentTurn={currentActionSide}, turn={turnCount}, " +
+            $"hand={myPlayer?.hand.Count}/{expectedMyHand}, " +
+            $"enemyHand={enemyPlayer?.hand.Count}/{expectedEnemyHand}, " +
+            $"deck={myPlayer?.mainDeck.Count}/{expectedMyDeck}, " +
+            $"enemyDeck={enemyPlayer?.mainDeck.Count}/{expectedEnemyDeck}");
     }
 
     private void CancelBroadcastSelection()
@@ -2194,6 +2845,8 @@ public class BattleManager : MonoBehaviour
 
         myPlayer.idolCard = CreateRuntimeCardInstance(localSourceCard, BattleSlotOwner.My.ToString());
         enemyPlayer.idolCard = CreateRuntimeCardInstance(remoteSourceCard, BattleSlotOwner.Enemy.ToString());
+        myRequiredBroadcastCount = GetRequiredBroadcastCount(myPlayer);
+        enemyRequiredBroadcastCount = GetRequiredBroadcastCount(enemyPlayer);
 
         SetZoneCardVisual(
             myIdolSlot,
@@ -4851,6 +5504,9 @@ public class BattleManager : MonoBehaviour
         EffectContext context,
         Action onComplete)
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return false;
+
         TestEnemy controller = GetTestEnemyController();
 
         if (controller == null)
@@ -4861,6 +5517,9 @@ public class BattleManager : MonoBehaviour
 
     private TestEnemy GetTestEnemyController()
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return null;
+
         if (testEnemyController != null)
             return testEnemyController;
 
@@ -6399,6 +7058,9 @@ public class BattleManager : MonoBehaviour
 
     public void TestEnemyPassAction()
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return;
+
         if (IsGameOver() || IsBattleBusy())
             return;
 
@@ -6413,6 +7075,9 @@ public class BattleManager : MonoBehaviour
 
     public void TestEnemyUseAction(string actionMessage)
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return;
+
         if (IsGameOver() || IsBattleBusy())
             return;
 
@@ -6427,6 +7092,9 @@ public class BattleManager : MonoBehaviour
 
     public bool TryExecuteTestEnemyAttack()
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return false;
+
         if (IsGameOver() || IsBattleBusy())
             return false;
 
@@ -6549,6 +7217,9 @@ public class BattleManager : MonoBehaviour
 
     public bool TestEnemyTrySummonBacksideCharacter()
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return false;
+
         if (IsGameOver() || IsBattleBusy())
             return false;
 
@@ -6603,6 +7274,9 @@ public class BattleManager : MonoBehaviour
 
     public bool TestEnemyTryFlipSummonCharacter()
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return false;
+
         if (IsGameOver() || IsBattleBusy())
             return false;
 
@@ -6674,6 +7348,9 @@ public class BattleManager : MonoBehaviour
 
     public bool TestEnemyTrySummonFrontCharacter()
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return false;
+
         if (IsGameOver() || IsBattleBusy())
             return false;
 
@@ -6734,6 +7411,9 @@ public class BattleManager : MonoBehaviour
 
     public void TestEnemyPlaceBroadcastCard()
     {
+        if (!IsTestEnemyAutomationAllowed())
+            return;
+
         if (IsGameOver() || IsBattleBusy())
             return;
 
@@ -6785,7 +7465,29 @@ public class BattleManager : MonoBehaviour
 
         RefreshAllUI();
 
-        AdvanceBroadcastSetupTurn(placedMessage);
+        AdvanceBroadcastSetupTurn(BattlePlayerSide.Enemy, placedMessage);
+    }
+
+    private bool IsTestEnemyAutomationAllowed()
+    {
+        return !BattleStartSettings.IsOnlineBattle &&
+            (OnlineBattleSession.Instance == null ||
+             !OnlineBattleSession.Instance.WasOnlineBattleSession);
+    }
+
+    public void EndOnlineBattleFromExternal(string message)
+    {
+        onlineBroadcastRequestPending = false;
+        onlineBroadcastSetupReady = false;
+        isGameOver = true;
+        SetBattleBusy(true, "Online battle session ended");
+        CloseBroadcastSelectPanel();
+        RefreshBroadcastSetupButtons();
+
+        if (turnEndButton != null)
+            turnEndButton.interactable = false;
+
+        SetSystemMessage(message);
     }
 
     private BattleFieldSlot FindFirstPlaceableBroadcastSlot(BattlePlayerSide side)
