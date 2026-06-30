@@ -43,6 +43,23 @@ public class BattleActionResolver
         result.isAccepted = true;
         result.message = $"Host accepted {action.actionType}";
 
+        if (action.actionType == BattleActionType.EndTurn)
+            return battleManager.CreateEndTurnResultFromExternal(action);
+
+        if (action.actionType == BattleActionType.SummonFaceDown)
+        {
+            battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
+            return battleManager.CreateSummonFaceDownResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.SummonFaceUp)
+        {
+            battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
+            return battleManager.CreateSummonFaceUpResultFromExternal(action);
+        }
+
+        battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
+
         if (action.actionType == BattleActionType.PlaceBroadcast)
         {
             result.affectedCardIds.Add(action.cardInstanceId);

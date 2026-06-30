@@ -50,16 +50,33 @@ public class BattleActionResultApplier
     {
         Debug.Log($"[BattleActionResultApplier] Accepted actionSequence={result.actionSequence}, actionType={result.requestActionType}");
 
-        if (battleManager != null && !string.IsNullOrWhiteSpace(result.message))
+        if (battleManager != null &&
+            result.requestActionType != BattleActionType.EndTurn &&
+            result.requestActionType != BattleActionType.SummonFaceUp &&
+            !string.IsNullOrWhiteSpace(result.message))
+        {
             battleManager.SetSystemMessageFromExternal(result.message);
+        }
 
         LogResolvedRandoms(result);
         ApplyDeckOrders(result);
 
         switch (result.requestActionType)
         {
+            case BattleActionType.EndTurn:
+                ApplyEndTurnResult(result);
+                break;
+
             case BattleActionType.PlaceBroadcast:
                 ApplyPlaceBroadcastResult(result);
+                break;
+
+            case BattleActionType.SummonFaceDown:
+                ApplySummonFaceDownResult(result);
+                break;
+
+            case BattleActionType.SummonFaceUp:
+                ApplySummonFaceUpResult(result);
                 break;
 
             case BattleActionType.StartMainGame:
@@ -70,6 +87,14 @@ public class BattleActionResultApplier
                 // TODO: Add ActionType-specific result application as host results become richer.
                 break;
         }
+    }
+
+    private void ApplyEndTurnResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        battleManager.ApplyEndTurnFromResult(result);
     }
 
     private void ApplyPlaceBroadcastResult(BattleActionResult result)
@@ -90,6 +115,22 @@ public class BattleActionResultApplier
             targetSlotId);
     }
 
+    private void ApplySummonFaceDownResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        battleManager.ApplySummonFaceDownFromResult(result);
+    }
+
+    private void ApplySummonFaceUpResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        battleManager.ApplySummonFaceUpFromResult(result);
+    }
+
     private void ApplyStartMainGameResult(BattleActionResult result)
     {
         if (battleManager == null)
@@ -105,6 +146,9 @@ public class BattleActionResultApplier
             Debug.LogWarning("[BattleActionResultApplier] Cannot apply deck order: BattleManager is null");
             return;
         }
+
+        if (result.requestActionType == BattleActionType.StartMainGame)
+            return;
 
         if (result.playerMainDeckOrderIds != null && result.playerMainDeckOrderIds.Count > 0)
         {

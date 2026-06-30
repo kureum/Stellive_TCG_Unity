@@ -249,11 +249,22 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             : BattleSlotOwner.Enemy;
         action.targetSlotId = ConvertSlotIdToOwner(action.targetSlotId, action.actor);
 
-        Debug.Log($"[OnlineBattle] Host received BattleActionRequest: {action.actionType}");
+        Debug.Log(
+            $"[OnlineBattle] Host received BattleActionRequest: {action.actionType}, " +
+            $"actor={action.actor}, currentTurn={battleManager?.CurrentActionSideFromExternal}, " +
+            $"turnCount={battleManager?.GetCurrentTurnCountFromExternal()}");
 
         BattleActionResult result = actionResolver.ResolveActionAsHost(action);
-        if (!result.isAccepted && action.actionType == BattleActionType.PlaceBroadcast)
-            Debug.LogWarning($"[OnlineBattle] PlaceBroadcast rejected: reason={result.rejectReason}");
+        if (!result.isAccepted)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] {action.actionType} rejected: reason={result.rejectReason}");
+        }
+        else
+        {
+            Debug.Log(
+                $"[OnlineBattle] Host accepted {action.actionType}. actor={result.actor}");
+        }
 
         BroadcastBattleActionResult(BattleActionResultSerializer.ToJson(result));
     }
@@ -268,13 +279,32 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         if (!IsHost)
         {
             result.actor = InvertOwner(result.actor);
-            if (result.requestActionType == BattleActionType.StartMainGame)
+            if (result.requestActionType == BattleActionType.StartMainGame ||
+                result.requestActionType == BattleActionType.EndTurn ||
+                result.requestActionType == BattleActionType.SummonFaceDown ||
+                result.requestActionType == BattleActionType.SummonFaceUp)
+            {
                 result.currentTurnPlayer = InvertOwner(result.currentTurnPlayer);
+            }
+
+            if (result.requestActionType == BattleActionType.EndTurn &&
+                result.didAdvanceTurn &&
+                result.drawnCardInstanceIds != null &&
+                result.drawnCardInstanceIds.Count > 0)
+            {
+                result.drawnPlayer = InvertOwner(result.drawnPlayer);
+            }
+
             ConvertResultSlotIdsToLocalPerspective(result);
         }
 
-        if (result.requestActionType == BattleActionType.StartMainGame)
-            Debug.Log("[OnlineBattle] Received StartMainGameResult.");
+        if (result.requestActionType == BattleActionType.StartMainGame ||
+            result.requestActionType == BattleActionType.EndTurn ||
+            result.requestActionType == BattleActionType.SummonFaceDown ||
+            result.requestActionType == BattleActionType.SummonFaceUp)
+        {
+            Debug.Log($"[OnlineBattle] Received {result.requestActionType}Result.");
+        }
 
         resultApplier.Apply(result);
 
@@ -341,7 +371,12 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             SendOptions.SendReliable);
 
         if (sent)
-            Debug.Log("[OnlineBattle] Sent BattleActionRequest: PlaceBroadcast");
+        {
+            BattleAction action = BattleActionSerializer.FromJson(actionJson);
+            Debug.Log(
+                $"[OnlineBattle] Sent BattleActionRequest: " +
+                $"{(action != null ? action.actionType.ToString() : "Unknown")}");
+        }
         return sent;
     }
 

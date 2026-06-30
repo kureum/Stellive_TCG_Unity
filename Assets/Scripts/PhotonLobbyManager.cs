@@ -26,7 +26,9 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
     }
 
     [Header("Photon")]
-    [SerializeField] private string gameVersion = "stellive-tcg-lobby-v1";
+    [Tooltip("Photon Cloud Region code to force for local online tests. If this does not match the project, compare logs and try asia, jp, or kr.")]
+    [SerializeField] private string fixedPhotonRegion = "kr";
+    [SerializeField] private string fixedGameVersion = "0.1.0";
     [SerializeField] private string fallbackNickNamePrefix = "Player";
     [SerializeField] private bool connectOnStart = true;
 
@@ -93,17 +95,25 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
     public void ConnectToPhoton()
     {
         EnsureNickName();
-
         PhotonNetwork.AutomaticallySyncScene = true;
-        PhotonNetwork.GameVersion = gameVersion;
 
         if (PhotonNetwork.IsConnectedAndReady)
         {
+            LogNetworkState("ConnectToPhoton already connected and ready");
             JoinLobbyIfNeeded();
             return;
         }
 
+        if (PhotonNetwork.IsConnected)
+        {
+            LogNetworkState("ConnectToPhoton already connecting or connected");
+            UpdateLobbyStatusText("Photon 서버 연결을 확인 중입니다...");
+            return;
+        }
+
+        ApplyPhotonConnectionSettings();
         UpdateLobbyStatusText("Photon 서버에 연결 중...");
+        LogNetworkState("Before ConnectUsingSettings");
         PhotonNetwork.ConnectUsingSettings();
     }
 
@@ -165,6 +175,8 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
         isJoiningRoom = true;
         SetRoomControls(false, false, true);
         UpdateLobbyStatusText($"방 {roomCode}에 입장 중...");
+        Debug.Log($"[PhotonLobby] Try JoinRoom. roomCode={roomCode}");
+        LogNetworkState("Before JoinRoom");
         PhotonNetwork.JoinRoom(roomCode);
     }
 
@@ -252,17 +264,20 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
 
     public override void OnConnectedToMaster()
     {
+        LogNetworkState("OnConnectedToMaster");
         UpdateLobbyStatusText("Photon 서버 연결 성공. 로비 입장 중...");
         JoinLobbyIfNeeded();
     }
 
     public override void OnJoinedLobby()
     {
+        LogNetworkState("OnJoinedLobby");
         ResetToLobbyUi("Photon 로비 입장 완료. 방 생성 또는 RoomCode 입장이 가능합니다.");
     }
 
     public override void OnCreatedRoom()
     {
+        LogNetworkState("OnCreatedRoom");
         isCreateRoomPending = false;
 
         if (cancelCreateRoomRequested)
@@ -281,6 +296,9 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
 
     public override void OnCreateRoomFailed(short returnCode, string message)
     {
+        Debug.LogError($"[PhotonLobby] CreateRoom failed. code={returnCode}, message={message}");
+        LogNetworkState("OnCreateRoomFailed");
+
         if (cancelCreateRoomRequested)
         {
             isCreateRoomPending = false;
@@ -303,6 +321,7 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
 
     public override void OnJoinedRoom()
     {
+        LogNetworkState("OnJoinedRoom");
         isJoiningRoom = false;
         isCreateRoomPending = false;
 
@@ -327,13 +346,14 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
         }
 
         SetLobbyButtonsInteractable(false);
-        LogNetworkState($"Joined room {PhotonNetwork.CurrentRoom.Name}");
         UpdateRoomStateText();
         TryStartBattleWhenRoomReady();
     }
 
     public override void OnJoinRoomFailed(short returnCode, string message)
     {
+        Debug.LogError($"[PhotonLobby] JoinRoom failed. code={returnCode}, message={message}");
+        LogNetworkState("OnJoinRoomFailed");
         isJoiningRoom = false;
         SetRoomPanelModeForJoin(false);
         UpdateLobbyStatusText($"방 입장 실패: {message} ({returnCode})");
@@ -341,6 +361,8 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
 
     public override void OnLeftRoom()
     {
+        Debug.LogWarning("[PhotonLobby] OnLeftRoom called.");
+        LogNetworkState("OnLeftRoom");
         BattleStartSettings.ClearOnlineSettings();
         pendingCreateRoomCode = "";
         isJoiningRoom = false;
@@ -383,6 +405,8 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
 
     public override void OnDisconnected(DisconnectCause cause)
     {
+        Debug.LogError($"[PhotonLobby] Disconnected. cause={cause}");
+        LogNetworkState("OnDisconnected");
         BattleStartSettings.ClearOnlineSettings();
         pendingCreateRoomCode = "";
         isJoiningRoom = false;
@@ -495,7 +519,27 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
 
         SetLobbyButtonsInteractable(false);
         ShowHostWaitingPanel(pendingCreateRoomCode);
+        Debug.Log($"[PhotonLobby] Try CreateRoom. roomCode={pendingCreateRoomCode}");
+        LogNetworkState("Before CreateRoom");
         PhotonNetwork.CreateRoom(pendingCreateRoomCode, roomOptions);
+    }
+
+    private void ApplyPhotonConnectionSettings()
+    {
+        string version = string.IsNullOrWhiteSpace(fixedGameVersion)
+            ? "0.1.0"
+            : fixedGameVersion.Trim();
+
+        PhotonNetwork.GameVersion = version;
+
+        if (PhotonNetwork.PhotonServerSettings != null &&
+            PhotonNetwork.PhotonServerSettings.AppSettings != null)
+        {
+            PhotonNetwork.PhotonServerSettings.AppSettings.AppVersion = version;
+
+            if (!string.IsNullOrWhiteSpace(fixedPhotonRegion))
+                PhotonNetwork.PhotonServerSettings.AppSettings.FixedRegion = fixedPhotonRegion.Trim();
+        }
     }
 
     private void JoinLobbyIfNeeded()
@@ -821,12 +865,29 @@ public class PhotonLobbyManager : MonoBehaviourPunCallbacks
         Debug.Log($"[PhotonLobby] {message}");
     }
 
-    private void LogNetworkState(string message)
+    private void LogNetworkState(string context)
     {
-        if (string.IsNullOrWhiteSpace(message))
+        if (string.IsNullOrWhiteSpace(context))
             return;
 
-        Debug.Log($"[PhotonLobby] {message}");
+        string fixedRegion = PhotonNetwork.PhotonServerSettings != null &&
+            PhotonNetwork.PhotonServerSettings.AppSettings != null
+                ? PhotonNetwork.PhotonServerSettings.AppSettings.FixedRegion
+                : "";
+
+        Debug.Log(
+            $"[PhotonLobby:{context}] " +
+            $"IsConnected={PhotonNetwork.IsConnected}, " +
+            $"IsConnectedAndReady={PhotonNetwork.IsConnectedAndReady}, " +
+            $"Server={PhotonNetwork.Server}, " +
+            $"CloudRegion={PhotonNetwork.CloudRegion}, " +
+            $"FixedRegion={fixedRegion}, " +
+            $"InLobby={PhotonNetwork.InLobby}, " +
+            $"InRoom={PhotonNetwork.InRoom}, " +
+            $"CurrentRoom={PhotonNetwork.CurrentRoom?.Name}, " +
+            $"GameVersion={PhotonNetwork.GameVersion}, " +
+            $"UserId={PhotonNetwork.LocalPlayer?.UserId}, " +
+            $"NickName={PhotonNetwork.NickName}");
     }
 
     private Button CreateRuntimeButton(

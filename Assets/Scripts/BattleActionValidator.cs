@@ -134,13 +134,7 @@ public class BattleActionValidator
         if (!slotResult.isValid)
             return slotResult;
 
-        if (battleManager.summonManager == null)
-            return BattleActionValidationResult.Invalid("SummonManager is null.");
-
-        if (!battleManager.summonManager.CanSummonBacksideFromExternal(card, out failReason))
-            return BattleActionValidationResult.Invalid(failReason);
-
-        if (battleManager.IsFaceDownSummonForbiddenByBroadcastFromExternal(targetSlot, out failReason))
+        if (!battleManager.CanSummonFaceDownFromExternal(action.actor, card, targetSlot, out failReason))
             return BattleActionValidationResult.Invalid(failReason);
 
         return BattleActionValidationResult.Valid();

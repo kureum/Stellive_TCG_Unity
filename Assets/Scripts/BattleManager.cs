@@ -168,6 +168,18 @@ public class BattleManager : MonoBehaviour
     private BattlePlayerSide currentActionSide;
     private int nextActionSequence = 1;
     private bool onlineBroadcastRequestPending;
+    private bool onlineEndTurnRequestPending;
+    private bool onlineSummonFaceDownRequestPending;
+    private bool onlineSummonFaceUpRequestPending;
+    private bool onlineHostPassedThisTurn;
+    private bool onlineClientPassedThisTurn;
+    private bool onlineHostActedInCurrentPassCycle;
+    private bool onlineClientActedInCurrentPassCycle;
+    private bool onlineHostNoActionPassed;
+    private bool onlineClientNoActionPassed;
+    private int onlineConsecutiveNoActionPassCount;
+    private bool onlineHostHasSummonedFaceDownThisTurn;
+    private bool onlineClientHasSummonedFaceDownThisTurn;
     private bool onlineBroadcastSetupReady;
     private bool isReadyForOnlineRuntimeInitialization;
     private bool hasInitializedOnlineRuntime;
@@ -307,6 +319,10 @@ public class BattleManager : MonoBehaviour
         nextActionSequence = 1;
         nextCardInstanceSequence = 1;
         onlineBroadcastRequestPending = false;
+        onlineEndTurnRequestPending = false;
+        onlineSummonFaceDownRequestPending = false;
+        onlineSummonFaceUpRequestPending = false;
+        ClearOnlineTurnPassState();
         onlineBroadcastSetupReady = false;
         hasInitializedOnlineRuntime = false;
         isGameOver = false;
@@ -861,11 +877,7 @@ public class BattleManager : MonoBehaviour
 
         RefreshAllUI();
         RefreshBroadcastSetupButtons();
-
-        StartCoroutine(PlaySimplePanelMessageRoutine(
-            "방송 배치 시간",
-            SimpleMessageExitDirection.LeftToRight
-        ));
+        StartCoroutine(PlayBroadcastSetupIntroRoutine());
 
         string setupOwnerMessage = BattleStartSettings.IsOnlineBattle
             ? "Host의 선공 actorNumber를 동기화하고 있습니다."
@@ -879,6 +891,31 @@ public class BattleManager : MonoBehaviour
             $"방송 카드 설치 단계입니다.\n" +
             setupOwnerMessage
         );
+    }
+
+    private IEnumerator PlayBroadcastSetupIntroRoutine()
+    {
+        Debug.Log("[BroadcastSetupIntro] Start.");
+        SetBattleBusy(true, "BroadcastSetupIntroRoutine");
+        Debug.Log($"[BroadcastSetupIntro] Input locked. pending={BuildPendingStateSummary()}");
+        RefreshBroadcastSetupButtons();
+
+        yield return PlaySimplePanelMessageRoutine(
+            "방송 배치 시간",
+            SimpleMessageExitDirection.LeftToRight
+        );
+
+        if (currentPhase == BattlePhase.BroadcastSetup)
+        {
+            Debug.Log("[BroadcastSetupIntro] End.");
+            SetBattleBusy(false, "BroadcastSetupIntroRoutine finished");
+            RefreshBroadcastSetupButtons();
+            Debug.Log($"[BroadcastSetupIntro] Input unlocked. pending={BuildPendingStateSummary()}");
+        }
+        else
+        {
+            SetBattleBusy(false, "BroadcastSetupIntroRoutine interrupted");
+        }
     }
 
     private int GetRequiredBroadcastCount(BattlePlayerRuntime player)
@@ -1798,20 +1835,57 @@ public class BattleManager : MonoBehaviour
 
     public void HandleRejectedActionResultFromExternal(BattleActionResult result)
     {
-        if (result == null ||
-            result.requestActionType != BattleActionType.PlaceBroadcast)
+        if (result == null)
         {
             return;
         }
 
-        onlineBroadcastRequestPending = false;
-        selectedBroadcastTargetSlot = null;
-        CloseBroadcastSelectPanel();
+        if (result.requestActionType == BattleActionType.PlaceBroadcast)
+        {
+            onlineBroadcastRequestPending = false;
+            selectedBroadcastTargetSlot = null;
+            CloseBroadcastSelectPanel();
 
-        if (IsBattleBusy())
-            SetBattleBusy(false, "PlaceBroadcastResult rejected");
+            if (IsBattleBusy())
+                SetBattleBusy(false, "PlaceBroadcastResult rejected");
 
-        RefreshBroadcastSetupButtons();
+            RefreshBroadcastSetupButtons();
+            return;
+        }
+
+        if (result.requestActionType == BattleActionType.EndTurn)
+        {
+            onlineEndTurnRequestPending = false;
+
+            if (IsBattleBusy())
+                SetBattleBusy(false, "EndTurnResult rejected");
+
+            RefreshTurnEndButtonState();
+            return;
+        }
+
+        if (result.requestActionType == BattleActionType.SummonFaceDown)
+        {
+            onlineSummonFaceDownRequestPending = false;
+
+            if (IsBattleBusy())
+                SetBattleBusy(false, "SummonFaceDownResult rejected");
+
+            RefreshAllUI();
+            RefreshTurnEndButtonState();
+            return;
+        }
+
+        if (result.requestActionType == BattleActionType.SummonFaceUp)
+        {
+            onlineSummonFaceUpRequestPending = false;
+
+            if (IsBattleBusy())
+                SetBattleBusy(false, "SummonFaceUpResult rejected");
+
+            RefreshAllUI();
+            RefreshTurnEndButtonState();
+        }
     }
 
     public bool TryApplyOnlineBroadcastDecksFromExternal(
@@ -1873,8 +1947,11 @@ public class BattleManager : MonoBehaviour
         ResolveFieldSlots();
         InitializeFieldSlots();
 
-        DrawCards(myPlayer, 5);
-        DrawCards(enemyPlayer, 5);
+        Debug.Log(
+            $"[OnlineBattle] Online runtime initialized before StartMainGameResult. " +
+            $"myHand={myPlayer.hand.Count}, myMainDeck={myPlayer.mainDeck.Count}, " +
+            $"enemyHand={enemyPlayer.hand.Count}, enemyMainDeck={enemyPlayer.mainDeck.Count}. " +
+            "Initial hands are assigned only from StartMainGameResult.");
 
         selectedBroadcastTargetSlot = null;
         onlineBroadcastRequestPending = false;
@@ -1889,6 +1966,7 @@ public class BattleManager : MonoBehaviour
         Debug.Log(
             $"[OnlineBattleSession] Online runtime initialized. " +
             $"localActor={localActorNumber}, remoteActor={remoteActorNumber}, " +
+            $"myHand={myPlayer.hand.Count}, enemyHand={enemyPlayer.hand.Count}, " +
             $"myMainDeck={myPlayer.mainDeck.Count}, enemyMainDeck={enemyPlayer.mainDeck.Count}, " +
             $"myBroadcastDeck={myPlayer.broadcastDeck.Count}, " +
             $"enemyBroadcastDeck={enemyPlayer.broadcastDeck.Count}");
@@ -2159,21 +2237,152 @@ public class BattleManager : MonoBehaviour
             nextPhase = BattlePhase.MainGame.ToString()
         };
 
+        Debug.Log("[OnlineBattle] StartMainGame host shuffle start.");
+        BuildOnlineStartingMainDeckResult(
+            myPlayer,
+            result.hostInitialHandCardInstanceIds,
+            result.hostRemainingMainDeckOrderIds,
+            "Host");
+        BuildOnlineStartingMainDeckResult(
+            enemyPlayer,
+            result.clientInitialHandCardInstanceIds,
+            result.clientRemainingMainDeckOrderIds,
+            "Client");
+        result.playerMainDeckOrderIds.Clear();
+        result.playerMainDeckOrderIds.AddRange(result.hostRemainingMainDeckOrderIds);
+        result.enemyMainDeckOrderIds.Clear();
+        result.enemyMainDeckOrderIds.AddRange(result.clientRemainingMainDeckOrderIds);
+
         if (myPlayer != null)
         {
             result.hostViewerCount = myPlayer.viewers;
-            result.hostHandCount = myPlayer.hand != null ? myPlayer.hand.Count : 0;
-            result.hostDeckCount = myPlayer.mainDeck != null ? myPlayer.mainDeck.Count : 0;
+            result.hostHandCount = result.hostInitialHandCardInstanceIds.Count;
+            result.hostDeckCount = result.hostRemainingMainDeckOrderIds.Count;
         }
 
         if (enemyPlayer != null)
         {
             result.clientViewerCount = enemyPlayer.viewers;
-            result.clientHandCount = enemyPlayer.hand != null ? enemyPlayer.hand.Count : 0;
-            result.clientDeckCount = enemyPlayer.mainDeck != null ? enemyPlayer.mainDeck.Count : 0;
+            result.clientHandCount = result.clientInitialHandCardInstanceIds.Count;
+            result.clientDeckCount = result.clientRemainingMainDeckOrderIds.Count;
         }
 
+        Debug.Log(
+            $"[OnlineBattle] StartMainGameResult deck orders. " +
+            $"hostHand={result.hostInitialHandCardInstanceIds.Count}, " +
+            $"hostDeck={result.hostRemainingMainDeckOrderIds.Count}, " +
+            $"clientHand={result.clientInitialHandCardInstanceIds.Count}, " +
+            $"clientDeck={result.clientRemainingMainDeckOrderIds.Count}");
         return result;
+    }
+
+    private void BuildOnlineStartingMainDeckResult(
+        BattlePlayerRuntime player,
+        List<string> initialHandIds,
+        List<string> remainingDeckOrderIds,
+        string label)
+    {
+        if (player == null ||
+            player.hand == null ||
+            player.mainDeck == null ||
+            initialHandIds == null ||
+            remainingDeckOrderIds == null)
+        {
+            Debug.LogWarning($"[OnlineBattle] StartMainGame shuffle skipped. label={label}");
+            return;
+        }
+
+        List<BaseCardData> fullMainDeckPool = new List<BaseCardData>();
+        if (player.hand.Count > 0)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] {label} hand was not empty before StartMainGameResult. " +
+                $"hand={player.hand.Count}, deck={player.mainDeck.Count}. " +
+                "Recovering by combining hand + mainDeck into one pool.");
+        }
+
+        fullMainDeckPool.AddRange(player.hand);
+        fullMainDeckPool.AddRange(player.mainDeck);
+
+        Debug.Log(
+            $"[OnlineBattle] {label} full pool count={fullMainDeckPool.Count}, " +
+            $"beforeTop5={BuildCardInstanceIdPreview(fullMainDeckPool, 5)}");
+
+        ShuffleWithBattleRng(fullMainDeckPool, label);
+
+        initialHandIds.Clear();
+        remainingDeckOrderIds.Clear();
+
+        int handCount = Mathf.Min(5, fullMainDeckPool.Count);
+        for (int i = 0; i < fullMainDeckPool.Count; i++)
+        {
+            BaseCardData card = fullMainDeckPool[i];
+            if (card == null)
+                continue;
+
+            string cardInstanceId = GetCardInstanceIdForOrder(card);
+            if (i < handCount)
+            {
+                initialHandIds.Add(cardInstanceId);
+            }
+            else
+            {
+                remainingDeckOrderIds.Add(cardInstanceId);
+            }
+        }
+
+        Debug.Log(
+            $"[OnlineBattle] {label} shuffled top5=" +
+            $"{BuildCardInstanceIdPreview(fullMainDeckPool, 5)} " +
+            $"initialHand={initialHandIds.Count}, remainingDeck={remainingDeckOrderIds.Count}");
+    }
+
+    private void ShuffleWithBattleRng(List<BaseCardData> cards, string label)
+    {
+        if (cards == null)
+            return;
+
+        BattleRngService rng = new BattleRngService();
+        int labelSalt = string.Equals(label, "Host", StringComparison.OrdinalIgnoreCase)
+            ? 0x13579
+            : 0x24680;
+        rng.SetSeed(
+            Environment.TickCount ^
+            DateTime.UtcNow.Millisecond ^
+            nextActionSequence ^
+            labelSalt);
+
+        for (int i = 0; i < cards.Count; i++)
+        {
+            int randomIndex = rng.Range(i, cards.Count);
+            BaseCardData temp = cards[i];
+            cards[i] = cards[randomIndex];
+            cards[randomIndex] = temp;
+        }
+    }
+
+    private string BuildCardInstanceIdPreview(List<BaseCardData> cards, int count)
+    {
+        if (cards == null || cards.Count == 0)
+            return "(empty)";
+
+        int safeCount = Mathf.Clamp(count, 0, cards.Count);
+        List<string> ids = new List<string>();
+
+        for (int i = 0; i < safeCount; i++)
+            ids.Add(GetCardInstanceIdForOrder(cards[i]));
+
+        return string.Join(", ", ids);
+    }
+
+    private string GetCardInstanceIdForOrder(BaseCardData card)
+    {
+        if (card == null)
+            return "";
+
+        return !string.IsNullOrWhiteSpace(card.cardInstanceId)
+            ? card.cardInstanceId
+            : card.id;
     }
 
     public void ApplyStartMainGameFromResult(BattleActionResult result)
@@ -2198,6 +2407,8 @@ public class BattleManager : MonoBehaviour
             OnlineBattleSession.Instance != null &&
             OnlineBattleSession.Instance.IsHost;
 
+        ApplyStartMainGameDeckSnapshotFromResult(result, localIsHost);
+
         if (myPlayer != null)
         {
             myPlayer.viewers = localIsHost
@@ -2217,6 +2428,10 @@ public class BattleManager : MonoBehaviour
             ? BattlePlayerSide.My
             : BattlePlayerSide.Enemy;
         onlineBroadcastRequestPending = false;
+        onlineEndTurnRequestPending = false;
+        onlineSummonFaceDownRequestPending = false;
+        onlineSummonFaceUpRequestPending = false;
+        ClearOnlineTurnPassState();
         onlineBroadcastSetupReady = false;
 
         StartMainGame(
@@ -2244,6 +2459,1088 @@ public class BattleManager : MonoBehaviour
             $"enemyHand={enemyPlayer?.hand.Count}/{expectedEnemyHand}, " +
             $"deck={myPlayer?.mainDeck.Count}/{expectedMyDeck}, " +
             $"enemyDeck={enemyPlayer?.mainDeck.Count}/{expectedEnemyDeck}");
+    }
+
+    private void ApplyStartMainGameDeckSnapshotFromResult(
+        BattleActionResult result,
+        bool localIsHost)
+    {
+        if (result == null)
+            return;
+
+        Debug.Log(
+            $"[OnlineBattle] ApplyStartMainGame before deck snapshot. " +
+            $"localIsHost={localIsHost}, " +
+            $"myHand={myPlayer?.hand.Count}, myDeck={myPlayer?.mainDeck.Count}, " +
+            $"enemyHand={enemyPlayer?.hand.Count}, enemyDeck={enemyPlayer?.mainDeck.Count}");
+
+        List<string> myInitialHandIds = localIsHost
+            ? result.hostInitialHandCardInstanceIds
+            : result.clientInitialHandCardInstanceIds;
+        List<string> enemyInitialHandIds = localIsHost
+            ? result.clientInitialHandCardInstanceIds
+            : result.hostInitialHandCardInstanceIds;
+        List<string> myRemainingDeckIds = localIsHost
+            ? SelectStartMainGameRemainingDeckIds(
+                result.hostRemainingMainDeckOrderIds,
+                result.playerMainDeckOrderIds)
+            : SelectStartMainGameRemainingDeckIds(
+                result.clientRemainingMainDeckOrderIds,
+                result.enemyMainDeckOrderIds);
+        List<string> enemyRemainingDeckIds = localIsHost
+            ? SelectStartMainGameRemainingDeckIds(
+                result.clientRemainingMainDeckOrderIds,
+                result.enemyMainDeckOrderIds)
+            : SelectStartMainGameRemainingDeckIds(
+                result.hostRemainingMainDeckOrderIds,
+                result.playerMainDeckOrderIds);
+
+        bool appliedMy = ApplyStartingHandAndMainDeckOrderFromExternal(
+            BattleSlotOwner.My,
+            myInitialHandIds,
+            myRemainingDeckIds);
+        bool appliedEnemy = ApplyStartingHandAndMainDeckOrderFromExternal(
+            BattleSlotOwner.Enemy,
+            enemyInitialHandIds,
+            enemyRemainingDeckIds);
+
+        Debug.Log(
+            $"[OnlineBattle] ApplyStartMainGame deck snapshot. " +
+            $"localIsHost={localIsHost}, myApplied={appliedMy}, enemyApplied={appliedEnemy}, " +
+            $"myHandOrder={myInitialHandIds?.Count ?? 0}, myDeckOrder={myRemainingDeckIds?.Count ?? 0}, " +
+            $"enemyHandOrder={enemyInitialHandIds?.Count ?? 0}, enemyDeckOrder={enemyRemainingDeckIds?.Count ?? 0}");
+        Debug.Log(
+            $"[OnlineBattle] Initial hand after StartMainGame deck snapshot. " +
+            $"myHand={myPlayer?.hand.Count}, myDeck={myPlayer?.mainDeck.Count}, " +
+            $"enemyHand={enemyPlayer?.hand.Count}, enemyDeck={enemyPlayer?.mainDeck.Count}");
+    }
+
+    private List<string> SelectStartMainGameRemainingDeckIds(
+        List<string> absoluteIds,
+        List<string> legacyIds)
+    {
+        if (absoluteIds != null && absoluteIds.Count > 0)
+            return absoluteIds;
+
+        return legacyIds ?? new List<string>();
+    }
+
+    private bool ApplyStartingHandAndMainDeckOrderFromExternal(
+        BattleSlotOwner owner,
+        List<string> initialHandIds,
+        List<string> remainingDeckOrderIds)
+    {
+        BattlePlayerRuntime targetPlayer =
+            owner == BattleSlotOwner.My
+                ? myPlayer
+                : enemyPlayer;
+
+        if (targetPlayer == null ||
+            targetPlayer.hand == null ||
+            targetPlayer.mainDeck == null ||
+            initialHandIds == null ||
+            remainingDeckOrderIds == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Apply starting deck snapshot failed: missing data. owner={owner}");
+            return false;
+        }
+
+        Dictionary<string, BaseCardData> cardsByInstanceId =
+            new Dictionary<string, BaseCardData>(StringComparer.OrdinalIgnoreCase);
+        AddCardsToInstanceMap(targetPlayer.hand, cardsByInstanceId, owner, "hand");
+        AddCardsToInstanceMap(targetPlayer.mainDeck, cardsByInstanceId, owner, "mainDeck");
+
+        int expectedCount = initialHandIds.Count + remainingDeckOrderIds.Count;
+        if (cardsByInstanceId.Count != expectedCount)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Apply starting deck snapshot count mismatch. " +
+                $"owner={owner}, available={cardsByInstanceId.Count}, expected={expectedCount}");
+            return false;
+        }
+
+        List<BaseCardData> reorderedHand = new List<BaseCardData>();
+        List<BaseCardData> reorderedDeck = new List<BaseCardData>();
+        HashSet<string> usedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (!ResolveOrderedCards(
+                initialHandIds,
+                cardsByInstanceId,
+                usedIds,
+                reorderedHand,
+                owner,
+                "initialHand"))
+        {
+            return false;
+        }
+
+        if (!ResolveOrderedCards(
+                remainingDeckOrderIds,
+                cardsByInstanceId,
+                usedIds,
+                reorderedDeck,
+                owner,
+                "mainDeck"))
+        {
+            return false;
+        }
+
+        targetPlayer.hand.Clear();
+        targetPlayer.hand.AddRange(reorderedHand);
+        targetPlayer.mainDeck.Clear();
+        targetPlayer.mainDeck.AddRange(reorderedDeck);
+
+        Debug.Log(
+            $"[OnlineBattle] Applied starting hand/deck order. " +
+            $"owner={owner}, hand={targetPlayer.hand.Count}, deck={targetPlayer.mainDeck.Count}, " +
+            $"handTop={string.Join(", ", initialHandIds.Take(Mathf.Min(5, initialHandIds.Count)))}");
+        return true;
+    }
+
+    private void AddCardsToInstanceMap(
+        List<BaseCardData> cards,
+        Dictionary<string, BaseCardData> cardsByInstanceId,
+        BattleSlotOwner owner,
+        string zoneName)
+    {
+        if (cards == null || cardsByInstanceId == null)
+            return;
+
+        foreach (BaseCardData card in cards)
+        {
+            string cardInstanceId = GetCardInstanceIdForOrder(card);
+            if (string.IsNullOrWhiteSpace(cardInstanceId))
+            {
+                Debug.LogWarning(
+                    $"[OnlineBattle] Missing cardInstanceId while rebuilding deck. owner={owner}, zone={zoneName}");
+                continue;
+            }
+
+            if (cardsByInstanceId.ContainsKey(cardInstanceId))
+            {
+                Debug.LogWarning(
+                    $"[OnlineBattle] Duplicate cardInstanceId while rebuilding deck. " +
+                    $"owner={owner}, zone={zoneName}, card={cardInstanceId}");
+                continue;
+            }
+
+            cardsByInstanceId.Add(cardInstanceId, card);
+        }
+    }
+
+    private bool ResolveOrderedCards(
+        List<string> orderedIds,
+        Dictionary<string, BaseCardData> cardsByInstanceId,
+        HashSet<string> usedIds,
+        List<BaseCardData> target,
+        BattleSlotOwner owner,
+        string zoneName)
+    {
+        if (orderedIds == null ||
+            cardsByInstanceId == null ||
+            usedIds == null ||
+            target == null)
+        {
+            return false;
+        }
+
+        foreach (string cardInstanceId in orderedIds)
+        {
+            if (string.IsNullOrWhiteSpace(cardInstanceId))
+            {
+                Debug.LogWarning(
+                    $"[OnlineBattle] Empty card id in StartMainGame deck snapshot. owner={owner}, zone={zoneName}");
+                return false;
+            }
+
+            if (!usedIds.Add(cardInstanceId))
+            {
+                Debug.LogWarning(
+                    $"[OnlineBattle] Duplicate card id in StartMainGame deck snapshot. " +
+                    $"owner={owner}, zone={zoneName}, card={cardInstanceId}");
+                return false;
+            }
+
+            if (!cardsByInstanceId.TryGetValue(cardInstanceId, out BaseCardData card))
+            {
+                Debug.LogWarning(
+                    $"[OnlineBattle] Unknown card id in StartMainGame deck snapshot. " +
+                    $"owner={owner}, zone={zoneName}, card={cardInstanceId}");
+                return false;
+            }
+
+            target.Add(card);
+        }
+
+        return true;
+    }
+
+    public BattleActionResult CreateEndTurnResultFromExternal(BattleAction action)
+    {
+        BattlePlayerSide actorSide = action != null && action.actor == BattleSlotOwner.Enemy
+            ? BattlePlayerSide.Enemy
+            : BattlePlayerSide.My;
+
+        bool actorActedInCurrentPassCycle =
+            HasOnlinePlayerActedInCurrentPassCycle(actorSide);
+        bool noActionPass = !actorActedInCurrentPassCycle;
+        int noActionPassCountBefore = onlineConsecutiveNoActionPassCount;
+
+        if (noActionPass)
+        {
+            MarkOnlinePlayerNoActionPassed(actorSide);
+            onlineConsecutiveNoActionPassCount++;
+        }
+        else
+        {
+            ClearOnlinePlayerActedInCurrentPassCycle(actorSide);
+            ResetOnlineConsecutiveNoActionPassCount();
+            Debug.Log(
+                $"[OnlineBattle] EndTurn is ActionUsedPass. " +
+                $"actor={action?.actor}, noActionPassCount reset from {noActionPassCountBefore} to 0");
+        }
+
+        bool shouldAdvanceTurn = onlineConsecutiveNoActionPassCount >= 2;
+        BattlePlayerSide nextActionSide = shouldAdvanceTurn
+            ? firstPlayerSide
+            : GetOppositeSide(actorSide);
+        int resultTurnCount = shouldAdvanceTurn
+            ? Mathf.Max(1, turnCount + 1)
+            : Mathf.Max(1, turnCount);
+
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.EndTurn,
+            isAccepted = true,
+            message = shouldAdvanceTurn
+                ? "양쪽 플레이어가 행동을 종료하여 다음 턴으로 진행합니다."
+                : "행동권을 넘겼습니다.",
+            currentTurnPlayer = nextActionSide == BattlePlayerSide.My
+                ? BattleSlotOwner.My
+                : BattleSlotOwner.Enemy,
+            turnCount = resultTurnCount,
+            nextPhase = BattlePhase.MainGame.ToString(),
+            didAdvanceTurn = shouldAdvanceTurn,
+            hostPassedThisTurn = onlineHostPassedThisTurn,
+            clientPassedThisTurn = onlineClientPassedThisTurn,
+            hostNoActionPassed = onlineHostNoActionPassed,
+            clientNoActionPassed = onlineClientNoActionPassed,
+            hostActedInCurrentPassCycle = onlineHostActedInCurrentPassCycle,
+            clientActedInCurrentPassCycle = onlineClientActedInCurrentPassCycle,
+            consecutiveNoActionPassCount = onlineConsecutiveNoActionPassCount
+        };
+
+        if (shouldAdvanceTurn)
+        {
+            Debug.Log(
+                $"[OnlineBattle] Consecutive no-action pass count reached 2. Advancing turn. " +
+                $"turnCount={turnCount}->{resultTurnCount}");
+            FillAdvancedTurnResultSnapshot(result);
+            result.hostPassedThisTurn = false;
+            result.clientPassedThisTurn = false;
+            result.hostNoActionPassed = false;
+            result.clientNoActionPassed = false;
+            result.hostActedInCurrentPassCycle = false;
+            result.clientActedInCurrentPassCycle = false;
+            result.consecutiveNoActionPassCount = 0;
+            ClearOnlineTurnPassState();
+        }
+        else
+        {
+            FillBattleCountSnapshot(result);
+        }
+
+        Debug.Log(
+            $"[OnlineBattle] Host resolved EndTurn. actor={action?.actor}, " +
+            $"previousTurn={currentActionSide}, nextTurn={nextActionSide}, " +
+            $"turnCount={turnCount}->{resultTurnCount}, " +
+            $"actorActed={actorActedInCurrentPassCycle}, " +
+            $"passType={(noActionPass ? "NoActionPass" : "ActionUsedPass")}, " +
+            $"noActionPassCount={noActionPassCountBefore}->{result.consecutiveNoActionPassCount}, " +
+            $"didAdvanceTurn={shouldAdvanceTurn}, " +
+            $"hostNoActionPassed={result.hostNoActionPassed}, " +
+            $"clientNoActionPassed={result.clientNoActionPassed}, " +
+            $"hostActed={result.hostActedInCurrentPassCycle}, " +
+            $"clientActed={result.clientActedInCurrentPassCycle}");
+        return result;
+    }
+
+    public void ApplyEndTurnFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        Debug.Log(
+            $"[OnlineBattle] Begin ApplyEndTurnResult. " +
+            $"didAdvanceTurn={result.didAdvanceTurn}, actor={result.actor}, " +
+            $"currentTurnPlayer={result.currentTurnPlayer}, turnCount={result.turnCount}");
+
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            Debug.LogWarning(
+                $"[BattleManager] Cannot apply EndTurnResult from phase={currentPhase}.");
+            return;
+        }
+
+        ClearAllPendingBattleInteractions();
+        onlineEndTurnRequestPending = false;
+
+        if (result.didAdvanceTurn)
+        {
+            StartCoroutine(ApplyAdvancedEndTurnResultRoutine(result));
+            return;
+        }
+
+        ApplyEndTurnTurnStateFromResult(result);
+        ApplyOnlinePassStateFromResult(result);
+        ApplyBattleCountSnapshot(result);
+
+        RefreshAllUI();
+        SetSystemMessage(BuildEndTurnResultMessage(result));
+
+        Debug.Log(
+            $"[OnlineBattle] Applied pass-only EndTurnResult. " +
+            $"currentTurn={currentActionSide}, turn={turnCount}, " +
+            $"myPassed={onlineHostPassedThisTurn}, enemyPassed={onlineClientPassedThisTurn}");
+    }
+
+    private IEnumerator ApplyAdvancedEndTurnResultRoutine(BattleActionResult result)
+    {
+        Debug.Log("[OnlineBattle] Turn advance animation start.");
+        SetBattleBusy(true, "OnlineEndTurnAdvanceRoutine");
+        Debug.Log("[OnlineBattle] Input lock start for turn advance animation.");
+
+        ApplyEndTurnTurnStateFromResult(result);
+        ApplyOnlinePassStateFromResult(result);
+        ClearOnlineTurnPassState();
+        ResetTurnLimitedFlags();
+
+        RefreshAllUI();
+        yield return PlayTurnIntroRoutine(turnCount);
+
+        Debug.Log("[OnlineBattle] Applying draw UI from EndTurnResult.");
+        yield return ApplyEndTurnDrawAnimationFromResult(result);
+
+        Debug.Log("[OnlineBattle] Applying viewer UI from EndTurnResult.");
+        ApplyBattleCountSnapshot(result);
+
+        SetBattleBusy(false, "OnlineEndTurnAdvanceRoutine finished");
+        Debug.Log("[OnlineBattle] Input lock released after turn advance animation.");
+
+        RefreshAllUI();
+        string message = BuildEndTurnResultMessage(result);
+
+        if (TryResolveVictory(message))
+        {
+            Debug.Log("[OnlineBattle] Turn advance animation end with victory.");
+            yield break;
+        }
+
+        SetSystemMessage(message);
+
+        Debug.Log(
+            $"[OnlineBattle] Turn advance animation end. " +
+            $"currentTurn={currentActionSide}, turn={turnCount}, " +
+            $"myHand={myPlayer?.hand.Count}, enemyHand={enemyPlayer?.hand.Count}, " +
+            $"myDeck={myPlayer?.mainDeck.Count}, enemyDeck={enemyPlayer?.mainDeck.Count}, " +
+            $"myViewer={myPlayer?.viewers}, enemyViewer={enemyPlayer?.viewers}");
+    }
+
+    private void ApplyEndTurnTurnStateFromResult(BattleActionResult result)
+    {
+        if (result == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(result.nextPhase) &&
+            Enum.TryParse(result.nextPhase, out BattlePhase parsedPhase))
+        {
+            currentPhase = parsedPhase;
+        }
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+        myActionUsedThisActionTurn = false;
+        isEndActionButtonFlow = false;
+    }
+
+    private void ApplyOnlinePassStateFromResult(BattleActionResult result)
+    {
+        if (result == null)
+            return;
+
+        bool localIsHost =
+            OnlineBattleSession.Instance == null ||
+            OnlineBattleSession.Instance.IsHost;
+
+        onlineHostPassedThisTurn = localIsHost
+            ? result.hostPassedThisTurn
+            : result.clientPassedThisTurn;
+        onlineClientPassedThisTurn = localIsHost
+            ? result.clientPassedThisTurn
+            : result.hostPassedThisTurn;
+        onlineHostNoActionPassed = localIsHost
+            ? result.hostNoActionPassed
+            : result.clientNoActionPassed;
+        onlineClientNoActionPassed = localIsHost
+            ? result.clientNoActionPassed
+            : result.hostNoActionPassed;
+        onlineHostActedInCurrentPassCycle = localIsHost
+            ? result.hostActedInCurrentPassCycle
+            : result.clientActedInCurrentPassCycle;
+        onlineClientActedInCurrentPassCycle = localIsHost
+            ? result.clientActedInCurrentPassCycle
+            : result.hostActedInCurrentPassCycle;
+        onlineConsecutiveNoActionPassCount =
+            Mathf.Max(0, result.consecutiveNoActionPassCount);
+        consecutivePassCount =
+            onlineConsecutiveNoActionPassCount;
+    }
+
+    private string BuildEndTurnResultMessage(BattleActionResult result)
+    {
+        if (result == null || !result.didAdvanceTurn)
+        {
+            return "행동권을 넘겼습니다.\n" +
+                $"현재 행동권: {GetSideName(currentActionSide)}";
+        }
+
+        bool localIsHost =
+            OnlineBattleSession.Instance != null &&
+            OnlineBattleSession.Instance.IsHost;
+        int myViewerGain = localIsHost
+            ? result.hostViewerGain
+            : result.clientViewerGain;
+        int enemyViewerGain = localIsHost
+            ? result.clientViewerGain
+            : result.hostViewerGain;
+        int myDrawnCount = localIsHost
+            ? (result.hostDrawnCardInstanceIds != null ? result.hostDrawnCardInstanceIds.Count : 0)
+            : (result.clientDrawnCardInstanceIds != null ? result.clientDrawnCardInstanceIds.Count : 0);
+        int enemyDrawnCount = localIsHost
+            ? (result.clientDrawnCardInstanceIds != null ? result.clientDrawnCardInstanceIds.Count : 0)
+            : (result.hostDrawnCardInstanceIds != null ? result.hostDrawnCardInstanceIds.Count : 0);
+
+        return "양쪽 플레이어가 행동을 종료하여 다음 턴으로 진행합니다.\n" +
+            $"{turnCount}턴 시작.\n" +
+            $"현재 행동권: {GetSideName(currentActionSide)}\n" +
+            $"내 드로우 {myDrawnCount}장 / 상대 드로우 {enemyDrawnCount}장\n" +
+            $"내 시청자 +{myViewerGain}\n" +
+            $"상대 시청자 +{enemyViewerGain}";
+    }
+
+    private void ClearOnlineTurnPassState()
+    {
+        onlineHostPassedThisTurn = false;
+        onlineClientPassedThisTurn = false;
+        onlineHostNoActionPassed = false;
+        onlineClientNoActionPassed = false;
+        onlineHostActedInCurrentPassCycle = false;
+        onlineClientActedInCurrentPassCycle = false;
+        onlineConsecutiveNoActionPassCount = 0;
+        consecutivePassCount = 0;
+    }
+
+    public void ClearOnlineTurnPassStateForAcceptedActionFromExternal(BattleAction action)
+    {
+        if (action == null ||
+            action.actionType == BattleActionType.EndTurn ||
+            currentPhase != BattlePhase.MainGame)
+        {
+            return;
+        }
+
+        MarkOnlinePlayerUsedActionFromExternal(action.actor, action.actionType);
+    }
+
+    private bool HasOnlinePlayerActedInCurrentPassCycle(BattlePlayerSide side)
+    {
+        return side == BattlePlayerSide.My
+            ? onlineHostActedInCurrentPassCycle
+            : onlineClientActedInCurrentPassCycle;
+    }
+
+    private void ClearOnlinePlayerActedInCurrentPassCycle(BattlePlayerSide side)
+    {
+        if (side == BattlePlayerSide.My)
+            onlineHostActedInCurrentPassCycle = false;
+        else
+            onlineClientActedInCurrentPassCycle = false;
+    }
+
+    private void MarkOnlinePlayerNoActionPassed(BattlePlayerSide side)
+    {
+        if (side == BattlePlayerSide.My)
+        {
+            onlineHostPassedThisTurn = true;
+            onlineHostNoActionPassed = true;
+        }
+        else
+        {
+            onlineClientPassedThisTurn = true;
+            onlineClientNoActionPassed = true;
+        }
+    }
+
+    private void ResetOnlineConsecutiveNoActionPassCount()
+    {
+        onlineConsecutiveNoActionPassCount = 0;
+        consecutivePassCount = 0;
+    }
+
+    public void MarkOnlinePlayerUsedActionFromExternal(
+        BattleSlotOwner actor,
+        BattleActionType actionType)
+    {
+        if (currentPhase != BattlePhase.MainGame)
+            return;
+
+        onlineHostNoActionPassed = false;
+        onlineClientNoActionPassed = false;
+        onlineHostPassedThisTurn = false;
+        onlineClientPassedThisTurn = false;
+        ResetOnlineConsecutiveNoActionPassCount();
+
+        if (actor == BattleSlotOwner.My)
+            onlineHostActedInCurrentPassCycle = true;
+        else
+            onlineClientActedInCurrentPassCycle = true;
+
+        Debug.Log(
+            $"[OnlineBattle] Marked accepted action as real action. " +
+            $"actionType={actionType}, actor={actor}, " +
+            $"hostActed={onlineHostActedInCurrentPassCycle}, " +
+            $"clientActed={onlineClientActedInCurrentPassCycle}, " +
+            "no-action pass count reset to 0.");
+    }
+
+    private void FillAdvancedTurnResultSnapshot(BattleActionResult result)
+    {
+        FillBattleCountSnapshot(result);
+
+        string hostDrawnCardInstanceId = PeekTopMainDeckCardInstanceId(BattleSlotOwner.My);
+        string clientDrawnCardInstanceId = PeekTopMainDeckCardInstanceId(BattleSlotOwner.Enemy);
+        int hostDrawnCount = string.IsNullOrWhiteSpace(hostDrawnCardInstanceId) ? 0 : 1;
+        int clientDrawnCount = string.IsNullOrWhiteSpace(clientDrawnCardInstanceId) ? 0 : 1;
+
+        if (!string.IsNullOrWhiteSpace(hostDrawnCardInstanceId))
+            result.hostDrawnCardInstanceIds.Add(hostDrawnCardInstanceId);
+
+        if (!string.IsNullOrWhiteSpace(clientDrawnCardInstanceId))
+            result.clientDrawnCardInstanceIds.Add(clientDrawnCardInstanceId);
+
+        result.hostHandCount += hostDrawnCount;
+        result.clientHandCount += clientDrawnCount;
+        result.hostDeckCount = Mathf.Max(0, result.hostDeckCount - hostDrawnCount);
+        result.clientDeckCount = Mathf.Max(0, result.clientDeckCount - clientDrawnCount);
+
+        result.hostViewerGain = CalculatePrepViewerGain(BattleSlotOwner.My);
+        result.clientViewerGain = CalculatePrepViewerGain(BattleSlotOwner.Enemy);
+        result.hostViewerCount += result.hostViewerGain;
+        result.clientViewerCount += result.clientViewerGain;
+
+        Debug.Log(
+            $"[OnlineBattle] Host advanced turn draw result. " +
+            $"hostCard={hostDrawnCardInstanceId}, clientCard={clientDrawnCardInstanceId}");
+        Debug.Log(
+            $"[OnlineBattle] Host advanced turn viewer gain. " +
+            $"hostGain={result.hostViewerGain}, hostViewer={result.hostViewerCount}, " +
+            $"clientGain={result.clientViewerGain}, clientViewer={result.clientViewerCount}");
+    }
+
+    private void ApplyEndTurnDrawFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.didAdvanceTurn)
+            return;
+
+        bool localIsHost =
+            OnlineBattleSession.Instance != null &&
+            OnlineBattleSession.Instance.IsHost;
+        BattleSlotOwner hostOwner = localIsHost ? BattleSlotOwner.My : BattleSlotOwner.Enemy;
+        BattleSlotOwner clientOwner = localIsHost ? BattleSlotOwner.Enemy : BattleSlotOwner.My;
+
+        ApplyDrawnCardsForOwner(hostOwner, result.hostDrawnCardInstanceIds);
+        ApplyDrawnCardsForOwner(clientOwner, result.clientDrawnCardInstanceIds);
+
+        if ((result.hostDrawnCardInstanceIds == null || result.hostDrawnCardInstanceIds.Count == 0) &&
+            (result.clientDrawnCardInstanceIds == null || result.clientDrawnCardInstanceIds.Count == 0) &&
+            result.drawnCardInstanceIds != null &&
+            result.drawnCardInstanceIds.Count > 0)
+        {
+            ApplyDrawnCardsForOwner(result.drawnPlayer, result.drawnCardInstanceIds);
+        }
+    }
+
+    private IEnumerator ApplyEndTurnDrawAnimationFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.didAdvanceTurn)
+            yield break;
+
+        bool localIsHost =
+            OnlineBattleSession.Instance != null &&
+            OnlineBattleSession.Instance.IsHost;
+        BattleSlotOwner hostOwner = localIsHost ? BattleSlotOwner.My : BattleSlotOwner.Enemy;
+        BattleSlotOwner clientOwner = localIsHost ? BattleSlotOwner.Enemy : BattleSlotOwner.My;
+
+        yield return ApplyDrawnCardsForOwnerWithAnimation(
+            hostOwner,
+            result.hostDrawnCardInstanceIds);
+        yield return ApplyDrawnCardsForOwnerWithAnimation(
+            clientOwner,
+            result.clientDrawnCardInstanceIds);
+
+        if ((result.hostDrawnCardInstanceIds == null || result.hostDrawnCardInstanceIds.Count == 0) &&
+            (result.clientDrawnCardInstanceIds == null || result.clientDrawnCardInstanceIds.Count == 0) &&
+            result.drawnCardInstanceIds != null &&
+            result.drawnCardInstanceIds.Count > 0)
+        {
+            yield return ApplyDrawnCardsForOwnerWithAnimation(
+                result.drawnPlayer,
+                result.drawnCardInstanceIds);
+        }
+
+        RefreshAllUI();
+    }
+
+    private IEnumerator ApplyDrawnCardsForOwnerWithAnimation(
+        BattleSlotOwner owner,
+        List<string> cardInstanceIds)
+    {
+        if (cardInstanceIds == null || cardInstanceIds.Count == 0)
+            yield break;
+
+        foreach (string cardInstanceId in cardInstanceIds)
+        {
+            yield return PlayDrawCardAnimation(owner);
+
+            bool applied = DrawMainDeckCardByInstanceId(owner, cardInstanceId);
+            Debug.Log(
+                $"[OnlineBattle] Apply EndTurn draw after animation. owner={owner}, " +
+                $"cardInstanceId={cardInstanceId}, applied={applied}");
+
+            RefreshAllUI();
+        }
+    }
+
+    private void ApplyDrawnCardsForOwner(
+        BattleSlotOwner owner,
+        List<string> cardInstanceIds)
+    {
+        if (cardInstanceIds == null || cardInstanceIds.Count == 0)
+            return;
+
+        foreach (string cardInstanceId in cardInstanceIds)
+        {
+            bool applied = DrawMainDeckCardByInstanceId(owner, cardInstanceId);
+            Debug.Log(
+                $"[OnlineBattle] Apply EndTurn draw. owner={owner}, " +
+                $"cardInstanceId={cardInstanceId}, applied={applied}");
+        }
+    }
+
+    private void FillBattleCountSnapshot(BattleActionResult result)
+    {
+        if (result == null)
+            return;
+
+        if (myPlayer != null)
+        {
+            result.hostViewerCount = myPlayer.viewers;
+            result.hostHandCount = myPlayer.hand != null ? myPlayer.hand.Count : 0;
+            result.hostDeckCount = myPlayer.mainDeck != null ? myPlayer.mainDeck.Count : 0;
+        }
+
+        if (enemyPlayer != null)
+        {
+            result.clientViewerCount = enemyPlayer.viewers;
+            result.clientHandCount = enemyPlayer.hand != null ? enemyPlayer.hand.Count : 0;
+            result.clientDeckCount = enemyPlayer.mainDeck != null ? enemyPlayer.mainDeck.Count : 0;
+        }
+    }
+
+    public bool CanSummonFaceDownFromExternal(
+        BattleSlotOwner actor,
+        BaseCardData card,
+        BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (card == null)
+        {
+            failReason = "뒷면 출연할 카드 정보가 없습니다.";
+            return false;
+        }
+
+        if (targetSlot == null)
+        {
+            failReason = "대상 슬롯이 없습니다.";
+            return false;
+        }
+
+        if (HasOnlineSummonedFaceDownThisTurn(actor))
+        {
+            failReason = "이번 턴에는 이미 뒷면 출연을 했습니다.";
+            return false;
+        }
+
+        CharacterCardData character = card as CharacterCardData;
+        if (character == null)
+        {
+            failReason = "캐릭터 카드만 뒷면 출연할 수 있습니다.";
+            return false;
+        }
+
+        if (character.appearCost >= 10000)
+        {
+            failReason = "출연 코스트가 10000 이상인 캐릭터는 뒷면 출연할 수 없습니다.";
+            return false;
+        }
+
+        if (targetSlot.owner != actor)
+        {
+            failReason = "자신의 방송 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
+            return false;
+        }
+
+        if (!targetSlot.HasBroadcast)
+        {
+            failReason = "방송 카드가 설치된 슬롯에만 캐릭터를 출연시킬 수 있습니다.";
+            return false;
+        }
+
+        if (targetSlot.HasCharacter)
+        {
+            failReason = "이미 캐릭터가 있는 슬롯입니다.";
+            return false;
+        }
+
+        if (IsFaceDownSummonForbiddenByBroadcastFromExternal(targetSlot, out failReason))
+            return false;
+
+        return true;
+    }
+
+    public BattleActionResult CreateSummonFaceDownResultFromExternal(BattleAction action)
+    {
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.SummonFaceDown,
+            isAccepted = true,
+            message = "뒷면 출연이 적용되었습니다.",
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            faceDown = true
+        };
+
+        if (action != null)
+        {
+            result.affectedCardIds.Add(action.cardInstanceId);
+            result.affectedSlotIds.Add(action.targetSlotId);
+        }
+
+        FillSummonFaceDownProjectedSnapshot(result, action);
+        MarkOnlineSummonedFaceDownThisTurn(result.actor);
+
+        Debug.Log(
+            $"[OnlineBattle] Host created SummonFaceDownResult. " +
+            $"actor={result.actor}, card={action?.cardInstanceId}, slot={action?.targetSlotId}, " +
+            $"turn={result.turnCount}");
+        return result;
+    }
+
+    private void FillSummonFaceDownProjectedSnapshot(
+        BattleActionResult result,
+        BattleAction action)
+    {
+        FillBattleCountSnapshot(result);
+
+        if (action == null)
+            return;
+
+        if (action.actor == BattleSlotOwner.My)
+            result.hostHandCount = Mathf.Max(0, result.hostHandCount - 1);
+        else
+            result.clientHandCount = Mathf.Max(0, result.clientHandCount - 1);
+    }
+
+    public void ApplySummonFaceDownFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineSummonFaceDownRequestPending = false;
+
+        string cardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
+            ? result.affectedCardIds[0]
+            : "";
+        string targetSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+            ? result.affectedSlotIds[0]
+            : "";
+
+        BaseCardData card = FindHandCardByInstanceId(result.actor, cardInstanceId);
+        BattleFieldSlot targetSlot = FindSlotById(targetSlotId);
+
+        if (card == null || targetSlot == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Apply SummonFaceDownResult failed. " +
+                $"actor={result.actor}, card={cardInstanceId}, slot={targetSlotId}");
+            RefreshAllUI();
+            return;
+        }
+
+        targetSlot.SetCharacterCard(
+            card,
+            cardBackSprite,
+            true,
+            result.actor);
+        ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
+        targetSlot.faceDownSummonedTurn = Mathf.Max(1, result.turnCount);
+
+        if (!RemoveCardFromHandFromExternal(result.actor, card))
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Apply SummonFaceDownResult could not remove hand card. " +
+                $"actor={result.actor}, card={cardInstanceId}");
+        }
+
+        MarkOnlineSummonedFaceDownThisTurn(result.actor);
+        MarkOnlinePlayerUsedActionFromExternal(
+            result.actor,
+            BattleActionType.SummonFaceDown);
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+        myActionUsedThisActionTurn = result.actor == BattleSlotOwner.My;
+
+        ApplyBattleCountSnapshot(result);
+        ClearPendingSummonChoice();
+        ClearDraggingHandCard();
+
+        RefreshAllUI();
+
+        bool isMine = result.actor == BattleSlotOwner.My;
+        string message = isMine
+            ? $"{card.name} 카드를 뒷면으로 출연시켰습니다.\n위치: ({targetSlot.x}, {targetSlot.y})"
+            : $"상대가 ({targetSlot.x}, {targetSlot.y}) 슬롯에\n뒷면 캐릭터를 출연시켰습니다.";
+        SetSystemMessage(message);
+
+        Debug.Log(
+            $"[OnlineBattle] Applied SummonFaceDownResult. " +
+            $"actor={result.actor}, isMine={isMine}, card={cardInstanceId}, " +
+            $"slot={targetSlotId}, currentTurn={currentActionSide}, " +
+            $"myHand={myPlayer?.hand.Count}, enemyHand={enemyPlayer?.hand.Count}, " +
+            $"hostPassed={onlineHostPassedThisTurn}, clientPassed={onlineClientPassedThisTurn}");
+    }
+
+    public BattleActionResult CreateSummonFaceUpResultFromExternal(BattleAction action)
+    {
+        BaseCardData card = action != null
+            ? FindHandCardByInstanceId(action.actor, action.cardInstanceId)
+            : null;
+        int cost = summonManager != null
+            ? summonManager.GetCharacterAppearCostFromExternal(card)
+            : 0;
+
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.SummonFaceUp,
+            isAccepted = true,
+            message = "앞면 출연이 적용되었습니다.",
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            faceDown = false,
+            paidViewerCost = Mathf.Max(0, cost)
+        };
+
+        if (action != null)
+        {
+            result.affectedCardIds.Add(action.cardInstanceId);
+            result.affectedSlotIds.Add(action.targetSlotId);
+        }
+
+        FillSummonFaceUpProjectedSnapshot(result, action);
+
+        Debug.Log(
+            $"[OnlineBattle] Host created SummonFaceUpResult. " +
+            $"actor={result.actor}, card={action?.cardInstanceId}, slot={action?.targetSlotId}, " +
+            $"cost={result.paidViewerCost}, turn={result.turnCount}");
+        return result;
+    }
+
+    private void FillSummonFaceUpProjectedSnapshot(
+        BattleActionResult result,
+        BattleAction action)
+    {
+        FillBattleCountSnapshot(result);
+
+        if (action == null)
+            return;
+
+        int cost = Mathf.Max(0, result.paidViewerCost);
+        if (action.actor == BattleSlotOwner.My)
+        {
+            result.hostHandCount = Mathf.Max(0, result.hostHandCount - 1);
+            result.hostViewerCount = Mathf.Max(0, result.hostViewerCount - cost);
+        }
+        else
+        {
+            result.clientHandCount = Mathf.Max(0, result.clientHandCount - 1);
+            result.clientViewerCount = Mathf.Max(0, result.clientViewerCount - cost);
+        }
+    }
+
+    public void ApplySummonFaceUpFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineSummonFaceUpRequestPending = false;
+
+        string cardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
+            ? result.affectedCardIds[0]
+            : "";
+        string targetSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+            ? result.affectedSlotIds[0]
+            : "";
+
+        BaseCardData card = FindHandCardByInstanceId(result.actor, cardInstanceId);
+        BattleFieldSlot targetSlot = FindSlotById(targetSlotId);
+
+        if (card == null || targetSlot == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Apply SummonFaceUpResult failed. " +
+                $"actor={result.actor}, card={cardInstanceId}, slot={targetSlotId}");
+            RefreshAllUI();
+            return;
+        }
+
+        int beforeMyViewer = myPlayer != null ? myPlayer.viewers : 0;
+        int beforeEnemyViewer = enemyPlayer != null ? enemyPlayer.viewers : 0;
+        Sprite sprite = LoadCardSprite(card);
+        targetSlot.SetCharacterCard(
+            card,
+            sprite,
+            false,
+            result.actor);
+        ApplyBroadcastEnterEffectsFromExternal(targetSlot, false);
+        targetSlot.faceUpSummonedTurn = Mathf.Max(1, result.turnCount);
+
+        if (!RemoveCardFromHandFromExternal(result.actor, card))
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Apply SummonFaceUpResult could not remove hand card. " +
+                $"actor={result.actor}, card={cardInstanceId}");
+        }
+
+        MarkOnlinePlayerUsedActionFromExternal(
+            result.actor,
+            BattleActionType.SummonFaceUp);
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+        myActionUsedThisActionTurn = result.actor == BattleSlotOwner.My;
+
+        ApplyBattleCountSnapshot(result);
+        ClearPendingSummonChoice();
+        ClearDraggingHandCard();
+
+        RefreshAllUI();
+
+        string actorCardName = result.actor == BattleSlotOwner.My
+            ? card.name
+            : "상대가 " + card.name;
+        string message =
+            $"{actorCardName} 카드를 앞면으로 출연시켰습니다.\n" +
+            $"시청자 -{result.paidViewerCost}";
+        SetSystemMessage(message);
+
+        Debug.Log(
+            $"[OnlineBattle] Applied SummonFaceUpResult. " +
+            $"actor={result.actor}, card={cardInstanceId}, slot={targetSlotId}, " +
+            $"cost={result.paidViewerCost}, viewerBefore={beforeMyViewer}/{beforeEnemyViewer}, " +
+            $"viewerAfter={myPlayer?.viewers}/{enemyPlayer?.viewers}, " +
+            $"currentTurn={currentActionSide}, myHand={myPlayer?.hand.Count}, enemyHand={enemyPlayer?.hand.Count}");
+        Debug.Log("[OnlineBattle] OnAppear effects are not executed online in this step.");
+    }
+
+    private bool HasOnlineSummonedFaceDownThisTurn(BattleSlotOwner actor)
+    {
+        if (!BattleStartSettings.IsOnlineBattle)
+            return false;
+
+        return actor == BattleSlotOwner.My
+            ? onlineHostHasSummonedFaceDownThisTurn
+            : onlineClientHasSummonedFaceDownThisTurn;
+    }
+
+    private void MarkOnlineSummonedFaceDownThisTurn(BattleSlotOwner actor)
+    {
+        if (actor == BattleSlotOwner.My)
+            onlineHostHasSummonedFaceDownThisTurn = true;
+        else
+            onlineClientHasSummonedFaceDownThisTurn = true;
+    }
+
+    private void ApplyBattleCountSnapshot(BattleActionResult result)
+    {
+        if (result == null)
+            return;
+
+        bool localIsHost =
+            OnlineBattleSession.Instance != null &&
+            OnlineBattleSession.Instance.IsHost;
+
+        if (myPlayer != null)
+        {
+            myPlayer.viewers = localIsHost
+                ? result.hostViewerCount
+                : result.clientViewerCount;
+        }
+
+        if (enemyPlayer != null)
+        {
+            enemyPlayer.viewers = localIsHost
+                ? result.clientViewerCount
+                : result.hostViewerCount;
+        }
+
+        int expectedMyHand = localIsHost
+            ? result.hostHandCount
+            : result.clientHandCount;
+        int expectedEnemyHand = localIsHost
+            ? result.clientHandCount
+            : result.hostHandCount;
+        int expectedMyDeck = localIsHost
+            ? result.hostDeckCount
+            : result.clientDeckCount;
+        int expectedEnemyDeck = localIsHost
+            ? result.clientDeckCount
+            : result.hostDeckCount;
+
+        Debug.Log(
+            $"[OnlineBattle] Applied count snapshot. " +
+            $"hand={myPlayer?.hand.Count}/{expectedMyHand}, " +
+            $"enemyHand={enemyPlayer?.hand.Count}/{expectedEnemyHand}, " +
+            $"deck={myPlayer?.mainDeck.Count}/{expectedMyDeck}, " +
+            $"enemyDeck={enemyPlayer?.mainDeck.Count}/{expectedEnemyDeck}, " +
+            $"viewer={myPlayer?.viewers}/{enemyPlayer?.viewers}");
     }
 
     private void CancelBroadcastSelection()
@@ -4795,11 +6092,13 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
-        if (battleBusyReason.StartsWith("EndCurrentTurnAndStartNextTurnRoutine", StringComparison.Ordinal) &&
+        if ((battleBusyReason.StartsWith("EndCurrentTurnAndStartNextTurnRoutine", StringComparison.Ordinal) ||
+             battleBusyReason.StartsWith("OnlineEndTurnAdvanceRoutine", StringComparison.Ordinal) ||
+             battleBusyReason.StartsWith("BroadcastSetupIntroRoutine", StringComparison.Ordinal)) &&
             elapsed > 20f)
         {
-            Debug.LogWarning($"[BattleBusy Watchdog] turn start busy expired. reason={battleBusyReason} elapsed={elapsed:F2}");
-            SetBattleBusy(false, "TurnStart watchdog");
+            Debug.LogWarning($"[BattleBusy Watchdog] timed busy expired. reason={battleBusyReason} elapsed={elapsed:F2}");
+            SetBattleBusy(false, "Timed busy watchdog");
         }
     }
 
@@ -4817,6 +6116,20 @@ public class BattleManager : MonoBehaviour
         if (IsBattleBusy())
         {
             failReason = GetBattleBusyReason();
+            LogActionBlocked("IsInputBlocked", failReason);
+            return true;
+        }
+
+        if (onlineSummonFaceDownRequestPending)
+        {
+            failReason = "Host의 뒷면 출연 판정을 기다리고 있습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
+            return true;
+        }
+
+        if (onlineSummonFaceUpRequestPending)
+        {
+            failReason = "Host의 앞면 출연 판정을 기다리고 있습니다.";
             LogActionBlocked("IsInputBlocked", failReason);
             return true;
         }
@@ -4891,6 +6204,11 @@ public class BattleManager : MonoBehaviour
             $"cardQuestion={(cardQuestionPanel != null && cardQuestionPanel.IsOpen())}, " +
             $"fieldSlotSelection={isFieldSlotSelectionModeActive}, " +
             $"summon={(summonManager != null && (summonManager.HasPendingSummonChoice || summonManager.HasPendingFlipChoice))}, " +
+            $"onlineSummonPending={onlineSummonFaceDownRequestPending}, " +
+            $"onlineSummonFaceUpPending={onlineSummonFaceUpRequestPending}, " +
+            $"onlineNoActionPass={onlineHostNoActionPassed}/{onlineClientNoActionPassed}, " +
+            $"onlineActed={onlineHostActedInCurrentPassCycle}/{onlineClientActedInCurrentPassCycle}, " +
+            $"onlineNoActionPassCount={onlineConsecutiveNoActionPassCount}, " +
             $"move={(movementManager != null && movementManager.HasPendingMoveChoice)}, " +
             $"collab={(collaborationManager != null && collaborationManager.HasPendingCollaborationChoice)}, " +
             $"resting={resolvingRestSlots.Count}, " +
@@ -4992,6 +6310,8 @@ public class BattleManager : MonoBehaviour
     private void ResetTurnLimitedFlags()
     {
         enemyHasSummonedFaceDownThisTurn = false;
+        onlineHostHasSummonedFaceDownThisTurn = false;
+        onlineClientHasSummonedFaceDownThisTurn = false;
         hasUsedMyIdolActiveThisTurn = false;
         hasUsedEnemyIdolActiveThisTurn = false;
 
@@ -5662,20 +6982,98 @@ public class BattleManager : MonoBehaviour
     {
         BattleAction action = CreateSummonFaceDownAction(card, targetSlot);
 
+        if (BattleStartSettings.IsOnlineBattle)
+            return RequestSummonFaceDownOnline(action);
+
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
     }
 
+    private bool RequestSummonFaceDownOnline(BattleAction action)
+    {
+        if (onlineSummonFaceDownRequestPending)
+        {
+            SetSystemMessage("Host의 뒷면 출연 판정을 기다리고 있습니다.");
+            return false;
+        }
+
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("뒷면 출연 요청 전송에 실패했습니다.");
+            return false;
+        }
+
+        onlineSummonFaceDownRequestPending = true;
+        ClearPendingSummonChoice();
+        ClearDraggingHandCard();
+        RefreshTurnEndButtonState();
+        Debug.Log(
+            $"[OnlineBattle] SummonFaceDownAction sent. actor={action.actor}, " +
+            $"card={action.cardInstanceId}, slot={action.targetSlotId}");
+        SetSystemMessage("Host의 뒷면 출연 판정을 기다리고 있습니다.");
+        return true;
+    }
+
     public bool RequestSummonFaceUpActionFromExternal(BaseCardData card, BattleFieldSlot targetSlot)
     {
         BattleAction action = CreateSummonFaceUpAction(card, targetSlot);
+
+        if (BattleStartSettings.IsOnlineBattle)
+            return RequestSummonFaceUpOnline(action);
 
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
+    }
+
+    private bool RequestSummonFaceUpOnline(BattleAction action)
+    {
+        if (onlineSummonFaceUpRequestPending)
+        {
+            SetSystemMessage("Host의 앞면 출연 판정을 기다리고 있습니다.");
+            return false;
+        }
+
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("앞면 출연 요청 전송에 실패했습니다.");
+            return false;
+        }
+
+        onlineSummonFaceUpRequestPending = true;
+        ClearPendingSummonChoice();
+        ClearDraggingHandCard();
+        RefreshTurnEndButtonState();
+        Debug.Log(
+            $"[OnlineBattle] SummonFaceUpAction sent. actor={action.actor}, " +
+            $"card={action.cardInstanceId}, slot={action.targetSlotId}");
+        SetSystemMessage("Host의 앞면 출연 판정을 기다리고 있습니다.");
+        return true;
     }
 
     public bool RequestFlipSummonActionFromExternal(BattleFieldSlot sourceSlot)
@@ -8292,6 +9690,15 @@ public class BattleManager : MonoBehaviour
     {
         if (player == null) return;
 
+        if (BattleStartSettings.IsOnlineBattle &&
+            currentPhase != BattlePhase.MainGame &&
+            count == 5)
+        {
+            Debug.LogWarning(
+                $"[OnlineStartMainGame] ERROR: DrawCards called during online initial hand setup. " +
+                $"player={player.playerName}, count={count}, phase={currentPhase}");
+        }
+
         for (int i = 0; i < count; i++)
         {
             if (player.mainDeck.Count == 0)
@@ -8304,6 +9711,73 @@ public class BattleManager : MonoBehaviour
             player.mainDeck.RemoveAt(0);
             player.hand.Add(drawnCard);
         }
+    }
+
+    private string PeekTopMainDeckCardInstanceId(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime player = GetPlayerRuntime(owner);
+
+        if (player == null ||
+            player.mainDeck == null ||
+            player.mainDeck.Count == 0 ||
+            player.mainDeck[0] == null)
+        {
+            return "";
+        }
+
+        BaseCardData card = player.mainDeck[0];
+        return !string.IsNullOrWhiteSpace(card.cardInstanceId)
+            ? card.cardInstanceId
+            : card.id;
+    }
+
+    private bool DrawMainDeckCardByInstanceId(
+        BattleSlotOwner owner,
+        string cardInstanceId)
+    {
+        BattlePlayerRuntime player = GetPlayerRuntime(owner);
+
+        if (player == null ||
+            player.mainDeck == null ||
+            player.hand == null ||
+            string.IsNullOrWhiteSpace(cardInstanceId))
+        {
+            return false;
+        }
+
+        int deckIndex = -1;
+        for (int i = 0; i < player.mainDeck.Count; i++)
+        {
+            BaseCardData card = player.mainDeck[i];
+            if (card == null)
+                continue;
+
+            bool matchesInstanceId =
+                !string.IsNullOrWhiteSpace(card.cardInstanceId) &&
+                string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase);
+            bool matchesCardId =
+                string.IsNullOrWhiteSpace(card.cardInstanceId) &&
+                string.Equals(card.id, cardInstanceId, StringComparison.OrdinalIgnoreCase);
+
+            if (!matchesInstanceId && !matchesCardId)
+                continue;
+
+            deckIndex = i;
+            break;
+        }
+
+        if (deckIndex < 0)
+        {
+            Debug.LogWarning(
+                $"[OnlineBattle] Draw card not found in deck. owner={owner}, " +
+                $"cardInstanceId={cardInstanceId}");
+            return false;
+        }
+
+        BaseCardData drawnCard = player.mainDeck[deckIndex];
+        player.mainDeck.RemoveAt(deckIndex);
+        player.hand.Add(drawnCard);
+        return true;
     }
 
     private IEnumerator DrawCardsWithAnimationRoutine(
@@ -8464,6 +9938,9 @@ public class BattleManager : MonoBehaviour
             turnEndButton.interactable =
                 !IsGameOver() &&
                 !IsBattleBusy() &&
+                !onlineEndTurnRequestPending &&
+                !onlineSummonFaceDownRequestPending &&
+                !onlineSummonFaceUpRequestPending &&
                 currentPhase == BattlePhase.MainGame &&
                 currentActionSide == BattlePlayerSide.My &&
                 (questionPanel == null || !questionPanel.IsOpen());
@@ -9864,10 +11341,46 @@ public class BattleManager : MonoBehaviour
     {
         BattleAction action = CreateEndTurnAction();
 
+        if (BattleStartSettings.IsOnlineBattle)
+        {
+            RequestEndTurnOnline(action);
+            return;
+        }
+
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         actionExecutor.ExecuteAction(action);
+    }
+
+    private void RequestEndTurnOnline(BattleAction action)
+    {
+        if (onlineEndTurnRequestPending)
+        {
+            SetSystemMessage("Host의 행동 종료 판정을 기다리고 있습니다.");
+            return;
+        }
+
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("행동 종료 요청 전송에 실패했습니다.");
+            return;
+        }
+
+        onlineEndTurnRequestPending = true;
+        RefreshTurnEndButtonState();
+        SetSystemMessage("Host의 행동 종료 판정을 기다리고 있습니다.");
     }
 
     private BattleAction CreateEndTurnAction()
