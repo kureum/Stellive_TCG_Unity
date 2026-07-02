@@ -79,6 +79,22 @@ public class BattleActionResultApplier
                 ApplySummonFaceUpResult(result);
                 break;
 
+            case BattleActionType.FlipSummon:
+                ApplyFlipSummonResult(result);
+                break;
+
+            case BattleActionType.MoveCharacter:
+                ApplyMoveCharacterResult(result);
+                break;
+
+            case BattleActionType.StartCollab:
+                ApplyStartCollabResult(result);
+                break;
+
+            case BattleActionType.UseContent:
+                ApplyUseContentResult(result);
+                break;
+
             case BattleActionType.StartMainGame:
                 ApplyStartMainGameResult(result);
                 break;
@@ -129,6 +145,52 @@ public class BattleActionResultApplier
             return;
 
         battleManager.ApplySummonFaceUpFromResult(result);
+    }
+
+    private void ApplyFlipSummonResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply FlipSummonResult. " +
+            $"actor={result.actor}, cost={result.paidViewerCost}");
+        battleManager.ApplyFlipSummonFromResult(result);
+    }
+
+    private void ApplyMoveCharacterResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply MoveCharacterResult. " +
+            $"actor={result.actor}, source={GetSlotId(result, 0)}, target={GetSlotId(result, 1)}");
+        battleManager.ApplyMoveCharacterFromResult(result);
+    }
+
+    private void ApplyStartCollabResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply StartCollabResult. " +
+            $"actor={result.actor}, attacker={GetCardId(result, 0)}, defender={GetCardId(result, 1)}, " +
+            $"source={GetSlotId(result, 0)}, defenderSlot={GetSlotId(result, 1)}");
+        battleManager.ApplyStartCollabFromResult(result);
+    }
+
+    private void ApplyUseContentResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply UseContentResult. " +
+            $"actor={result.actor}, card={GetCardId(result, 0)}, effectRef={result.resolvedEffectRef}, " +
+            $"cost={result.paidViewerCost}");
+        battleManager.ApplyUseContentFromResult(result);
     }
 
     private void ApplyStartMainGameResult(BattleActionResult result)
@@ -216,5 +278,23 @@ public class BattleActionResultApplier
 
         foreach (string id in ids)
             Debug.Log($"[BattleActionResultApplier] {label}: {id}");
+    }
+
+    private string GetSlotId(BattleActionResult result, int index)
+    {
+        return result != null &&
+            result.affectedSlotIds != null &&
+            result.affectedSlotIds.Count > index
+                ? result.affectedSlotIds[index]
+                : "";
+    }
+
+    private string GetCardId(BattleActionResult result, int index)
+    {
+        return result != null &&
+            result.affectedCardIds != null &&
+            result.affectedCardIds.Count > index
+                ? result.affectedCardIds[index]
+                : "";
     }
 }

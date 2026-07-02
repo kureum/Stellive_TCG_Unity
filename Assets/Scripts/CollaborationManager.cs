@@ -117,6 +117,113 @@ public class CollaborationManager : MonoBehaviour
         return StartCollaboration(sourceSlot, targetSlot);
     }
 
+    public IEnumerator PlayOnlineStartCollabResultAnimation(
+        BattleActionResult result,
+        BattleFieldSlot attackerSlot,
+        BattleFieldSlot defenderSlot)
+    {
+        if (result == null ||
+            attackerSlot == null ||
+            defenderSlot == null ||
+            !attackerSlot.HasCharacter ||
+            !defenderSlot.HasCharacter)
+        {
+            Debug.LogWarning("[OnlineCollabAnim] Cannot play animation. Result or slots are invalid.");
+            yield break;
+        }
+
+        BaseCardData attackerCard = attackerSlot.characterCard;
+        BaseCardData defenderCard = defenderSlot.characterCard;
+        Sprite attackerSprite = attackerSlot.GetCurrentCharacterSprite();
+
+        currentContext = CreateCollaborationContext(
+            attackerSlot,
+            defenderSlot,
+            CollaborationStartReason.Normal);
+
+        isResolvingCollaboration = true;
+
+        Debug.Log(
+            $"[OnlineCollabAnim] Start animation. " +
+            $"attacker={attackerCard?.cardInstanceId}/{attackerCard?.id}, " +
+            $"defender={defenderCard?.cardInstanceId}/{defenderCard?.id}, " +
+            $"attackerHp={result.attackerHpBefore}->{result.attackerHpAfter}, " +
+            $"defenderHp={result.defenderHpBefore}->{result.defenderHpAfter}, " +
+            $"counter={result.defenderCounterattacked}, " +
+            $"attackerDefeated={result.attackerDefeated}, defenderDefeated={result.defenderDefeated}");
+
+        ShowOnlinePanelBeforeResult(result, attackerCard, defenderCard);
+
+        RectTransform attackerRect = GetCharacterRect(guestCharacterItemUI);
+        RectTransform defenderRect = GetCharacterRect(hostCharacterItemUI);
+
+        yield return AnimateAttack(attackerRect, true);
+        yield return AnimateHit(defenderRect);
+        yield return AnimateOnlineHpChange(
+            defenderCard,
+            false,
+            result.defenderTensionUsed,
+            result.defenderHpBefore,
+            result.defenderHpAfter);
+
+        if (result.defenderCounterattacked && !result.defenderDefeated)
+        {
+            yield return new WaitForSeconds(ScaleAnimationTime(0.2f));
+            yield return AnimateAttack(defenderRect, false);
+            yield return AnimateHit(attackerRect);
+            yield return AnimateOnlineHpChange(
+                attackerCard,
+                true,
+                result.attackerTensionUsed,
+                result.attackerHpBefore,
+                result.attackerHpAfter);
+        }
+
+        if (result.defenderDefeated)
+            yield return AnimateDefeatFade(defenderRect);
+
+        if (result.attackerDefeated)
+            yield return AnimateDefeatFade(attackerRect);
+
+        string resultMessage = BuildOnlineResultMessage(result);
+        ShowResult(resultMessage);
+
+        if (!result.attackerDefeated)
+            ResetUiAlpha(attackerRect);
+
+        if (!result.defenderDefeated)
+            ResetUiAlpha(defenderRect);
+
+        if (result.attackerMovedToDefenderSlot && !result.attackerDefeated && result.defenderDefeated)
+        {
+            CollaborationResolutionData moveData = new CollaborationResolutionData
+            {
+                guestSlot = attackerSlot,
+                hostSlot = defenderSlot,
+                guestCard = attackerCard,
+                hostCard = defenderCard,
+                guestOwner = result.attackerOwner,
+                hostOwner = result.defenderOwner,
+                guestSprite = attackerSprite,
+                guestTension = result.attackerTensionAfter,
+                guestFinalHp = result.attackerHpAfter,
+                hostFinalHp = result.defenderHpAfter,
+                hostDefeated = result.defenderDefeated,
+                guestDefeated = result.attackerDefeated,
+                startReason = CollaborationStartReason.Normal
+            };
+
+            Debug.Log("[OnlineCollabAnim] Play attacker move-to-defender-slot animation.");
+            yield return AnimateWinnerMoveToTargetSlot(moveData);
+        }
+
+        yield return WaitForResultPanelAndHide();
+
+        isResolvingCollaboration = false;
+        currentContext = null;
+        Debug.Log("[OnlineCollabAnim] Animation finished.");
+    }
+
     public bool StartEffectMoveCollaboration(BattleFieldSlot guestSlot, BattleFieldSlot hostSlot)
     {
         return StartCollaborationInternal(guestSlot, hostSlot, CollaborationStartReason.EffectMove);
@@ -421,6 +528,89 @@ public class CollaborationManager : MonoBehaviour
             GetEffectiveCollabTension(hostSlot, hostSlot),
             GetEffectiveCharacterHp(hostSlot, hostSlot)
         );
+    }
+
+    private void ShowOnlinePanelBeforeResult(
+        BattleActionResult result,
+        BaseCardData attackerCard,
+        BaseCardData defenderCard)
+    {
+        if (collaborationPanel != null)
+            collaborationPanel.SetActive(true);
+
+        if (collabResultPanel != null)
+            collabResultPanel.SetActive(false);
+
+        SetGuestView(
+            attackerCard,
+            result != null ? result.attackerTensionUsed : 0,
+            result != null ? result.attackerHpBefore : 0);
+
+        int defenderDisplayTension = result != null && result.defenderCounterattacked
+            ? result.defenderTensionUsed
+            : result != null ? result.defenderTensionAfter : 0;
+        SetHostView(
+            defenderCard,
+            defenderDisplayTension,
+            result != null ? result.defenderHpBefore : 0);
+    }
+
+    private IEnumerator AnimateOnlineHpChange(
+        BaseCardData targetCard,
+        bool isGuest,
+        int tension,
+        int hpBefore,
+        int hpAfter)
+    {
+        int safeBefore = Mathf.Max(0, hpBefore);
+        int safeAfter = Mathf.Max(0, hpAfter);
+        int damage = Mathf.Max(0, safeBefore - safeAfter);
+
+        if (damage <= 0)
+        {
+            SetOnlineParticipantView(targetCard, isGuest, tension, safeAfter);
+            yield return new WaitForSeconds(ScaleAnimationTime(hpStepDelay));
+            yield break;
+        }
+
+        int displayedHp = safeBefore;
+        for (int i = 0; i < damage; i++)
+        {
+            displayedHp = Mathf.Max(safeAfter, displayedHp - 1);
+            SetOnlineParticipantView(targetCard, isGuest, tension, displayedHp);
+            yield return new WaitForSeconds(ScaleAnimationTime(hpStepDelay));
+        }
+
+        SetOnlineParticipantView(targetCard, isGuest, tension, safeAfter);
+    }
+
+    private void SetOnlineParticipantView(
+        BaseCardData card,
+        bool isGuest,
+        int tension,
+        int hp)
+    {
+        if (isGuest)
+            SetGuestView(card, tension, hp);
+        else
+            SetHostView(card, tension, hp);
+    }
+
+    private string BuildOnlineResultMessage(BattleActionResult result)
+    {
+        if (result == null)
+            return "합방 결과가 적용되었습니다.";
+
+        if (result.attackerDefeated && result.defenderDefeated)
+            return "합방 결과: 양쪽 캐릭터가 퇴장했습니다.";
+
+        if (result.defenderDefeated)
+            return "합방 결과: 방어자가 퇴장했습니다.";
+
+        if (result.attackerDefeated)
+            return "합방 결과: 공격자가 퇴장했습니다.";
+
+        return "합방 결과: 양쪽 캐릭터가 생존했습니다.";
     }
 
     private IEnumerator ExecuteBasicCollaborationRoutine(

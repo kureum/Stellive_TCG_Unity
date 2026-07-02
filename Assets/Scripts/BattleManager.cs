@@ -171,6 +171,10 @@ public class BattleManager : MonoBehaviour
     private bool onlineEndTurnRequestPending;
     private bool onlineSummonFaceDownRequestPending;
     private bool onlineSummonFaceUpRequestPending;
+    private bool onlineFlipSummonRequestPending;
+    private bool onlineMoveCharacterRequestPending;
+    private bool onlineStartCollabRequestPending;
+    private bool onlineUseContentRequestPending;
     private bool onlineHostPassedThisTurn;
     private bool onlineClientPassedThisTurn;
     private bool onlineHostActedInCurrentPassCycle;
@@ -322,6 +326,10 @@ public class BattleManager : MonoBehaviour
         onlineEndTurnRequestPending = false;
         onlineSummonFaceDownRequestPending = false;
         onlineSummonFaceUpRequestPending = false;
+        onlineFlipSummonRequestPending = false;
+        onlineMoveCharacterRequestPending = false;
+        onlineStartCollabRequestPending = false;
+        onlineUseContentRequestPending = false;
         ClearOnlineTurnPassState();
         onlineBroadcastSetupReady = false;
         hasInitializedOnlineRuntime = false;
@@ -1885,6 +1893,70 @@ public class BattleManager : MonoBehaviour
 
             RefreshAllUI();
             RefreshTurnEndButtonState();
+            return;
+        }
+
+        if (result.requestActionType == BattleActionType.FlipSummon)
+        {
+            onlineFlipSummonRequestPending = false;
+            ClearPendingFlipChoice();
+
+            if (IsBattleBusy())
+                SetBattleBusy(false, "FlipSummonResult rejected");
+
+            RefreshAllUI();
+            RefreshTurnEndButtonState();
+            return;
+        }
+
+        if (result.requestActionType == BattleActionType.MoveCharacter)
+        {
+            onlineMoveCharacterRequestPending = false;
+            ClearPendingMoveChoice();
+
+            Debug.Log(
+                $"[OnlineMove] MoveCharacter rejected pending cleared. " +
+                $"seq={result.actionSequence}, reason={result.rejectReason}");
+
+            if (IsBattleBusy())
+                SetBattleBusy(false, "MoveCharacterResult rejected");
+
+            RefreshAllUI();
+            RefreshTurnEndButtonState();
+            return;
+        }
+
+        if (result.requestActionType == BattleActionType.StartCollab)
+        {
+            onlineStartCollabRequestPending = false;
+            ClearPendingCollaborationChoice();
+
+            Debug.Log(
+                $"[OnlineCollab] StartCollab rejected pending cleared. " +
+                $"seq={result.actionSequence}, reason={result.rejectReason}");
+
+            if (IsBattleBusy())
+                SetBattleBusy(false, "StartCollabResult rejected");
+
+            RefreshAllUI();
+            RefreshTurnEndButtonState();
+            return;
+        }
+
+        if (result.requestActionType == BattleActionType.UseContent)
+        {
+            onlineUseContentRequestPending = false;
+            ClearPendingContentChoice();
+
+            Debug.Log(
+                $"[OnlineUseContent] UseContent rejected pending cleared. " +
+                $"seq={result.actionSequence}, reason={result.rejectReason}");
+
+            if (IsBattleBusy())
+                SetBattleBusy(false, "UseContentResult rejected");
+
+            RefreshAllUI();
+            RefreshTurnEndButtonState();
         }
     }
 
@@ -2431,6 +2503,10 @@ public class BattleManager : MonoBehaviour
         onlineEndTurnRequestPending = false;
         onlineSummonFaceDownRequestPending = false;
         onlineSummonFaceUpRequestPending = false;
+        onlineFlipSummonRequestPending = false;
+        onlineMoveCharacterRequestPending = false;
+        onlineStartCollabRequestPending = false;
+        onlineUseContentRequestPending = false;
         ClearOnlineTurnPassState();
         onlineBroadcastSetupReady = false;
 
@@ -3246,6 +3322,12 @@ public class BattleManager : MonoBehaviour
             result.affectedSlotIds.Add(action.targetSlotId);
         }
 
+        AppendOnlineBroadcastAlwaysDeltasForHost(
+            result,
+            action != null ? action.targetSlotId : "",
+            result.actor,
+            "SummonFaceDown");
+
         FillSummonFaceDownProjectedSnapshot(result, action);
         MarkOnlineSummonedFaceDownThisTurn(result.actor);
 
@@ -3372,12 +3454,27 @@ public class BattleManager : MonoBehaviour
             result.affectedSlotIds.Add(action.targetSlotId);
         }
 
+        AppendOnlineOnAppearDeltasForHost(
+            result,
+            card,
+            result.actor,
+            action != null ? action.targetSlotId : "",
+            true,
+            "SummonFaceUp");
+        AppendOnlineBroadcastAlwaysDeltasForHost(
+            result,
+            action != null ? action.targetSlotId : "",
+            result.actor,
+            "SummonFaceUp");
+
         FillSummonFaceUpProjectedSnapshot(result, action);
+        ProjectViewerDeltasIntoSnapshot(result);
 
         Debug.Log(
             $"[OnlineBattle] Host created SummonFaceUpResult. " +
             $"actor={result.actor}, card={action?.cardInstanceId}, slot={action?.targetSlotId}, " +
-            $"cost={result.paidViewerCost}, turn={result.turnCount}");
+            $"cost={result.paidViewerCost}, onAppearViewerDeltas={result.viewerDeltas.Count}, " +
+            $"onAppearMessages={result.messageDeltas.Count}, turn={result.turnCount}");
         return result;
     }
 
@@ -3457,6 +3554,7 @@ public class BattleManager : MonoBehaviour
         turnCount = Mathf.Max(1, result.turnCount);
         myActionUsedThisActionTurn = result.actor == BattleSlotOwner.My;
 
+        ApplyEffectDeltasFromResult(result);
         ApplyBattleCountSnapshot(result);
         ClearPendingSummonChoice();
         ClearDraggingHandCard();
@@ -3477,7 +3575,1509 @@ public class BattleManager : MonoBehaviour
             $"cost={result.paidViewerCost}, viewerBefore={beforeMyViewer}/{beforeEnemyViewer}, " +
             $"viewerAfter={myPlayer?.viewers}/{enemyPlayer?.viewers}, " +
             $"currentTurn={currentActionSide}, myHand={myPlayer?.hand.Count}, enemyHand={enemyPlayer?.hand.Count}");
-        Debug.Log("[OnlineBattle] OnAppear effects are not executed online in this step.");
+        Debug.Log(
+            $"[OnlineBattle] OnAppear effects were applied from Result deltas only. " +
+            $"viewerDeltas={result.viewerDeltas?.Count ?? 0}, messages={result.messageDeltas?.Count ?? 0}");
+    }
+
+    public BattleActionResult CreateFlipSummonResultFromExternal(BattleAction action)
+    {
+        BattleFieldSlot sourceSlot = action != null
+            ? FindFieldSlotBySlotId(action.sourceSlotId)
+            : null;
+        BaseCardData card = sourceSlot != null
+            ? sourceSlot.characterCard
+            : null;
+        int cost = summonManager != null
+            ? summonManager.GetCharacterAppearCostFromExternal(card)
+            : 0;
+
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.FlipSummon,
+            isAccepted = true,
+            message = "플립 출연이 적용되었습니다.",
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            faceDown = false,
+            paidViewerCost = Mathf.Max(0, cost)
+        };
+
+        if (action != null)
+        {
+            string cardInstanceId = !string.IsNullOrWhiteSpace(action.cardInstanceId)
+                ? action.cardInstanceId
+                : card != null ? card.cardInstanceId : "";
+
+            result.affectedCardIds.Add(cardInstanceId);
+            result.affectedSlotIds.Add(action.sourceSlotId);
+        }
+
+        AppendOnlineOnAppearDeltasForHost(
+            result,
+            card,
+            result.actor,
+            action != null ? action.sourceSlotId : "",
+            true,
+            "FlipSummon");
+        AppendOnlineBroadcastAlwaysDeltasForHost(
+            result,
+            action != null ? action.sourceSlotId : "",
+            result.actor,
+            "FlipSummon");
+
+        FillFlipSummonProjectedSnapshot(result, action);
+        ProjectViewerDeltasIntoSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineFlipSummon] Host created FlipSummonResult. " +
+            $"actor={result.actor}, card={action?.cardInstanceId}, sourceSlot={action?.sourceSlotId}, " +
+            $"cost={result.paidViewerCost}, viewerAfter={result.hostViewerCount}/{result.clientViewerCount}, " +
+            $"onAppearViewerDeltas={result.viewerDeltas.Count}, onAppearMessages={result.messageDeltas.Count}, " +
+            $"turn={result.turnCount}");
+        return result;
+    }
+
+    private void FillFlipSummonProjectedSnapshot(
+        BattleActionResult result,
+        BattleAction action)
+    {
+        FillBattleCountSnapshot(result);
+
+        if (action == null)
+            return;
+
+        int cost = Mathf.Max(0, result.paidViewerCost);
+        if (action.actor == BattleSlotOwner.My)
+            result.hostViewerCount = Mathf.Max(0, result.hostViewerCount - cost);
+        else
+            result.clientViewerCount = Mathf.Max(0, result.clientViewerCount - cost);
+    }
+
+    public void ApplyFlipSummonFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineFlipSummonRequestPending = false;
+
+        string cardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
+            ? result.affectedCardIds[0]
+            : "";
+        string sourceSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+            ? result.affectedSlotIds[0]
+            : "";
+
+        BattleFieldSlot sourceSlot = FindSlotById(sourceSlotId);
+        BaseCardData card = sourceSlot != null
+            ? sourceSlot.characterCard
+            : null;
+
+        if (sourceSlot == null || card == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineFlipSummon] Apply FlipSummonResult failed. " +
+                $"actor={result.actor}, card={cardInstanceId}, sourceSlot={sourceSlotId}");
+            RefreshAllUI();
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(cardInstanceId) &&
+            !string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning(
+                $"[OnlineFlipSummon] Apply card instance mismatch. " +
+                $"result={cardInstanceId}, slot={card.cardInstanceId}, sourceSlot={sourceSlotId}");
+        }
+
+        int beforeMyViewer = myPlayer != null ? myPlayer.viewers : 0;
+        int beforeEnemyViewer = enemyPlayer != null ? enemyPlayer.viewers : 0;
+        Sprite sprite = LoadCardSprite(card);
+        sourceSlot.SetCharacterCard(
+            card,
+            sprite,
+            false,
+            result.actor);
+        ApplyBroadcastEnterEffectsFromExternal(sourceSlot, false);
+        sourceSlot.faceUpSummonedTurn = Mathf.Max(1, result.turnCount);
+
+        MarkOnlinePlayerUsedActionFromExternal(
+            result.actor,
+            BattleActionType.FlipSummon);
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+        myActionUsedThisActionTurn = result.actor == BattleSlotOwner.My;
+
+        ApplyEffectDeltasFromResult(result);
+        ApplyBattleCountSnapshot(result);
+        ClearPendingFlipChoice();
+
+        RefreshAllUI();
+
+        bool isMine = result.actor == BattleSlotOwner.My;
+        string message = isMine
+            ? $"{card.name} 카드를 플립 출연했습니다.\n시청자 -{result.paidViewerCost}"
+            : $"상대가 {card.name} 카드를 플립 출연했습니다.\n시청자 -{result.paidViewerCost}";
+        SetSystemMessage(message);
+
+        Debug.Log(
+            $"[OnlineFlipSummon] Applied FlipSummonResult. " +
+            $"actor={result.actor}, isMine={isMine}, card={cardInstanceId}, sourceSlot={sourceSlotId}, " +
+            $"cost={result.paidViewerCost}, viewerBefore={beforeMyViewer}/{beforeEnemyViewer}, " +
+            $"viewerAfter={myPlayer?.viewers}/{enemyPlayer?.viewers}, currentTurn={currentActionSide}, " +
+            $"handCounts={myPlayer?.hand.Count}/{enemyPlayer?.hand.Count}");
+        Debug.Log(
+            $"[OnlineFlipSummon] OnAppear effects were applied from Result deltas only. " +
+            $"viewerDeltas={result.viewerDeltas?.Count ?? 0}, messages={result.messageDeltas?.Count ?? 0}");
+    }
+
+    public BattleActionResult CreateMoveCharacterResultFromExternal(BattleAction action)
+    {
+        BattleFieldSlot sourceSlot = action != null
+            ? FindFieldSlotBySlotId(action.sourceSlotId)
+            : null;
+        BattleFieldSlot targetSlot = action != null
+            ? FindFieldSlotBySlotId(action.targetSlotId)
+            : null;
+        BaseCardData card = sourceSlot != null
+            ? sourceSlot.characterCard
+            : null;
+
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.MoveCharacter,
+            isAccepted = true,
+            message = "캐릭터 이동이 적용되었습니다.",
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            faceDown = sourceSlot != null && sourceSlot.isCharacterFaceDown,
+            characterOwner = sourceSlot != null ? sourceSlot.characterOwner : BattleSlotOwner.My,
+            characterCurrentHp = sourceSlot != null ? sourceSlot.currentCharacterHp : 0,
+            characterCurrentMaxHp = sourceSlot != null ? sourceSlot.currentCharacterMaxHp : 0,
+            characterCurrentTension = sourceSlot != null ? sourceSlot.currentCharacterTension : 0,
+            characterMovedThisTurn = true,
+            characterActiveUsedThisTurn = sourceSlot != null && sourceSlot.characterActiveUsedThisTurn
+        };
+
+        if (action != null)
+        {
+            string cardInstanceId = !string.IsNullOrWhiteSpace(action.cardInstanceId)
+                ? action.cardInstanceId
+                : card != null ? card.cardInstanceId : "";
+
+            result.affectedCardIds.Add(cardInstanceId);
+            result.movedCardIds.Add(cardInstanceId);
+            result.affectedSlotIds.Add(action.sourceSlotId);
+            result.affectedSlotIds.Add(action.targetSlotId);
+        }
+
+        FillBattleCountSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineMove] Host created MoveCharacterResult. " +
+            $"actor={result.actor}, card={card?.cardInstanceId}, source={action?.sourceSlotId}, " +
+            $"target={action?.targetSlotId}, characterOwner={result.characterOwner}, " +
+            $"sourceOwner={sourceSlot?.owner}, targetOwner={targetSlot?.owner}, " +
+            $"hp={result.characterCurrentHp}/{result.characterCurrentMaxHp}, tension={result.characterCurrentTension}, " +
+            $"turn={result.turnCount}");
+        return result;
+    }
+
+    public void ApplyMoveCharacterFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineMoveCharacterRequestPending = false;
+
+        string cardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
+            ? result.affectedCardIds[0]
+            : "";
+        string sourceSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+            ? result.affectedSlotIds[0]
+            : "";
+        string targetSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 1
+            ? result.affectedSlotIds[1]
+            : "";
+
+        BattleFieldSlot sourceSlot = FindSlotById(sourceSlotId);
+        BattleFieldSlot targetSlot = FindSlotById(targetSlotId);
+        BaseCardData card = sourceSlot != null
+            ? sourceSlot.characterCard
+            : null;
+
+        if (sourceSlot == null || targetSlot == null || card == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineMove] Apply MoveCharacterResult failed. " +
+                $"actor={result.actor}, card={cardInstanceId}, source={sourceSlotId}, target={targetSlotId}");
+            RefreshAllUI();
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(cardInstanceId) &&
+            !string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning(
+                $"[OnlineMove] Apply card instance mismatch. " +
+                $"result={cardInstanceId}, sourceSlot={card.cardInstanceId}, source={sourceSlotId}");
+        }
+
+        if (targetSlot.HasCharacter)
+        {
+            Debug.LogWarning(
+                $"[OnlineMove] Apply MoveCharacterResult blocked because target already has character. " +
+                $"target={targetSlotId}, owner={targetSlot.characterOwner}");
+            RefreshAllUI();
+            return;
+        }
+
+        Sprite sprite = sourceSlot.GetCurrentCharacterSprite();
+        if (sprite == null)
+            sprite = LoadCardSprite(card);
+
+        BattleSlotOwner movingCardOwner = result.characterOwner;
+        int hp = result.characterCurrentHp > 0 ? result.characterCurrentHp : sourceSlot.currentCharacterHp;
+        int maxHp = result.characterCurrentMaxHp > 0 ? result.characterCurrentMaxHp : sourceSlot.currentCharacterMaxHp;
+        int tension = result.characterCurrentTension;
+        int movementLockedUntilTurn = sourceSlot.movementLockedByBroadcastUntilTurn;
+        int collabEffectsSilencedUntilTurn = sourceSlot.collabEffectsSilencedUntilTurn;
+        int collabAttackForbiddenUntilTurn = sourceSlot.collabAttackForbiddenUntilTurn;
+        int broadcastHpMaxDelta = sourceSlot.broadcastHpMaxDelta;
+
+        Debug.Log(
+            $"[OnlineMove] Applying move before. " +
+            $"actor={result.actor}, card={cardInstanceId}, source={sourceSlotId}, target={targetSlotId}, " +
+            $"sourceOwner={sourceSlot.owner}, targetOwner={targetSlot.owner}, characterOwner={movingCardOwner}, " +
+            $"hp={hp}/{maxHp}, tension={tension}");
+
+        targetSlot.SetCharacterCard(card, sprite, result.faceDown, movingCardOwner);
+        targetSlot.SetCharacterBattleStats(hp, maxHp, tension);
+        targetSlot.SetCharacterMovedThisTurn(result.characterMovedThisTurn);
+        targetSlot.SetCharacterActiveUsedThisTurn(result.characterActiveUsedThisTurn);
+        targetSlot.SetMovementLockedByBroadcastUntilTurn(movementLockedUntilTurn);
+        targetSlot.SetCollabEffectsSilencedUntilTurn(collabEffectsSilencedUntilTurn);
+        targetSlot.SetCollabAttackForbiddenUntilTurn(collabAttackForbiddenUntilTurn);
+        targetSlot.SetBroadcastHpMaxDelta(broadcastHpMaxDelta);
+        ApplyBroadcastEnterEffectsFromExternal(targetSlot, true);
+
+        ApplyBroadcastLeaveEffectsFromExternal(sourceSlot);
+        sourceSlot.ClearCharacterCard();
+
+        MarkOnlinePlayerUsedActionFromExternal(
+            result.actor,
+            BattleActionType.MoveCharacter);
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+        myActionUsedThisActionTurn = result.actor == BattleSlotOwner.My;
+
+        ApplyBattleCountSnapshot(result);
+        ClearPendingMoveChoice();
+
+        RefreshAllUI();
+
+        string actorLabel = result.actor == BattleSlotOwner.My ? "" : "상대가 ";
+        SetSystemMessage(
+            $"{actorLabel}{card.name} 카드를 이동했습니다.\n" +
+            $"이동 전: ({sourceSlot.x}, {sourceSlot.y})\n" +
+            $"이동 후: ({targetSlot.x}, {targetSlot.y})");
+
+        Debug.Log(
+            $"[OnlineMove] Applied MoveCharacterResult. " +
+            $"actor={result.actor}, card={cardInstanceId}, source={sourceSlotId}, target={targetSlotId}, " +
+            $"characterOwner={targetSlot.characterOwner}, sourceHasCharacter={sourceSlot.HasCharacter}, " +
+            $"targetHasCharacter={targetSlot.HasCharacter}, handCounts={myPlayer?.hand.Count}/{enemyPlayer?.hand.Count}");
+    }
+
+    public BattleActionResult CreateStartCollabResultFromExternal(BattleAction action)
+    {
+        BattleFieldSlot attackerSlot = action != null
+            ? FindFieldSlotBySlotId(action.sourceSlotId)
+            : null;
+        BattleFieldSlot defenderSlot = action != null
+            ? FindFieldSlotBySlotId(action.targetSlotId)
+            : null;
+
+        BaseCardData attackerCard = attackerSlot != null ? attackerSlot.characterCard : null;
+        BaseCardData defenderCard = defenderSlot != null ? defenderSlot.characterCard : null;
+        BattleFieldSlot battleLocationSlot = defenderSlot;
+
+        int attackerHpBefore = attackerSlot != null
+            ? attackerSlot.currentCharacterHp
+            : 0;
+        int defenderHpBefore = defenderSlot != null
+            ? defenderSlot.currentCharacterHp
+            : 0;
+        int attackerTension = GetEffectiveCollabTensionFromExternal(attackerSlot, battleLocationSlot);
+        int defenderTension = GetEffectiveCollabTensionFromExternal(defenderSlot, battleLocationSlot);
+
+        int defenderHpAfter = CalculateRawHpAfterCollabDamage(defenderSlot, battleLocationSlot, attackerTension);
+        bool defenderDefeated = defenderHpAfter <= 0;
+        bool defenderCounterattacked = !defenderDefeated;
+        int attackerHpAfter = defenderCounterattacked
+            ? CalculateRawHpAfterCollabDamage(attackerSlot, battleLocationSlot, defenderTension)
+            : attackerHpBefore;
+        bool attackerDefeated = attackerHpAfter <= 0;
+
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.StartCollab,
+            isAccepted = true,
+            message = "합방 결과가 적용되었습니다.",
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            attackerOwner = attackerSlot != null ? attackerSlot.characterOwner : BattleSlotOwner.My,
+            defenderOwner = defenderSlot != null ? defenderSlot.characterOwner : BattleSlotOwner.Enemy,
+            attackerHpBefore = attackerHpBefore,
+            defenderHpBefore = defenderHpBefore,
+            attackerHpAfter = Mathf.Max(0, attackerHpAfter),
+            defenderHpAfter = Mathf.Max(0, defenderHpAfter),
+            attackerMaxHp = attackerSlot != null ? attackerSlot.currentCharacterMaxHp : 0,
+            defenderMaxHp = defenderSlot != null ? defenderSlot.currentCharacterMaxHp : 0,
+            attackerTensionUsed = attackerTension,
+            defenderTensionUsed = defenderCounterattacked ? defenderTension : 0,
+            attackerTensionAfter = attackerSlot != null ? attackerSlot.currentCharacterTension : 0,
+            defenderTensionAfter = defenderSlot != null ? defenderSlot.currentCharacterTension : 0,
+            defenderCounterattacked = defenderCounterattacked,
+            attackerDefeated = attackerDefeated,
+            defenderDefeated = defenderDefeated,
+            attackerMovedToDefenderSlot = !attackerDefeated && defenderDefeated,
+            attackerSentToRest = attackerDefeated,
+            defenderSentToRest = defenderDefeated
+        };
+
+        if (action != null)
+        {
+            result.affectedSlotIds.Add(action.sourceSlotId);
+            result.affectedSlotIds.Add(action.targetSlotId);
+            result.affectedSlotIds.Add(result.attackerMovedToDefenderSlot ? action.targetSlotId : action.sourceSlotId);
+            result.affectedSlotIds.Add(action.targetSlotId);
+        }
+
+        result.affectedCardIds.Add(attackerCard != null ? attackerCard.cardInstanceId : action?.cardInstanceId ?? "");
+        result.affectedCardIds.Add(defenderCard != null ? defenderCard.cardInstanceId : "");
+        result.movedCardIds.Add(attackerCard != null ? attackerCard.cardInstanceId : action?.cardInstanceId ?? "");
+
+        AppendOnlineOnRestDeltasForHost(
+            result,
+            defenderCard,
+            result.defenderOwner,
+            action != null ? action.targetSlotId : "",
+            result.defenderDefeated,
+            "StartCollabDefenderRest");
+
+        AppendOnlineOnRestDeltasForHost(
+            result,
+            attackerCard,
+            result.attackerOwner,
+            action != null ? action.sourceSlotId : "",
+            result.attackerDefeated,
+            "StartCollabAttackerRest");
+        AppendOnlinePostCollabDeltasForHost(
+            result,
+            attackerCard,
+            defenderCard,
+            action != null ? action.sourceSlotId : "",
+            action != null ? action.targetSlotId : "");
+
+        FillBattleCountSnapshot(result);
+        ProjectViewerDeltasIntoSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineCollab] Host created StartCollabResult. " +
+            $"actor={result.actor}, attacker={attackerCard?.cardInstanceId}/{attackerCard?.id}, " +
+            $"defender={defenderCard?.cardInstanceId}/{defenderCard?.id}, " +
+            $"source={action?.sourceSlotId}, defenderSlot={action?.targetSlotId}, " +
+            $"attackerOwner={result.attackerOwner}, defenderOwner={result.defenderOwner}, " +
+            $"attackerHp={result.attackerHpBefore}->{result.attackerHpAfter}, " +
+            $"defenderHp={result.defenderHpBefore}->{result.defenderHpAfter}, " +
+            $"attackerTension={result.attackerTensionUsed}, defenderTension={result.defenderTensionUsed}, " +
+            $"counter={result.defenderCounterattacked}, attackerDefeated={result.attackerDefeated}, " +
+            $"defenderDefeated={result.defenderDefeated}, attackerMoved={result.attackerMovedToDefenderSlot}, " +
+            $"onRestViewerDeltas={result.viewerDeltas.Count}, onRestMessages={result.messageDeltas.Count}");
+        return result;
+    }
+
+    private void AppendOnlineOnRestDeltasForHost(
+        BattleActionResult result,
+        BaseCardData restedCard,
+        BattleSlotOwner restedOwner,
+        string sourceSlotId,
+        bool didRest,
+        string restReason)
+    {
+        if (result == null || !didRest || restedCard == null)
+            return;
+
+        CharacterCardData character = restedCard as CharacterCardData;
+        if (character == null || character.effects == null)
+            return;
+
+        OnlineEffectResolver resolver = new OnlineEffectResolver(this);
+
+        foreach (EffectData effect in character.effects)
+        {
+            if (effect == null || !IsOnRestEffect(effect))
+                continue;
+
+            string effectRef = GetEffectRef(effect);
+            OnlineEffectRefMetadata metadata = OnlineEffectResolver.GetMetadata(effectRef);
+
+            Debug.Log(
+                $"[OnlineOnRest] Detected OnRest. reason={restReason}, " +
+                $"card={restedCard.cardInstanceId}/{restedCard.id}, owner={restedOwner}, " +
+                $"slot={sourceSlotId}, effectRef={effectRef}, category={metadata.category}");
+
+            if (metadata.category != OnlineEffectSupportCategory.SupportedImmediateWithDelta &&
+                metadata.category != OnlineEffectSupportCategory.SupportedImmediate &&
+                metadata.category != OnlineEffectSupportCategory.CurrentDeltaSupported)
+            {
+                Debug.LogWarning(
+                    $"[OnlineOnRest] Unsupported OnRest skipped. effectRef={effectRef}, " +
+                    $"category={metadata.category}, card={restedCard.id}");
+                continue;
+            }
+
+            OnlineEffectResolveResult onRestResult =
+                resolver.ResolveSimpleEffectForHost(effectRef, restedCard, effect, restedOwner);
+
+            if (onRestResult == null || !onRestResult.success)
+            {
+                Debug.LogWarning(
+                    $"[OnlineOnRest] OnRest delta resolve failed. effectRef={effectRef}, " +
+                    $"reason={onRestResult?.rejectReason ?? "null result"}");
+                continue;
+            }
+
+            MergeOnlineEffectResolveResult(result, onRestResult);
+
+            Debug.Log(
+                $"[OnlineOnRest] Merged OnRest deltas. effectRef={effectRef}, " +
+                $"viewerDeltas={onRestResult.viewerDeltas.Count}, messages={onRestResult.messageDeltas.Count}");
+        }
+    }
+
+    private void AppendOnlineOnAppearDeltasForHost(
+        BattleActionResult result,
+        BaseCardData appearedCard,
+        BattleSlotOwner appearedOwner,
+        string appearedSlotId,
+        bool didAppearFaceUp,
+        string appearReason)
+    {
+        if (result == null || !didAppearFaceUp || appearedCard == null)
+            return;
+
+        CharacterCardData character = appearedCard as CharacterCardData;
+        if (character == null || character.effects == null)
+            return;
+
+        OnlineEffectResolver resolver = new OnlineEffectResolver(this);
+
+        foreach (EffectData effect in character.effects)
+        {
+            if (effect == null || !IsOnAppearEffect(effect))
+                continue;
+
+            string effectRef = GetEffectRef(effect);
+            OnlineEffectRefMetadata metadata = OnlineEffectResolver.GetMetadata(effectRef);
+
+            Debug.Log(
+                $"[OnlineOnAppear] Detected OnAppear. reason={appearReason}, " +
+                $"card={appearedCard.cardInstanceId}/{appearedCard.id}, owner={appearedOwner}, " +
+                $"slot={appearedSlotId}, effectRef={effectRef}, category={metadata.category}");
+
+            if (metadata.category != OnlineEffectSupportCategory.SupportedImmediateWithDelta &&
+                metadata.category != OnlineEffectSupportCategory.SupportedImmediate &&
+                metadata.category != OnlineEffectSupportCategory.CurrentDeltaSupported)
+            {
+                Debug.LogWarning(
+                    $"[OnlineOnAppear] Unsupported OnAppear skipped. effectRef={effectRef}, " +
+                    $"category={metadata.category}, card={appearedCard.id}, reason={appearReason}");
+                continue;
+            }
+
+            OnlineEffectResolveResult onAppearResult =
+                resolver.ResolveSimpleEffectForHost(effectRef, appearedCard, effect, appearedOwner);
+
+            if (onAppearResult == null || !onAppearResult.success)
+            {
+                Debug.LogWarning(
+                    $"[OnlineOnAppear] OnAppear delta resolve failed. effectRef={effectRef}, " +
+                    $"reason={onAppearResult?.rejectReason ?? "null result"}");
+                continue;
+            }
+
+            MergeOnlineEffectResolveResult(result, onAppearResult);
+
+            Debug.Log(
+                $"[OnlineOnAppear] Merged OnAppear deltas. effectRef={effectRef}, " +
+                $"viewerDeltas={onAppearResult.viewerDeltas.Count}, messages={onAppearResult.messageDeltas.Count}");
+        }
+    }
+
+    private void AppendOnlinePostCollabDeltasForHost(
+        BattleActionResult result,
+        BaseCardData attackerCard,
+        BaseCardData defenderCard,
+        string attackerSlotId,
+        string defenderSlotId)
+    {
+        if (result == null || result.requestActionType != BattleActionType.StartCollab)
+            return;
+
+        bool attackerSurvived = !result.attackerDefeated && attackerCard != null;
+        bool defenderSurvived = !result.defenderDefeated && defenderCard != null;
+
+        if (!attackerSurvived && !defenderSurvived)
+        {
+            Debug.Log("[OnlinePostCollab] No surviving participant. PostCollab trigger skipped.");
+            return;
+        }
+
+        HashSet<BattleSlotOwner> ownersToInspect = new HashSet<BattleSlotOwner>();
+        if (attackerSurvived)
+            ownersToInspect.Add(result.attackerOwner);
+        if (defenderSurvived)
+            ownersToInspect.Add(result.defenderOwner);
+
+        foreach (BattleSlotOwner owner in ownersToInspect)
+            LogHandPostCollabCandidatesForHost(owner, attackerSlotId, defenderSlotId);
+
+        AppendParticipantPostCollabDeltasForHost(
+            result,
+            attackerCard,
+            result.attackerOwner,
+            attackerSlotId,
+            attackerSurvived,
+            "attacker");
+        AppendParticipantPostCollabDeltasForHost(
+            result,
+            defenderCard,
+            result.defenderOwner,
+            defenderSlotId,
+            defenderSurvived,
+            "defender");
+    }
+
+    private void LogHandPostCollabCandidatesForHost(
+        BattleSlotOwner owner,
+        string attackerSlotId,
+        string defenderSlotId)
+    {
+        foreach (BaseCardData handCard in GetHandCardsForOwner(owner))
+        {
+            ContentCardData content = handCard as ContentCardData;
+            if (content == null || content.effects == null)
+                continue;
+
+            foreach (EffectData effect in content.effects)
+            {
+                if (effect == null || !IsPostCollabEffect(effect))
+                    continue;
+
+                string effectRef = GetEffectRef(effect);
+                OnlineEffectRefMetadata metadata = OnlineEffectResolver.GetMetadata(effectRef);
+
+                Debug.Log(
+                    $"[OnlinePostCollab] Detected hand PostCollab candidate. " +
+                    $"owner={owner}, card={handCard.cardInstanceId}/{handCard.id}, " +
+                    $"effectRef={effectRef}, category={metadata.category}, " +
+                    $"attackerSlot={attackerSlotId}, defenderSlot={defenderSlotId}");
+
+                Debug.LogWarning(
+                    $"[OnlinePostCollab] Candidate skipped in trigger result pass. " +
+                    $"PostCollab content requires a follow-up selection/use action. effectRef={effectRef}");
+            }
+        }
+    }
+
+    private void AppendParticipantPostCollabDeltasForHost(
+        BattleActionResult result,
+        BaseCardData participantCard,
+        BattleSlotOwner owner,
+        string slotId,
+        bool survived,
+        string role)
+    {
+        if (result == null || participantCard == null || !survived)
+            return;
+
+        CharacterCardData character = participantCard as CharacterCardData;
+        if (character == null || character.effects == null)
+            return;
+
+        OnlineEffectResolver resolver = new OnlineEffectResolver(this);
+
+        foreach (EffectData effect in character.effects)
+        {
+            if (effect == null || !IsPostCollabEffect(effect))
+                continue;
+
+            string effectRef = GetEffectRef(effect);
+            OnlineEffectRefMetadata metadata = OnlineEffectResolver.GetMetadata(effectRef);
+
+            Debug.Log(
+                $"[OnlinePostCollab] Detected participant PostCollab. role={role}, " +
+                $"owner={owner}, card={participantCard.cardInstanceId}/{participantCard.id}, " +
+                $"slot={slotId}, effectRef={effectRef}, category={metadata.category}");
+
+            if (metadata.category != OnlineEffectSupportCategory.SupportedImmediateWithDelta &&
+                metadata.category != OnlineEffectSupportCategory.SupportedImmediate &&
+                metadata.category != OnlineEffectSupportCategory.CurrentDeltaSupported)
+            {
+                Debug.LogWarning(
+                    $"[OnlinePostCollab] Unsupported participant PostCollab skipped. " +
+                    $"effectRef={effectRef}, category={metadata.category}, card={participantCard.id}");
+                continue;
+            }
+
+            OnlineEffectResolveResult postCollabResult =
+                resolver.ResolveSimpleEffectForHost(effectRef, participantCard, effect, owner);
+
+            if (postCollabResult == null || !postCollabResult.success)
+            {
+                Debug.LogWarning(
+                    $"[OnlinePostCollab] PostCollab delta resolve failed. effectRef={effectRef}, " +
+                    $"reason={postCollabResult?.rejectReason ?? "null result"}");
+                continue;
+            }
+
+            MergeOnlineEffectResolveResult(result, postCollabResult);
+
+            Debug.Log(
+                $"[OnlinePostCollab] Merged PostCollab deltas. effectRef={effectRef}, " +
+                $"viewerDeltas={postCollabResult.viewerDeltas.Count}, fieldStats={postCollabResult.fieldStatDeltas.Count}, " +
+                $"messages={postCollabResult.messageDeltas.Count}");
+        }
+    }
+
+    private void AppendOnlineBroadcastAlwaysDeltasForHost(
+        BattleActionResult result,
+        string slotId,
+        BattleSlotOwner enteringOwner,
+        string triggerReason)
+    {
+        if (result == null || string.IsNullOrWhiteSpace(slotId))
+            return;
+
+        BattleFieldSlot slot = FindSlotById(slotId);
+        BroadcastCardData broadcast = slot != null ? slot.broadcastCard as BroadcastCardData : null;
+
+        if (broadcast == null || broadcast.effects == null)
+            return;
+
+        foreach (EffectData effect in broadcast.effects)
+        {
+            if (effect == null || !IsBroadcastAlwaysEffect(effect))
+                continue;
+
+            string effectRef = GetEffectRef(effect);
+            OnlineEffectRefMetadata metadata = OnlineEffectResolver.GetMetadata(effectRef);
+
+            if (metadata.category == OnlineEffectSupportCategory.IncludedInHostCalculation)
+            {
+                Debug.Log(
+                    $"[OnlineBroadcastAlways] Included in host calculation, no delta emitted. " +
+                    $"reason={triggerReason}, slot={slotId}, owner={enteringOwner}, " +
+                    $"broadcast={broadcast.id}, effectRef={effectRef}");
+                continue;
+            }
+
+            Debug.LogWarning(
+                $"[OnlineBroadcastAlways] BroadcastAlways skipped. " +
+                $"reason={triggerReason}, slot={slotId}, owner={enteringOwner}, " +
+                $"broadcast={broadcast.id}, effectRef={effectRef}, category={metadata.category}");
+        }
+    }
+
+    private bool IsOnRestEffect(EffectData effect)
+    {
+        return effect != null &&
+            string.Equals(effect.timing, "Rest", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsOnAppearEffect(EffectData effect)
+    {
+        return effect != null &&
+            string.Equals(effect.timing, "OnAppear", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsPostCollabEffect(EffectData effect)
+    {
+        return effect != null &&
+            string.Equals(effect.timing, "PostCollab", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsBroadcastAlwaysEffect(EffectData effect)
+    {
+        return effect != null &&
+            string.Equals(effect.timing, "Always", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private IEnumerable<BaseCardData> GetHandCardsForOwner(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime player = owner == BattleSlotOwner.My
+            ? myPlayer
+            : enemyPlayer;
+
+        if (player == null || player.hand == null)
+            yield break;
+
+        foreach (BaseCardData card in player.hand)
+        {
+            if (card != null)
+                yield return card;
+        }
+    }
+
+    private string GetEffectRef(EffectData effect)
+    {
+        if (effect == null)
+            return "";
+
+        return !string.IsNullOrWhiteSpace(effect.@ref)
+            ? effect.@ref
+            : effect.refName ?? "";
+    }
+
+    private void MergeOnlineEffectResolveResult(
+        BattleActionResult result,
+        OnlineEffectResolveResult effectResult)
+    {
+        if (result == null || effectResult == null)
+            return;
+
+        result.viewerDeltas.AddRange(effectResult.viewerDeltas);
+        result.fieldStatDeltas.AddRange(effectResult.fieldStatDeltas);
+        result.cardZoneMoveDeltas.AddRange(effectResult.zoneMoveDeltas);
+        result.fieldContentDeltas.AddRange(effectResult.fieldContentDeltas);
+        result.cardRevealDeltas.AddRange(effectResult.cardRevealDeltas);
+        result.cardDrawDeltas.AddRange(effectResult.cardDrawDeltas);
+        result.deckOrderDeltas.AddRange(effectResult.deckOrderDeltas);
+        result.statusDeltas.AddRange(effectResult.statusDeltas);
+        result.actionStateDeltas.AddRange(effectResult.actionStateDeltas);
+        result.selectionRequests.AddRange(effectResult.selectionRequests);
+        result.messageDeltas.AddRange(effectResult.messageDeltas);
+        result.effectMessages.AddRange(effectResult.messages);
+    }
+
+    private void ProjectViewerDeltasIntoSnapshot(BattleActionResult result)
+    {
+        if (result == null || result.viewerDeltas == null)
+            return;
+
+        foreach (ViewerDelta delta in result.viewerDeltas)
+        {
+            if (delta == null)
+                continue;
+
+            if (delta.owner == BattleSlotOwner.My)
+                result.hostViewerCount = Mathf.Max(0, result.hostViewerCount + delta.amount);
+            else
+                result.clientViewerCount = Mathf.Max(0, result.clientViewerCount + delta.amount);
+        }
+    }
+
+    private int CalculateRawHpAfterCollabDamage(
+        BattleFieldSlot slot,
+        BattleFieldSlot battleLocationSlot,
+        int damage)
+    {
+        if (slot == null || !slot.HasCharacter)
+            return 0;
+
+        int hpModifier = GetSlotCharacterHpModifierFromExternal(slot, battleLocationSlot);
+        int effectiveHpBefore = Mathf.Max(0, slot.currentCharacterHp + hpModifier);
+        int effectiveHpAfter = Mathf.Max(0, effectiveHpBefore - Mathf.Max(0, damage));
+        return Mathf.Max(0, effectiveHpAfter - hpModifier);
+    }
+
+    public void ApplyStartCollabFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        if (collaborationManager == null)
+        {
+            Debug.LogWarning("[OnlineCollabAnim] CollaborationManager is null. Apply final state immediately.");
+            ApplyStartCollabFinalStateFromResult(result, true);
+            return;
+        }
+
+        StartCoroutine(ApplyStartCollabFromResultRoutine(result));
+    }
+
+    private IEnumerator ApplyStartCollabFromResultRoutine(BattleActionResult result)
+    {
+        bool previousBusy = isBusy;
+        string previousBusyReason = battleBusyReason;
+
+        SetBattleBusy(true, "OnlineCollabResultAnimation");
+        ClearPendingCollaborationChoice();
+        ClearPendingMoveChoice();
+        RefreshTurnEndButtonState();
+
+        Debug.Log(
+            $"[OnlineCollabAnim] Busy locked. seq={result.actionSequence}, actor={result.actor}");
+
+        bool finalApplied = false;
+        bool shouldFallback = false;
+        BattleFieldSlot attackerSlot = null;
+        BattleFieldSlot defenderSlot = null;
+
+        try
+        {
+            if (!TryResolveStartCollabResultSlots(
+                    result,
+                    out attackerSlot,
+                    out defenderSlot,
+                    out string failReason))
+            {
+                Debug.LogWarning($"[OnlineCollabAnim] Slot resolve failed. Fallback immediate apply. reason={failReason}");
+                shouldFallback = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[OnlineCollabAnim] Exception before animation. Fallback immediate apply. {ex}");
+            shouldFallback = true;
+        }
+
+        if (!shouldFallback)
+        {
+            yield return collaborationManager.PlayOnlineStartCollabResultAnimation(
+                result,
+                attackerSlot,
+                defenderSlot);
+        }
+
+        try
+        {
+            ApplyStartCollabFinalStateFromResult(result, shouldFallback);
+            finalApplied = true;
+        }
+        finally
+        {
+            onlineStartCollabRequestPending = false;
+
+            if (previousBusy)
+                SetBattleBusy(true, previousBusyReason);
+            else
+                SetBattleBusy(false, "OnlineCollabResultAnimation finished");
+
+            RefreshTurnEndButtonState();
+            Debug.Log(
+                $"[OnlineCollabAnim] Busy released. seq={result.actionSequence}, " +
+                $"finalApplied={finalApplied}, fallback={shouldFallback}");
+        }
+    }
+
+    private bool TryResolveStartCollabResultSlots(
+        BattleActionResult result,
+        out BattleFieldSlot attackerSlot,
+        out BattleFieldSlot defenderSlot,
+        out string failReason)
+    {
+        attackerSlot = null;
+        defenderSlot = null;
+        failReason = "";
+
+        if (result == null)
+        {
+            failReason = "result is null";
+            return false;
+        }
+
+        string attackerCardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
+            ? result.affectedCardIds[0]
+            : "";
+        string defenderCardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 1
+            ? result.affectedCardIds[1]
+            : "";
+        string attackerSourceSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+            ? result.affectedSlotIds[0]
+            : "";
+        string defenderSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 1
+            ? result.affectedSlotIds[1]
+            : "";
+
+        attackerSlot = FindSlotById(attackerSourceSlotId);
+        defenderSlot = FindSlotById(defenderSlotId);
+        BaseCardData attackerCard = attackerSlot != null ? attackerSlot.characterCard : null;
+        BaseCardData defenderCard = defenderSlot != null ? defenderSlot.characterCard : null;
+
+        if (attackerSlot == null || defenderSlot == null || attackerCard == null || defenderCard == null)
+        {
+            failReason =
+                $"attacker={attackerCardInstanceId}, defender={defenderCardInstanceId}, " +
+                $"source={attackerSourceSlotId}, defenderSlot={defenderSlotId}";
+            return false;
+        }
+
+        Debug.Log(
+            $"[OnlineCollabAnim] Slot mapping resolved. " +
+            $"attacker={attackerCardInstanceId}, defender={defenderCardInstanceId}, " +
+            $"source={attackerSourceSlotId}, defenderSlot={defenderSlotId}, " +
+            $"attackerOwner={attackerSlot.characterOwner}, defenderOwner={defenderSlot.characterOwner}, " +
+            $"sourceOwner={attackerSlot.owner}, defenderSlotOwner={defenderSlot.owner}");
+        return true;
+    }
+
+    private void ApplyStartCollabFinalStateFromResult(
+        BattleActionResult result,
+        bool usedImmediateFallback = false)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineStartCollabRequestPending = false;
+
+        string attackerCardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
+            ? result.affectedCardIds[0]
+            : "";
+        string defenderCardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 1
+            ? result.affectedCardIds[1]
+            : "";
+        string attackerSourceSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+            ? result.affectedSlotIds[0]
+            : "";
+        string defenderSlotId = result.affectedSlotIds != null && result.affectedSlotIds.Count > 1
+            ? result.affectedSlotIds[1]
+            : "";
+
+        BattleFieldSlot attackerSlot = FindSlotById(attackerSourceSlotId);
+        BattleFieldSlot defenderSlot = FindSlotById(defenderSlotId);
+        BaseCardData attackerCard = attackerSlot != null ? attackerSlot.characterCard : null;
+        BaseCardData defenderCard = defenderSlot != null ? defenderSlot.characterCard : null;
+
+        if (attackerSlot == null || defenderSlot == null || attackerCard == null || defenderCard == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineCollab] Apply final StartCollabResult failed. " +
+                $"attacker={attackerCardInstanceId}, defender={defenderCardInstanceId}, " +
+                $"source={attackerSourceSlotId}, defenderSlot={defenderSlotId}, fallback={usedImmediateFallback}");
+            RefreshAllUI();
+            return;
+        }
+
+        Sprite attackerSprite = attackerSlot.GetCurrentCharacterSprite();
+        if (attackerSprite == null)
+            attackerSprite = LoadCardSprite(attackerCard);
+
+        bool attackerFaceDown = attackerSlot.isCharacterFaceDown;
+        bool attackerActiveUsed = attackerSlot.characterActiveUsedThisTurn;
+        int attackerMoveLocked = attackerSlot.movementLockedByBroadcastUntilTurn;
+        int attackerCollabSilenced = attackerSlot.collabEffectsSilencedUntilTurn;
+        int attackerCollabForbidden = attackerSlot.collabAttackForbiddenUntilTurn;
+        int attackerBroadcastHpDelta = attackerSlot.broadcastHpMaxDelta;
+
+        Debug.Log(
+            $"[OnlineCollab] Applying StartCollabResult. " +
+            $"attacker={attackerCardInstanceId}, defender={defenderCardInstanceId}, " +
+            $"source={attackerSourceSlotId}, defenderSlot={defenderSlotId}, " +
+            $"attackerHp={result.attackerHpBefore}->{result.attackerHpAfter}, " +
+            $"defenderHp={result.defenderHpBefore}->{result.defenderHpAfter}, " +
+            $"counter={result.defenderCounterattacked}, attackerDefeated={result.attackerDefeated}, " +
+            $"defenderDefeated={result.defenderDefeated}, attackerMoved={result.attackerMovedToDefenderSlot}, " +
+            $"fallback={usedImmediateFallback}");
+
+        if (result.defenderDefeated)
+            AddToRestZoneFromExternal(defenderCard, result.defenderOwner);
+        else
+            defenderSlot.SetCharacterBattleStats(
+                result.defenderHpAfter,
+                result.defenderMaxHp,
+                result.defenderTensionAfter);
+
+        if (result.attackerDefeated)
+            AddToRestZoneFromExternal(attackerCard, result.attackerOwner);
+        else
+            attackerSlot.SetCharacterBattleStats(
+                result.attackerHpAfter,
+                result.attackerMaxHp,
+                result.attackerTensionAfter);
+
+        if (result.defenderDefeated)
+            defenderSlot.ClearCharacterCard();
+
+        if (result.attackerDefeated)
+        {
+            attackerSlot.ClearCharacterCard();
+        }
+        else if (result.attackerMovedToDefenderSlot)
+        {
+            defenderSlot.SetCharacterCard(
+                attackerCard,
+                attackerSprite,
+                attackerFaceDown,
+                result.attackerOwner);
+            defenderSlot.SetCharacterBattleStats(
+                result.attackerHpAfter,
+                result.attackerMaxHp,
+                result.attackerTensionAfter);
+            defenderSlot.SetCharacterMovedThisTurn(true);
+            defenderSlot.SetCharacterActiveUsedThisTurn(attackerActiveUsed);
+            defenderSlot.SetMovementLockedByBroadcastUntilTurn(attackerMoveLocked);
+            defenderSlot.SetCollabEffectsSilencedUntilTurn(attackerCollabSilenced);
+            defenderSlot.SetCollabAttackForbiddenUntilTurn(attackerCollabForbidden);
+            defenderSlot.SetBroadcastHpMaxDelta(attackerBroadcastHpDelta);
+            RefreshSlotCharacterBroadcastHpMaxModifierFromExternal(defenderSlot);
+            attackerSlot.ClearCharacterCard();
+        }
+        else
+        {
+            attackerSlot.SetCharacterMovedThisTurn(true);
+        }
+
+        MarkOnlinePlayerUsedActionFromExternal(
+            result.actor,
+            BattleActionType.StartCollab);
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+        myActionUsedThisActionTurn = result.actor == BattleSlotOwner.My;
+
+        ApplyEffectDeltasFromResult(result);
+        ApplyBattleCountSnapshot(result);
+        ClearPendingCollaborationChoice();
+        ClearPendingMoveChoice();
+
+        RefreshAllUI();
+
+        string outcome;
+        if (result.attackerDefeated && result.defenderDefeated)
+            outcome = "양쪽 캐릭터가 퇴장했습니다.";
+        else if (result.defenderDefeated)
+            outcome = "방어자가 퇴장했고 공격자가 대상 슬롯으로 이동했습니다.";
+        else if (result.attackerDefeated)
+            outcome = "공격자가 퇴장했습니다.";
+        else
+            outcome = "양쪽 캐릭터가 생존했습니다.";
+
+        SetSystemMessage(
+            $"합방 결과가 적용되었습니다.\n" +
+            $"공격자 피해: {result.defenderTensionUsed}\n" +
+            $"방어자 피해: {result.attackerTensionUsed}\n" +
+            outcome);
+
+        Debug.Log(
+            $"[OnlineCollab] Basic online collaboration applied. " +
+            $"OnRest effects were applied from Result deltas only. viewerDeltas={result.viewerDeltas?.Count ?? 0}");
+    }
+
+    public bool CanResolveUseContentOnlineFromExternal(
+        BattleAction action,
+        BaseCardData card,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (!BattleStartSettings.IsOnlineBattle)
+            return true;
+
+        if (action == null)
+        {
+            failReason = "UseContent action is null.";
+            return false;
+        }
+
+        if (action.effectTiming != EffectTiming.Content)
+        {
+            failReason = "온라인 1차 UseContent는 Content 타이밍만 지원합니다.";
+            return false;
+        }
+
+        OnlineEffectResolver resolver = new OnlineEffectResolver(this);
+        bool canResolve = resolver.CanResolveForHost(action, card, out failReason);
+        if (!canResolve)
+        {
+            Debug.LogWarning(
+                $"[OnlineUseContent] EffectResolver rejected effectRef. " +
+                $"card={card?.cardInstanceId}/{card?.id}, effectRef={action.effectRef}, reason={failReason}");
+        }
+
+        return canResolve;
+    }
+
+    public BattleActionResult CreateUseContentResultFromExternal(BattleAction action)
+    {
+        BaseCardData card = action != null
+            ? FindHandCardByInstanceId(action.actor, action.cardInstanceId)
+            : null;
+        string effectRef = action != null && !string.IsNullOrWhiteSpace(action.effectRef)
+            ? action.effectRef
+            : effectManager != null ? effectManager.GetPrimaryEffectRefFromExternal(card) : "";
+        int cost = GetContentCardCost(card);
+
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.UseContent,
+            isAccepted = true,
+            message = card != null ? $"{card.name} 콘텐츠 사용이 적용되었습니다." : "콘텐츠 사용이 적용되었습니다.",
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            paidViewerCost = Mathf.Max(0, cost),
+            resolvedEffectRef = effectRef,
+            effectApplied = true
+        };
+
+        if (card != null)
+            result.affectedCardIds.Add(card.cardInstanceId);
+        else if (action != null)
+            result.affectedCardIds.Add(action.cardInstanceId);
+
+        int viewerBefore = GetViewersFromExternal(result.actor);
+        int viewerAfter = Mathf.Max(0, viewerBefore - result.paidViewerCost);
+
+        result.viewerDeltas.Add(new ViewerDelta
+        {
+            owner = result.actor,
+            before = viewerBefore,
+            after = viewerAfter,
+            amount = viewerAfter - viewerBefore
+        });
+
+        if (card != null)
+        {
+            result.cardZoneMoveDeltas.Add(new CardZoneMoveDelta
+            {
+                cardInstanceId = card.cardInstanceId,
+                cardId = card.id,
+                owner = result.actor,
+                fromZone = "Hand",
+                toZone = "RestZone",
+                isPublic = true,
+                faceDown = false
+            });
+        }
+
+        OnlineEffectResolveResult effectResult =
+            new OnlineEffectResolver(this).ResolveForHost(action, card, result.actor);
+
+        result.resolvedEffectRef = effectResult.usedEffectRef;
+        result.effectApplied = effectResult.success;
+        result.unsupportedReason = effectResult.unsupportedReason;
+        result.effectClassification = effectResult.classification;
+        result.requiresFollowUpAction = effectResult.requiresFollowUpAction;
+        result.viewerDeltas.AddRange(effectResult.viewerDeltas);
+        result.fieldStatDeltas.AddRange(effectResult.fieldStatDeltas);
+        result.cardZoneMoveDeltas.AddRange(effectResult.zoneMoveDeltas);
+        result.fieldContentDeltas.AddRange(effectResult.fieldContentDeltas);
+        result.cardRevealDeltas.AddRange(effectResult.cardRevealDeltas);
+        result.cardDrawDeltas.AddRange(effectResult.cardDrawDeltas);
+        result.deckOrderDeltas.AddRange(effectResult.deckOrderDeltas);
+        result.statusDeltas.AddRange(effectResult.statusDeltas);
+        result.actionStateDeltas.AddRange(effectResult.actionStateDeltas);
+        result.selectionRequests.AddRange(effectResult.selectionRequests);
+        result.messageDeltas.AddRange(effectResult.messageDeltas);
+        result.effectMessages.AddRange(effectResult.messages);
+
+        foreach (CardZoneMoveDelta delta in effectResult.zoneMoveDeltas)
+        {
+            if (!string.IsNullOrWhiteSpace(delta.cardInstanceId))
+                result.movedCardIds.Add(delta.cardInstanceId);
+            if (!string.IsNullOrWhiteSpace(delta.fromSlotId))
+                result.affectedSlotIds.Add(delta.fromSlotId);
+        }
+
+        FillUseContentProjectedSnapshot(result, action);
+
+        Debug.Log(
+            $"[OnlineUseContent] Host created UseContentResult. " +
+            $"actor={result.actor}, card={card?.cardInstanceId}/{card?.id}, effectRef={effectRef}, " +
+            $"cost={result.paidViewerCost}, zoneMoves={result.cardZoneMoveDeltas.Count}, " +
+            $"viewerAfter={result.hostViewerCount}/{result.clientViewerCount}");
+        return result;
+    }
+
+    private void FillUseContentProjectedSnapshot(
+        BattleActionResult result,
+        BattleAction action)
+    {
+        FillBattleCountSnapshot(result);
+
+        if (result == null || action == null)
+            return;
+
+        int cost = Mathf.Max(0, result.paidViewerCost);
+        if (action.actor == BattleSlotOwner.My)
+        {
+            result.hostHandCount = Mathf.Max(0, result.hostHandCount - 1);
+            result.hostViewerCount = Mathf.Max(0, result.hostViewerCount - cost);
+        }
+        else
+        {
+            result.clientHandCount = Mathf.Max(0, result.clientHandCount - 1);
+            result.clientViewerCount = Mathf.Max(0, result.clientViewerCount - cost);
+        }
+    }
+
+    public void ApplyUseContentFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineUseContentRequestPending = false;
+
+        ApplyEffectDeltasFromResult(result);
+
+        MarkOnlinePlayerUsedActionFromExternal(
+            result.actor,
+            BattleActionType.UseContent);
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+        myActionUsedThisActionTurn = result.actor == BattleSlotOwner.My;
+
+        ApplyBattleCountSnapshot(result);
+        ClearPendingContentChoice();
+        ClearDraggingHandCard();
+
+        RefreshAllUI();
+
+        string cardName = "콘텐츠 카드";
+        SetSystemMessage(
+            $"{cardName} 콘텐츠를 사용했습니다.\n" +
+            $"시청자 -{result.paidViewerCost}");
+
+        Debug.Log(
+            $"[OnlineUseContent] Applied UseContentResult. " +
+            $"actor={result.actor}, effectRef={result.resolvedEffectRef}, " +
+            $"cost={result.paidViewerCost}, zoneMoves={result.cardZoneMoveDeltas?.Count ?? 0}, " +
+            $"viewerAfter={myPlayer?.viewers}/{enemyPlayer?.viewers}");
+    }
+
+    public void ApplyEffectDeltasFromResult(BattleActionResult result)
+    {
+        if (result == null)
+            return;
+
+        Debug.Log(
+            $"[EffectDelta] Apply order. messages={result.messageDeltas?.Count ?? 0}, " +
+            $"viewers={result.viewerDeltas?.Count ?? 0}, reveals={result.cardRevealDeltas?.Count ?? 0}, " +
+            $"zoneMoves={result.cardZoneMoveDeltas?.Count ?? 0}, draws={result.cardDrawDeltas?.Count ?? 0}, " +
+            $"fieldContents={result.fieldContentDeltas?.Count ?? 0}, fieldStats={result.fieldStatDeltas?.Count ?? 0}, " +
+            $"statuses={result.statusDeltas?.Count ?? 0}, actionStates={result.actionStateDeltas?.Count ?? 0}, " +
+            $"deckOrders={result.deckOrderDeltas?.Count ?? 0}");
+
+        ApplyOnlineMessageDeltas(result);
+        ApplyOnlineViewerDeltas(result);
+        ApplyOnlineCardRevealDeltas(result);
+        ApplyOnlineCardZoneMoveDeltas(result);
+        ApplyOnlineCardDrawDeltas(result);
+        ApplyOnlineFieldContentDeltas(result);
+        ApplyOnlineFieldStatDeltas(result);
+        ApplyOnlineStatusDeltas(result);
+        ApplyOnlineActionStateDeltas(result);
+        ApplyOnlineDeckOrderDeltas(result);
+    }
+
+    private void ApplyOnlineMessageDeltas(BattleActionResult result)
+    {
+        if (result == null || result.messageDeltas == null)
+            return;
+
+        foreach (MessageDelta delta in result.messageDeltas)
+        {
+            if (delta == null || string.IsNullOrWhiteSpace(delta.messageText))
+                continue;
+
+            Debug.Log(
+                $"[EffectDelta] Message audience={delta.audience}, key={delta.messageKey}, " +
+                $"message={delta.messageText}");
+        }
+    }
+
+    private void ApplyOnlineViewerDeltas(BattleActionResult result)
+    {
+        if (result == null || result.viewerDeltas == null)
+            return;
+
+        foreach (ViewerDelta delta in result.viewerDeltas)
+        {
+            if (delta == null)
+                continue;
+
+            ModifyViewersFromExternal(delta.owner, delta.amount);
+        }
+    }
+
+    private void ApplyOnlineCardRevealDeltas(BattleActionResult result)
+    {
+        if (result == null || result.cardRevealDeltas == null || result.cardRevealDeltas.Count == 0)
+            return;
+
+        Debug.LogWarning(
+            $"[EffectDelta] CardRevealDelta apply is not implemented yet. count={result.cardRevealDeltas.Count}");
+    }
+
+    private void ApplyOnlineCardZoneMoveDeltas(BattleActionResult result)
+    {
+        if (result == null || result.cardZoneMoveDeltas == null)
+            return;
+
+        foreach (CardZoneMoveDelta delta in result.cardZoneMoveDeltas)
+        {
+            if (delta == null)
+                continue;
+
+            if (string.Equals(delta.fromZone, "Hand", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(delta.toZone, "RestZone", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyHandToRestZoneDelta(delta);
+                continue;
+            }
+
+            if (string.Equals(delta.fromZone, "FieldContent", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(delta.toZone, "RestZone", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyFieldContentToRestZoneDelta(delta);
+            }
+        }
+    }
+
+    private void ApplyOnlineCardDrawDeltas(BattleActionResult result)
+    {
+        if (result == null || result.cardDrawDeltas == null || result.cardDrawDeltas.Count == 0)
+            return;
+
+        Debug.LogWarning(
+            $"[EffectDelta] CardDrawDelta apply is not implemented yet. count={result.cardDrawDeltas.Count}");
+    }
+
+    private void ApplyOnlineFieldContentDeltas(BattleActionResult result)
+    {
+        if (result == null || result.fieldContentDeltas == null || result.fieldContentDeltas.Count == 0)
+            return;
+
+        Debug.Log(
+            $"[EffectDelta] FieldContentDelta metadata applied by zone move path. " +
+            $"count={result.fieldContentDeltas.Count}");
+    }
+
+    private void ApplyOnlineFieldStatDeltas(BattleActionResult result)
+    {
+        if (result == null || result.fieldStatDeltas == null)
+            return;
+
+        foreach (FieldStatDelta delta in result.fieldStatDeltas)
+        {
+            if (delta == null)
+                continue;
+
+            BattleFieldSlot slot = FindSlotById(delta.slotId);
+            if (slot == null || !slot.HasCharacter)
+            {
+                Debug.LogWarning(
+                    $"[EffectDelta] FieldStatDelta target missing. slot={delta.slotId}, card={delta.cardInstanceId}");
+                continue;
+            }
+
+            int maxDelta = delta.maxHpAfter - slot.currentCharacterMaxHp;
+            if (maxDelta != 0)
+                slot.ModifyCharacterMaxHp(maxDelta);
+
+            slot.SetCharacterBattleStats(delta.hpAfter, delta.tensionAfter);
+        }
+    }
+
+    private void ApplyOnlineStatusDeltas(BattleActionResult result)
+    {
+        if (result == null || result.statusDeltas == null || result.statusDeltas.Count == 0)
+            return;
+
+        Debug.LogWarning(
+            $"[EffectDelta] StatusDelta apply is not implemented yet. count={result.statusDeltas.Count}");
+    }
+
+    private void ApplyOnlineActionStateDeltas(BattleActionResult result)
+    {
+        if (result == null || result.actionStateDeltas == null || result.actionStateDeltas.Count == 0)
+            return;
+
+        Debug.LogWarning(
+            $"[EffectDelta] ActionStateDelta apply is not implemented yet. count={result.actionStateDeltas.Count}");
+    }
+
+    private void ApplyOnlineDeckOrderDeltas(BattleActionResult result)
+    {
+        if (result == null || result.deckOrderDeltas == null || result.deckOrderDeltas.Count == 0)
+            return;
+
+        Debug.LogWarning(
+            $"[EffectDelta] DeckOrderDelta apply requires owner-scoped private payloads. count={result.deckOrderDeltas.Count}");
+    }
+
+    private void ApplyHandToRestZoneDelta(CardZoneMoveDelta delta)
+    {
+        BaseCardData card = FindHandCardByInstanceId(delta.owner, delta.cardInstanceId);
+        if (card == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineUseContent] Hand->Rest delta card missing. " +
+                $"owner={delta.owner}, card={delta.cardInstanceId}");
+            return;
+        }
+
+        if (!RemoveCardFromHandFromExternal(delta.owner, card))
+        {
+            Debug.LogWarning(
+                $"[OnlineUseContent] Hand->Rest delta remove failed. " +
+                $"owner={delta.owner}, card={delta.cardInstanceId}");
+            return;
+        }
+
+        AddToRestZoneFromExternal(card, delta.owner);
+    }
+
+    private void ApplyFieldContentToRestZoneDelta(CardZoneMoveDelta delta)
+    {
+        BattleFieldSlot slot = FindSlotById(delta.fromSlotId);
+        if (slot == null || slot.contentCard == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineUseContent] FieldContent->Rest delta target missing. " +
+                $"slot={delta.fromSlotId}, card={delta.cardInstanceId}");
+            return;
+        }
+
+        BaseCardData removedCard = slot.contentCard;
+        if (!string.Equals(removedCard.cardInstanceId, delta.cardInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning(
+                $"[OnlineUseContent] FieldContent->Rest delta card mismatch. " +
+                $"slot={delta.fromSlotId}, result={delta.cardInstanceId}, slotCard={removedCard.cardInstanceId}");
+        }
+
+        AddToRestZoneFromExternal(removedCard, delta.owner);
+        slot.ClearContentCard();
+
+        Debug.Log(
+            $"[OnlineUseContent] Applied FieldContent->Rest delta. " +
+            $"slot={delta.fromSlotId}, card={removedCard.cardInstanceId}/{removedCard.id}, restOwner={delta.owner}");
     }
 
     private bool HasOnlineSummonedFaceDownThisTurn(BattleSlotOwner actor)
@@ -4788,6 +6388,26 @@ public class BattleManager : MonoBehaviour
     public BattleFieldSlot FindFieldSlotBySlotId(string slotId)
     {
         return FindSlotById(slotId);
+    }
+
+    public IReadOnlyList<BattleFieldSlot> GetOnlineEffectFieldSlotsFromExternal()
+    {
+        List<BattleFieldSlot> slots = new List<BattleFieldSlot>();
+
+        if (myBattleSlots != null)
+            slots.AddRange(myBattleSlots);
+
+        if (enemyBattleSlots != null)
+            slots.AddRange(enemyBattleSlots);
+
+        return slots;
+    }
+
+    public string GetPrimaryContentEffectRefFromExternal(BaseCardData card)
+    {
+        return effectManager != null
+            ? effectManager.GetPrimaryEffectRefFromExternal(card)
+            : "";
     }
 
     public BattleFieldSlot FindFieldSlotByCharacterInstanceId(BattleSlotOwner owner, string cardInstanceId)
@@ -6134,6 +7754,34 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
+        if (onlineFlipSummonRequestPending)
+        {
+            failReason = "Host의 플립 출연 판정을 기다리고 있습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
+            return true;
+        }
+
+        if (onlineMoveCharacterRequestPending)
+        {
+            failReason = "Host의 캐릭터 이동 판정을 기다리고 있습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
+            return true;
+        }
+
+        if (onlineStartCollabRequestPending)
+        {
+            failReason = "Host의 합방 판정을 기다리고 있습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
+            return true;
+        }
+
+        if (onlineUseContentRequestPending)
+        {
+            failReason = "Host의 콘텐츠 사용 판정을 기다리고 있습니다.";
+            LogActionBlocked("IsInputBlocked", failReason);
+            return true;
+        }
+
         if (questionPanel != null && questionPanel.IsOpen())
         {
             failReason = "이미 다른 선택창이 열려 있습니다.";
@@ -6206,6 +7854,10 @@ public class BattleManager : MonoBehaviour
             $"summon={(summonManager != null && (summonManager.HasPendingSummonChoice || summonManager.HasPendingFlipChoice))}, " +
             $"onlineSummonPending={onlineSummonFaceDownRequestPending}, " +
             $"onlineSummonFaceUpPending={onlineSummonFaceUpRequestPending}, " +
+            $"onlineFlipSummonPending={onlineFlipSummonRequestPending}, " +
+            $"onlineMovePending={onlineMoveCharacterRequestPending}, " +
+            $"onlineCollabPending={onlineStartCollabRequestPending}, " +
+            $"onlineUseContentPending={onlineUseContentRequestPending}, " +
             $"onlineNoActionPass={onlineHostNoActionPassed}/{onlineClientNoActionPassed}, " +
             $"onlineActed={onlineHostActedInCurrentPassCycle}/{onlineClientActedInCurrentPassCycle}, " +
             $"onlineNoActionPassCount={onlineConsecutiveNoActionPassCount}, " +
@@ -6277,6 +7929,12 @@ public class BattleManager : MonoBehaviour
     }
 
     private void ClearPendingSummonChoice()
+    {
+        if (summonManager != null)
+            summonManager.ClearPending();
+    }
+
+    private void ClearPendingFlipChoice()
     {
         if (summonManager != null)
             summonManager.ClearPending();
@@ -7080,30 +8738,165 @@ public class BattleManager : MonoBehaviour
     {
         BattleAction action = CreateFlipSummonAction(sourceSlot);
 
+        if (BattleStartSettings.IsOnlineBattle)
+            return RequestFlipSummonOnline(action);
+
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
+    }
+
+    private bool RequestFlipSummonOnline(BattleAction action)
+    {
+        if (onlineFlipSummonRequestPending)
+        {
+            SetSystemMessage("Host의 플립 출연 판정을 기다리고 있습니다.");
+            return false;
+        }
+
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("플립 출연 요청 전송에 실패했습니다.");
+            return false;
+        }
+
+        onlineFlipSummonRequestPending = true;
+        ClearPendingFlipChoice();
+        RefreshTurnEndButtonState();
+        Debug.Log(
+            $"[OnlineFlipSummon] FlipSummonAction sent. actor={action.actor}, " +
+            $"card={action.cardInstanceId}, sourceSlot={action.sourceSlotId}");
+        SetSystemMessage("Host의 플립 출연 판정을 기다리고 있습니다.");
+        return true;
     }
 
     public bool RequestMoveCharacterActionFromExternal(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
     {
         BattleAction action = CreateMoveCharacterAction(sourceSlot, targetSlot);
 
+        if (BattleStartSettings.IsOnlineBattle)
+            return RequestMoveCharacterOnline(action, sourceSlot, targetSlot);
+
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
     }
 
+    private bool RequestMoveCharacterOnline(
+        BattleAction action,
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot)
+    {
+        if (targetSlot != null &&
+            targetSlot.HasCharacter &&
+            sourceSlot != null &&
+            targetSlot.characterOwner != sourceSlot.characterOwner)
+        {
+            Debug.Log(
+                $"[OnlineMove] Move input branched to StartCollab preparation. " +
+                $"card={action?.cardInstanceId}, source={action?.sourceSlotId}, target={action?.targetSlotId}, " +
+                $"sourceOwner={sourceSlot.characterOwner}, targetCharacterOwner={targetSlot.characterOwner}");
+            SetSystemMessage("합방은 다음 단계에서 온라인화 예정입니다.");
+            return false;
+        }
+
+        if (onlineMoveCharacterRequestPending)
+        {
+            SetSystemMessage("Host의 캐릭터 이동 판정을 기다리고 있습니다.");
+            return false;
+        }
+
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("캐릭터 이동 요청 전송에 실패했습니다.");
+            return false;
+        }
+
+        onlineMoveCharacterRequestPending = true;
+        ClearPendingMoveChoice();
+        RefreshTurnEndButtonState();
+        Debug.Log(
+            $"[OnlineMove] MoveCharacterAction sent. actor={action.actor}, card={action.cardInstanceId}, " +
+            $"source={action.sourceSlotId}, target={action.targetSlotId}, " +
+            $"sourceOwner={sourceSlot?.owner}, targetOwner={targetSlot?.owner}, characterOwner={sourceSlot?.characterOwner}");
+        SetSystemMessage("Host의 캐릭터 이동 판정을 기다리고 있습니다.");
+        return true;
+    }
+
     public bool RequestStartCollabActionFromExternal(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
     {
         BattleAction action = CreateStartCollabAction(sourceSlot, targetSlot);
+
+        if (BattleStartSettings.IsOnlineBattle)
+            return RequestStartCollabOnline(action);
 
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
+    }
+
+    private bool RequestStartCollabOnline(BattleAction action)
+    {
+        if (onlineStartCollabRequestPending)
+        {
+            SetSystemMessage("Host의 합방 판정을 기다리고 있습니다.");
+            return false;
+        }
+
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("합방 요청 전송에 실패했습니다.");
+            return false;
+        }
+
+        onlineStartCollabRequestPending = true;
+        ClearPendingCollaborationChoice();
+        RefreshTurnEndButtonState();
+        string defenderCardInstanceId = action.selectedCardIds != null && action.selectedCardIds.Count > 0
+            ? action.selectedCardIds[0]
+            : "";
+        Debug.Log(
+            $"[OnlineCollab] StartCollabAction sent. actor={action.actor}, " +
+            $"attacker={action.cardInstanceId}, defender={defenderCardInstanceId}, " +
+            $"source={action.sourceSlotId}, target={action.targetSlotId}");
+        SetSystemMessage("Host의 합방 판정을 기다리고 있습니다.");
+        return true;
     }
 
     public bool RequestUseContentActionFromExternal(BaseCardData card, string effectRef)
@@ -7125,10 +8918,48 @@ public class BattleManager : MonoBehaviour
     {
         BattleAction action = CreateUseContentAction(card, handIndex, effectRef, effectTiming);
 
+        if (BattleStartSettings.IsOnlineBattle)
+            return RequestUseContentOnline(action);
+
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
+    }
+
+    private bool RequestUseContentOnline(BattleAction action)
+    {
+        if (onlineUseContentRequestPending)
+        {
+            SetSystemMessage("Host의 콘텐츠 사용 판정을 기다리고 있습니다.");
+            return false;
+        }
+
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("콘텐츠 사용 요청 전송에 실패했습니다.");
+            return false;
+        }
+
+        onlineUseContentRequestPending = true;
+        ClearPendingContentChoice();
+        RefreshTurnEndButtonState();
+        Debug.Log(
+            $"[OnlineUseContent] UseContentAction sent. actor={action.actor}, " +
+            $"card={action.cardInstanceId}, effectRef={action.effectRef}, timing={action.effectTiming}");
+        SetSystemMessage("Host의 콘텐츠 사용 판정을 기다리고 있습니다.");
+        return true;
     }
 
     public bool RequestSelectEffectTargetActionFromExternal(string effectRef, BattleFieldSlot selectedSlot)
@@ -9941,6 +11772,10 @@ public class BattleManager : MonoBehaviour
                 !onlineEndTurnRequestPending &&
                 !onlineSummonFaceDownRequestPending &&
                 !onlineSummonFaceUpRequestPending &&
+                !onlineFlipSummonRequestPending &&
+                !onlineMoveCharacterRequestPending &&
+                !onlineStartCollabRequestPending &&
+                !onlineUseContentRequestPending &&
                 currentPhase == BattlePhase.MainGame &&
                 currentActionSide == BattlePlayerSide.My &&
                 (questionPanel == null || !questionPanel.IsOpen());
@@ -10660,6 +12495,11 @@ public class BattleManager : MonoBehaviour
             return false;
 
         return string.Equals(content.contentType, "Lasting", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool IsLastingContentCardFromExternal(BaseCardData card)
+    {
+        return IsLastingContentCard(card);
     }
 
     private bool CanInstallAsFieldContentCard(BaseCardData card)
@@ -11475,7 +13315,13 @@ public class BattleManager : MonoBehaviour
             targetSlotId = targetSlot != null ? targetSlot.GetSlotId() : ""
         };
 
-        Debug.Log($"[BattleAction] Created StartCollab action. seq={action.actionSequence}, actor={action.actor}, cardInstanceId={action.cardInstanceId}, sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+        if (targetSlot != null && targetSlot.characterCard != null)
+            action.selectedCardIds.Add(targetSlot.characterCard.cardInstanceId);
+
+        Debug.Log(
+            $"[OnlineCollab] Created StartCollab action. seq={action.actionSequence}, actor={action.actor}, " +
+            $"attacker={action.cardInstanceId}, defender={(action.selectedCardIds.Count > 0 ? action.selectedCardIds[0] : "")}, " +
+            $"sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
         return action;
     }
 

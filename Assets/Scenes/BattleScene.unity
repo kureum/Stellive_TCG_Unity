@@ -3051,6 +3051,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 1841277107}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -3059,6 +3060,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -3067,6 +3069,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -3520,8 +3523,8 @@ MonoBehaviour:
       m_Calls: []
   m_text: Runtime Status Text
   m_isRightToLeft: 0
-  m_fontAsset: {fileID: 11400000, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
-  m_sharedMaterial: {fileID: 2180264, guid: 8f586378b4e144a9851e7b34d9b748ee, type: 2}
+  m_fontAsset: {fileID: 11400000, guid: 914172d0d612e0949a6bb2322dbfa3b2, type: 2}
+  m_sharedMaterial: {fileID: 4626468938385240922, guid: 914172d0d612e0949a6bb2322dbfa3b2, type: 2}
   m_fontSharedMaterials: []
   m_fontMaterial: {fileID: 0}
   m_fontMaterials: []
@@ -6115,6 +6118,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 1996450083}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -6123,6 +6127,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -6131,6 +6136,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -6458,6 +6464,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 872267727}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -6466,6 +6473,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -6474,6 +6482,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -7998,19 +8007,6 @@ MonoBehaviour:
   movementManager: {fileID: 336194709}
   collaborationManager: {fileID: 1719501089}
   effectManager: {fileID: 1196626982}
---- !u!114 &2147000001
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 553288412}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 771d8ed89d9745458fc617835dcbcc7a, type: 3}
-  m_Name:
-  m_EditorClassIdentifier: Assembly-CSharp::OnlineBattleSession
-  battleManager: {fileID: 553288413}
 --- !u!4 &553288414
 Transform:
   m_ObjectHideFlags: 0
@@ -8135,6 +8131,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 1118144551}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -8143,6 +8140,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -8151,6 +8149,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -10576,6 +10575,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 6179581}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -10584,6 +10584,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -10592,6 +10593,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -14635,6 +14637,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 270995645}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -14643,6 +14646,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -14651,6 +14655,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -15025,6 +15030,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 385000625}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -15033,6 +15039,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -15041,6 +15048,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -17858,6 +17866,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 697233971}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -17866,6 +17875,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -17874,6 +17884,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -20457,6 +20468,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 743410608}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -20465,6 +20477,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -20473,6 +20486,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -22114,6 +22128,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 1990560797}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -22122,6 +22137,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -22130,6 +22146,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -23528,6 +23545,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 214668778}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -23536,6 +23554,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -23544,6 +23563,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -24295,6 +24315,7 @@ MonoBehaviour:
   contentCardImage: {fileID: 1648057602}
   questionTargetHighlight: {fileID: 0}
   broadcastCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -24303,6 +24324,7 @@ MonoBehaviour:
     image: 
     rarity: 
   characterCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -24311,6 +24333,7 @@ MonoBehaviour:
     image: 
     rarity: 
   contentCard:
+    cardInstanceId: 
     id: 
     name: 
     kind: 
@@ -26080,6 +26103,19 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 2132534973}
   m_CullTransparentMesh: 1
+--- !u!114 &2147000001
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 553288412}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 771d8ed89d9745458fc617835dcbcc7a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::OnlineBattleSession
+  battleManager: {fileID: 553288413}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

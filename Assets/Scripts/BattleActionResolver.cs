@@ -58,6 +58,45 @@ public class BattleActionResolver
             return battleManager.CreateSummonFaceUpResultFromExternal(action);
         }
 
+        if (action.actionType == BattleActionType.FlipSummon)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving FlipSummon. " +
+                $"actor={action.actor}, card={action.cardInstanceId}, sourceSlot={action.sourceSlotId}");
+            battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
+            return battleManager.CreateFlipSummonResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.MoveCharacter)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving MoveCharacter. " +
+                $"actor={action.actor}, card={action.cardInstanceId}, " +
+                $"sourceSlot={action.sourceSlotId}, targetSlot={action.targetSlotId}");
+            battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
+            return battleManager.CreateMoveCharacterResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.StartCollab)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving StartCollab. " +
+                $"actor={action.actor}, attacker={action.cardInstanceId}, " +
+                $"sourceSlot={action.sourceSlotId}, defenderSlot={action.targetSlotId}");
+            battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
+            return battleManager.CreateStartCollabResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.UseContent)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving UseContent. " +
+                $"actor={action.actor}, card={action.cardInstanceId}, " +
+                $"effectRef={action.effectRef}, timing={action.effectTiming}");
+            battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
+            return battleManager.CreateUseContentResultFromExternal(action);
+        }
+
         battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
 
         if (action.actionType == BattleActionType.PlaceBroadcast)

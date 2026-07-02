@@ -247,12 +247,17 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         action.actor = photonEvent.Sender == LocalActorNumber
             ? BattleSlotOwner.My
             : BattleSlotOwner.Enemy;
-        action.targetSlotId = ConvertSlotIdToOwner(action.targetSlotId, action.actor);
+        string originalSourceSlotId = action.sourceSlotId;
+        string originalTargetSlotId = action.targetSlotId;
+        action.targetSlotId = ConvertSlotIdFromSenderPerspective(action.targetSlotId, action.actor);
+        action.sourceSlotId = ConvertSlotIdFromSenderPerspective(action.sourceSlotId, action.actor);
 
         Debug.Log(
             $"[OnlineBattle] Host received BattleActionRequest: {action.actionType}, " +
             $"actor={action.actor}, currentTurn={battleManager?.CurrentActionSideFromExternal}, " +
-            $"turnCount={battleManager?.GetCurrentTurnCountFromExternal()}");
+            $"turnCount={battleManager?.GetCurrentTurnCountFromExternal()}, " +
+            $"sourceSlot={originalSourceSlotId}->{action.sourceSlotId}, " +
+            $"targetSlot={originalTargetSlotId}->{action.targetSlotId}");
 
         BattleActionResult result = actionResolver.ResolveActionAsHost(action);
         if (!result.isAccepted)
@@ -282,7 +287,11 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             if (result.requestActionType == BattleActionType.StartMainGame ||
                 result.requestActionType == BattleActionType.EndTurn ||
                 result.requestActionType == BattleActionType.SummonFaceDown ||
-                result.requestActionType == BattleActionType.SummonFaceUp)
+                result.requestActionType == BattleActionType.SummonFaceUp ||
+                result.requestActionType == BattleActionType.FlipSummon ||
+                result.requestActionType == BattleActionType.MoveCharacter ||
+                result.requestActionType == BattleActionType.StartCollab ||
+                result.requestActionType == BattleActionType.UseContent)
             {
                 result.currentTurnPlayer = InvertOwner(result.currentTurnPlayer);
             }
@@ -295,13 +304,26 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
                 result.drawnPlayer = InvertOwner(result.drawnPlayer);
             }
 
+            if (result.requestActionType == BattleActionType.MoveCharacter)
+                result.characterOwner = InvertOwner(result.characterOwner);
+
+            if (result.requestActionType == BattleActionType.StartCollab)
+            {
+                result.attackerOwner = InvertOwner(result.attackerOwner);
+                result.defenderOwner = InvertOwner(result.defenderOwner);
+            }
+
             ConvertResultSlotIdsToLocalPerspective(result);
         }
 
         if (result.requestActionType == BattleActionType.StartMainGame ||
             result.requestActionType == BattleActionType.EndTurn ||
             result.requestActionType == BattleActionType.SummonFaceDown ||
-            result.requestActionType == BattleActionType.SummonFaceUp)
+            result.requestActionType == BattleActionType.SummonFaceUp ||
+            result.requestActionType == BattleActionType.FlipSummon ||
+            result.requestActionType == BattleActionType.MoveCharacter ||
+            result.requestActionType == BattleActionType.StartCollab ||
+            result.requestActionType == BattleActionType.UseContent)
         {
             Debug.Log($"[OnlineBattle] Received {result.requestActionType}Result.");
         }
@@ -902,18 +924,179 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         return $"{owner}_{parts[1]}_{parts[2]}";
     }
 
+    private static string ConvertSlotIdFromSenderPerspective(string slotId, BattleSlotOwner senderOwnerOnHost)
+    {
+        if (string.IsNullOrWhiteSpace(slotId))
+            return slotId;
+
+        string[] parts = slotId.Split('_');
+        if (parts.Length != 3)
+            return slotId;
+
+        if (!Enum.TryParse(parts[0], out BattleSlotOwner slotOwnerInSenderPerspective))
+            return slotId;
+
+        BattleSlotOwner hostOwner =
+            senderOwnerOnHost == BattleSlotOwner.My
+                ? slotOwnerInSenderPerspective
+                : InvertOwner(slotOwnerInSenderPerspective);
+
+        return $"{hostOwner}_{parts[1]}_{parts[2]}";
+    }
+
+    private static string InvertSlotIdOwner(string slotId)
+    {
+        if (string.IsNullOrWhiteSpace(slotId))
+            return slotId;
+
+        string[] parts = slotId.Split('_');
+        if (parts.Length != 3)
+            return slotId;
+
+        if (!Enum.TryParse(parts[0], out BattleSlotOwner owner))
+            return slotId;
+
+        return $"{InvertOwner(owner)}_{parts[1]}_{parts[2]}";
+    }
+
     private static void ConvertResultSlotIdsToLocalPerspective(BattleActionResult result)
     {
         if (result.affectedSlotIds != null)
         {
             for (int i = 0; i < result.affectedSlotIds.Count; i++)
-                result.affectedSlotIds[i] = ConvertSlotIdToOwner(result.affectedSlotIds[i], result.actor);
+                result.affectedSlotIds[i] = InvertSlotIdOwner(result.affectedSlotIds[i]);
         }
 
         if (result.resolvedTargetSlotIds != null)
         {
             for (int i = 0; i < result.resolvedTargetSlotIds.Count; i++)
-                result.resolvedTargetSlotIds[i] = ConvertSlotIdToOwner(result.resolvedTargetSlotIds[i], result.actor);
+                result.resolvedTargetSlotIds[i] = InvertSlotIdOwner(result.resolvedTargetSlotIds[i]);
         }
+
+        if (result.viewerDeltas != null)
+        {
+            for (int i = 0; i < result.viewerDeltas.Count; i++)
+            {
+                if (result.viewerDeltas[i] != null)
+                    result.viewerDeltas[i].owner = InvertOwner(result.viewerDeltas[i].owner);
+            }
+        }
+
+        if (result.fieldStatDeltas != null)
+        {
+            for (int i = 0; i < result.fieldStatDeltas.Count; i++)
+            {
+                if (result.fieldStatDeltas[i] != null)
+                    result.fieldStatDeltas[i].slotId = InvertSlotIdOwner(result.fieldStatDeltas[i].slotId);
+            }
+        }
+
+        if (result.cardZoneMoveDeltas != null)
+        {
+            for (int i = 0; i < result.cardZoneMoveDeltas.Count; i++)
+            {
+                CardZoneMoveDelta delta = result.cardZoneMoveDeltas[i];
+                if (delta == null)
+                    continue;
+
+                delta.owner = InvertOwner(delta.owner);
+                delta.fromSlotId = InvertSlotIdOwner(delta.fromSlotId);
+                delta.toSlotId = InvertSlotIdOwner(delta.toSlotId);
+            }
+        }
+
+        if (result.fieldContentDeltas != null)
+        {
+            for (int i = 0; i < result.fieldContentDeltas.Count; i++)
+            {
+                FieldContentDelta delta = result.fieldContentDeltas[i];
+                if (delta == null)
+                    continue;
+
+                delta.slotId = InvertSlotIdOwner(delta.slotId);
+                delta.contentOwner = InvertOwner(delta.contentOwner);
+            }
+        }
+
+        if (result.cardRevealDeltas != null)
+        {
+            for (int i = 0; i < result.cardRevealDeltas.Count; i++)
+            {
+                CardRevealDelta delta = result.cardRevealDeltas[i];
+                if (delta == null)
+                    continue;
+
+                delta.owner = InvertOwner(delta.owner);
+                delta.slotId = InvertSlotIdOwner(delta.slotId);
+                delta.revealTo = InvertAudience(delta.revealTo);
+            }
+        }
+
+        if (result.cardDrawDeltas != null)
+        {
+            for (int i = 0; i < result.cardDrawDeltas.Count; i++)
+            {
+                if (result.cardDrawDeltas[i] != null)
+                    result.cardDrawDeltas[i].owner = InvertOwner(result.cardDrawDeltas[i].owner);
+            }
+        }
+
+        if (result.deckOrderDeltas != null)
+        {
+            for (int i = 0; i < result.deckOrderDeltas.Count; i++)
+            {
+                if (result.deckOrderDeltas[i] != null)
+                    result.deckOrderDeltas[i].owner = InvertOwner(result.deckOrderDeltas[i].owner);
+            }
+        }
+
+        if (result.statusDeltas != null)
+        {
+            for (int i = 0; i < result.statusDeltas.Count; i++)
+            {
+                StatusDelta delta = result.statusDeltas[i];
+                if (delta == null)
+                    continue;
+
+                delta.owner = InvertOwner(delta.owner);
+                delta.targetSlotId = InvertSlotIdOwner(delta.targetSlotId);
+            }
+        }
+
+        if (result.actionStateDeltas != null)
+        {
+            for (int i = 0; i < result.actionStateDeltas.Count; i++)
+            {
+                ActionStateDelta delta = result.actionStateDeltas[i];
+                if (delta == null)
+                    continue;
+
+                delta.owner = InvertOwner(delta.owner);
+                delta.slotId = InvertSlotIdOwner(delta.slotId);
+            }
+        }
+
+        if (result.selectionRequests != null)
+        {
+            for (int i = 0; i < result.selectionRequests.Count; i++)
+            {
+                if (result.selectionRequests[i] != null)
+                    result.selectionRequests[i].requestingPlayer = InvertOwner(result.selectionRequests[i].requestingPlayer);
+            }
+        }
+    }
+
+    private static string InvertAudience(string audience)
+    {
+        if (string.IsNullOrWhiteSpace(audience))
+            return audience;
+
+        if (string.Equals(audience, "My", StringComparison.OrdinalIgnoreCase))
+            return "Enemy";
+
+        if (string.Equals(audience, "Enemy", StringComparison.OrdinalIgnoreCase))
+            return "My";
+
+        return audience;
     }
 }

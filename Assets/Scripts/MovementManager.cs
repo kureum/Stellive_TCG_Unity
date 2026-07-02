@@ -50,6 +50,20 @@ public class MovementManager : MonoBehaviour
         return CanMoveToSlot(sourceSlot, targetSlot, out failReason);
     }
 
+    public bool CanMoveCharacterForOwnerFromExternal(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        out string failReason)
+    {
+        BaseCardData card = sourceSlot != null ? sourceSlot.characterCard : null;
+
+        if (!CanStartMoveFromSlotForOwner(actingOwner, sourceSlot, card, out failReason))
+            return false;
+
+        return CanMoveToSlotForOwner(actingOwner, sourceSlot, targetSlot, out failReason);
+    }
+
     public bool ExecuteMoveCharacterFromAction(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
     {
         string failReason;
@@ -1084,6 +1098,134 @@ public class MovementManager : MonoBehaviour
         {
             if (toSlot.characterOwner == BattleSlotOwner.Enemy)
                 failReason = "상대 캐릭터가 있는 슬롯 진입은 다음 합방 단계에서 구현합니다.";
+            else
+                failReason = "이미 아군 캐릭터가 있는 슬롯으로는 이동할 수 없습니다.";
+
+            return false;
+        }
+
+        return CanReachMoveTarget(fromSlot, toSlot, out failReason);
+    }
+
+    private bool CanStartMoveFromSlotForOwner(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BaseCardData card,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (battleManager == null)
+        {
+            failReason = "BattleManager가 연결되어 있지 않습니다.";
+            return false;
+        }
+
+        if (fromSlot == null)
+        {
+            failReason = "이동할 슬롯이 없습니다.";
+            return false;
+        }
+
+        if (card == null)
+        {
+            failReason = "이동할 캐릭터 카드가 없습니다.";
+            return false;
+        }
+
+        if (fromSlot.characterOwner != actingOwner)
+        {
+            failReason = "이동할 캐릭터의 소유자가 행동 주체와 일치하지 않습니다.";
+            return false;
+        }
+
+        if (!fromSlot.HasCharacter)
+        {
+            failReason = "선택한 슬롯에 캐릭터가 없습니다.";
+            return false;
+        }
+
+        if (fromSlot.characterCard != card)
+        {
+            failReason = "슬롯의 캐릭터 정보가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (fromSlot.isCharacterFaceDown)
+        {
+            failReason = "뒷면 캐릭터는 이동할 수 없습니다.";
+            return false;
+        }
+
+        int currentTurn = battleManager.GetCurrentTurnCountFromExternal();
+        if (fromSlot.faceUpSummonedTurn >= 0 &&
+            currentTurn <= fromSlot.faceUpSummonedTurn &&
+            !battleManager.CanIgnoreAppearTurnActionLimitFromExternal(fromSlot))
+        {
+            failReason = "앞면으로 출연한 턴에는 이동할 수 없습니다.";
+            return false;
+        }
+
+        if (fromSlot.characterMovedThisTurn)
+        {
+            failReason = "이 캐릭터는 이번 턴 이동할 수 없습니다.";
+            return false;
+        }
+
+        if (battleManager.IsCharacterMoveLockedByBroadcastFromExternal(fromSlot, out failReason))
+            return false;
+
+        if (battleManager.IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(fromSlot, out failReason))
+            return false;
+
+        if (card.kind != "Character")
+        {
+            failReason = "캐릭터 카드만 이동할 수 있습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool CanMoveToSlotForOwner(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (fromSlot == null || toSlot == null)
+        {
+            failReason = "이동 출발 슬롯 또는 대상 슬롯이 없습니다.";
+            return false;
+        }
+
+        if (fromSlot == toSlot)
+        {
+            failReason = "같은 슬롯으로는 이동할 수 없습니다.";
+            return false;
+        }
+
+        if (fromSlot.characterOwner != actingOwner)
+        {
+            failReason = "이동할 캐릭터의 소유자가 행동 주체와 일치하지 않습니다.";
+            return false;
+        }
+
+        if (battleManager.IsMoveForbiddenByBroadcastMoveAndKoLockFromExternal(fromSlot, out failReason))
+            return false;
+
+        if (!toSlot.HasBroadcast)
+        {
+            failReason = "방송 카드가 설치된 슬롯으로만 이동할 수 있습니다.";
+            return false;
+        }
+
+        if (toSlot.HasCharacter)
+        {
+            if (toSlot.characterOwner != actingOwner)
+                failReason = "상대 캐릭터가 있는 슬롯 진입은 StartCollabAction 단계에서 처리해야 합니다.";
             else
                 failReason = "이미 아군 캐릭터가 있는 슬롯으로는 이동할 수 없습니다.";
 

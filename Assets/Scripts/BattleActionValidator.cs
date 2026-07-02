@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 public class BattleActionValidator
 {
@@ -30,8 +31,14 @@ public class BattleActionValidator
             case BattleActionType.SummonFaceUp:
                 return ValidateSummonFaceUp(action);
 
+            case BattleActionType.FlipSummon:
+                return ValidateFlipSummon(action);
+
             case BattleActionType.MoveCharacter:
                 return ValidateMoveCharacter(action);
+
+            case BattleActionType.StartCollab:
+                return ValidateStartCollab(action);
 
             case BattleActionType.UseContent:
                 return ValidateUseContent(action);
@@ -169,6 +176,53 @@ public class BattleActionValidator
         return BattleActionValidationResult.Valid();
     }
 
+    private BattleActionValidationResult ValidateFlipSummon(BattleAction action)
+    {
+        BattleActionValidationResult priorityResult = ValidateActionPriority(action);
+        if (!priorityResult.isValid)
+            return priorityResult;
+
+        if (!TryResolveTargetSlot(action.sourceSlotId, out BattleFieldSlot sourceSlot, out string failReason))
+            return BattleActionValidationResult.Invalid($"Invalid sourceSlotId. {failReason}");
+
+        if (!sourceSlot.HasCharacter || sourceSlot.characterCard == null)
+            return BattleActionValidationResult.Invalid("Source slot has no character.");
+
+        if (sourceSlot.owner != action.actor || sourceSlot.characterOwner != action.actor)
+            return BattleActionValidationResult.Invalid("Source character owner does not match actor.");
+
+        if (!sourceSlot.isCharacterFaceDown)
+            return BattleActionValidationResult.Invalid("Source character is already face-up.");
+
+        if (!IsCharacterCard(sourceSlot.characterCard))
+            return BattleActionValidationResult.Invalid("FlipSummon requires a Character card.");
+
+        if (!string.IsNullOrWhiteSpace(action.cardInstanceId) &&
+            !string.Equals(
+                sourceSlot.characterCard.cardInstanceId,
+                action.cardInstanceId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return BattleActionValidationResult.Invalid(
+                $"Card instance mismatch. action={action.cardInstanceId}, slot={sourceSlot.characterCard.cardInstanceId}");
+        }
+
+        if (battleManager.summonManager == null)
+            return BattleActionValidationResult.Invalid("SummonManager is null.");
+
+        if (!battleManager.summonManager.CanFlipSummonByTurnFromExternal(sourceSlot, out failReason))
+            return BattleActionValidationResult.Invalid(failReason);
+
+        int cost = battleManager.summonManager.GetCharacterAppearCostFromExternal(sourceSlot.characterCard);
+        if (!battleManager.CanPayViewerCostFromExternal(action.actor, cost))
+            return BattleActionValidationResult.Invalid($"Not enough viewers for flip summon cost={cost}.");
+
+        Debug.Log(
+            $"[OnlineFlipSummon] Validator accepted. actor={action.actor}, " +
+            $"cardInstanceId={sourceSlot.characterCard.cardInstanceId}, sourceSlot={action.sourceSlotId}, cost={cost}");
+        return BattleActionValidationResult.Valid();
+    }
+
     private BattleActionValidationResult ValidateMoveCharacter(BattleAction action)
     {
         BattleActionValidationResult priorityResult = ValidateActionPriority(action);
@@ -187,15 +241,131 @@ public class BattleActionValidator
         if (sourceSlot.characterOwner != action.actor)
             return BattleActionValidationResult.Invalid("Source character owner does not match actor.");
 
+        if (!string.IsNullOrWhiteSpace(action.cardInstanceId) &&
+            !string.Equals(
+                sourceSlot.characterCard.cardInstanceId,
+                action.cardInstanceId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return BattleActionValidationResult.Invalid(
+                $"Card instance mismatch. action={action.cardInstanceId}, slot={sourceSlot.characterCard.cardInstanceId}");
+        }
+
         if (sourceSlot.isCharacterFaceDown)
             return BattleActionValidationResult.Invalid("Face-down characters cannot move.");
 
         if (battleManager.movementManager == null)
             return BattleActionValidationResult.Invalid("MovementManager is null.");
 
-        if (!battleManager.movementManager.CanMoveCharacterFromExternal(sourceSlot, targetSlot, out failReason))
-            return BattleActionValidationResult.Invalid(failReason);
+        if (targetSlot.HasCharacter && targetSlot.characterOwner != action.actor)
+        {
+            Debug.Log(
+                $"[OnlineMove] MoveCharacter rejected for collab branch. " +
+                $"actor={action.actor}, card={action.cardInstanceId}, source={action.sourceSlotId}, target={action.targetSlotId}");
+            return BattleActionValidationResult.Invalid(
+                "Target has an opposing character. StartCollabAction is required.");
+        }
 
+        if (!battleManager.movementManager.CanMoveCharacterForOwnerFromExternal(
+                action.actor,
+                sourceSlot,
+                targetSlot,
+                out failReason))
+        {
+            Debug.LogWarning(
+                $"[BattleActionValidator] MoveCharacter rejected. " +
+                $"actor={action.actor}, card={action.cardInstanceId}, source={action.sourceSlotId}, " +
+                $"target={action.targetSlotId}, reason={failReason}");
+            return BattleActionValidationResult.Invalid(failReason);
+        }
+
+        Debug.Log(
+            $"[BattleActionValidator] MoveCharacter accepted. " +
+            $"actor={action.actor}, card={sourceSlot.characterCard.cardInstanceId}, " +
+            $"source={action.sourceSlotId}, target={action.targetSlotId}, " +
+            $"characterOwner={sourceSlot.characterOwner}, sourceOwner={sourceSlot.owner}, targetOwner={targetSlot.owner}");
+        return BattleActionValidationResult.Valid();
+    }
+
+    private BattleActionValidationResult ValidateStartCollab(BattleAction action)
+    {
+        BattleActionValidationResult priorityResult = ValidateActionPriority(action);
+        if (!priorityResult.isValid)
+            return priorityResult;
+
+        if (!TryResolveTargetSlot(action.sourceSlotId, out BattleFieldSlot attackerSlot, out string failReason))
+            return BattleActionValidationResult.Invalid($"Invalid attacker sourceSlotId. {failReason}");
+
+        if (!TryResolveTargetSlot(action.targetSlotId, out BattleFieldSlot defenderSlot, out failReason))
+            return BattleActionValidationResult.Invalid($"Invalid defender targetSlotId. {failReason}");
+
+        if (!attackerSlot.HasCharacter || attackerSlot.characterCard == null)
+            return BattleActionValidationResult.Invalid("Attacker slot has no character.");
+
+        if (!defenderSlot.HasCharacter || defenderSlot.characterCard == null)
+            return BattleActionValidationResult.Invalid("Defender slot has no character.");
+
+        if (attackerSlot.characterOwner != action.actor)
+            return BattleActionValidationResult.Invalid("Attacker owner does not match actor.");
+
+        if (defenderSlot.characterOwner == action.actor)
+            return BattleActionValidationResult.Invalid("Defender must be an opposing character.");
+
+        if (!string.IsNullOrWhiteSpace(action.cardInstanceId) &&
+            !string.Equals(
+                attackerSlot.characterCard.cardInstanceId,
+                action.cardInstanceId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return BattleActionValidationResult.Invalid(
+                $"Attacker card instance mismatch. action={action.cardInstanceId}, slot={attackerSlot.characterCard.cardInstanceId}");
+        }
+
+        string defenderCardInstanceId = action.selectedCardIds != null && action.selectedCardIds.Count > 0
+            ? action.selectedCardIds[0]
+            : "";
+        if (!string.IsNullOrWhiteSpace(defenderCardInstanceId) &&
+            !string.Equals(
+                defenderSlot.characterCard.cardInstanceId,
+                defenderCardInstanceId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return BattleActionValidationResult.Invalid(
+                $"Defender card instance mismatch. action={defenderCardInstanceId}, slot={defenderSlot.characterCard.cardInstanceId}");
+        }
+
+        if (attackerSlot.isCharacterFaceDown)
+            return BattleActionValidationResult.Invalid("Face-down attackers cannot start collaboration.");
+
+        if (defenderSlot.isCharacterFaceDown)
+            return BattleActionValidationResult.Invalid("Online collaboration against face-down defenders is not implemented yet.");
+
+        if (!IsCharacterCard(attackerSlot.characterCard) || !IsCharacterCard(defenderSlot.characterCard))
+            return BattleActionValidationResult.Invalid("Collaboration participants must be Character cards.");
+
+        if (battleManager.movementManager == null)
+            return BattleActionValidationResult.Invalid("MovementManager is null.");
+
+        if (!battleManager.movementManager.CanStartCollaborationForOwnerFromExternal(
+                action.actor,
+                attackerSlot,
+                defenderSlot,
+                out failReason))
+        {
+            Debug.LogWarning(
+                $"[BattleActionValidator] StartCollab rejected. " +
+                $"actor={action.actor}, attacker={action.cardInstanceId}, source={action.sourceSlotId}, " +
+                $"defender={defenderSlot.characterCard.cardInstanceId}, target={action.targetSlotId}, reason={failReason}");
+            return BattleActionValidationResult.Invalid(failReason);
+        }
+
+        Debug.Log(
+            $"[BattleActionValidator] StartCollab accepted. " +
+            $"actor={action.actor}, attacker={attackerSlot.characterCard.cardInstanceId}/{attackerSlot.characterCard.id}, " +
+            $"defender={defenderSlot.characterCard.cardInstanceId}/{defenderSlot.characterCard.id}, " +
+            $"source={action.sourceSlotId}, target={action.targetSlotId}, " +
+            $"attackerOwner={attackerSlot.characterOwner}, defenderOwner={defenderSlot.characterOwner}, " +
+            $"sourceOwner={attackerSlot.owner}, targetOwner={defenderSlot.owner}");
         return BattleActionValidationResult.Valid();
     }
 
@@ -210,6 +380,9 @@ public class BattleActionValidator
 
         if (!IsContentCard(card))
             return BattleActionValidationResult.Invalid("UseContent requires a Content card.");
+
+        if (!battleManager.CanResolveUseContentOnlineFromExternal(action, card, out failReason))
+            return BattleActionValidationResult.Invalid(failReason);
 
         if (action.effectTiming != EffectTiming.Content &&
             action.effectTiming != EffectTiming.PreCollab &&
