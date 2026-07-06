@@ -92,6 +92,20 @@ public class CardFunctionAuditManager : MonoBehaviour
         SetResultText(report);
     }
 
+    public void PrintOnlineEffectProgress()
+    {
+        if (!TryLoadDatabase(out CardDatabase database, out string loadError))
+        {
+            Debug.LogWarning(loadError);
+            SetResultText(loadError);
+            return;
+        }
+
+        string report = OnlineEffectProgressReporter.BuildReport(database);
+        Debug.Log(report);
+        SetResultText(report);
+    }
+
     public void PrintLegacyCardFunctionAudit()
     {
         if (effectManager == null)

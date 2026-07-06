@@ -95,6 +95,18 @@ public class BattleActionResultApplier
                 ApplyUseContentResult(result);
                 break;
 
+            case BattleActionType.UseCharacterActive:
+                ApplyUseCharacterActiveResult(result);
+                break;
+
+            case BattleActionType.UseIdolActive:
+                ApplyUseIdolActiveResult(result);
+                break;
+
+            case BattleActionType.SelectEffectTarget:
+                ApplySelectEffectTargetResult(result);
+                break;
+
             case BattleActionType.StartMainGame:
                 ApplyStartMainGameResult(result);
                 break;
@@ -186,11 +198,62 @@ public class BattleActionResultApplier
         if (battleManager == null)
             return;
 
+        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
+        {
+            Debug.Log(
+                $"[BattleActionResultApplier] Apply UseContent selection request. " +
+                $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests.Count}");
+            battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
+            return;
+        }
+
         Debug.Log(
             $"[BattleActionResultApplier] Apply UseContentResult. " +
             $"actor={result.actor}, card={GetCardId(result, 0)}, effectRef={result.resolvedEffectRef}, " +
             $"cost={result.paidViewerCost}");
         battleManager.ApplyUseContentFromResult(result);
+    }
+
+    private void ApplyUseIdolActiveResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply UseIdolActiveResult. " +
+            $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests?.Count ?? 0}");
+        battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
+    }
+
+    private void ApplyUseCharacterActiveResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply UseCharacterActiveResult. " +
+            $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests?.Count ?? 0}");
+        battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
+    }
+
+    private void ApplySelectEffectTargetResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
+        {
+            Debug.Log(
+                $"[BattleActionResultApplier] Apply chained selection request. " +
+                $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests.Count}");
+            battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
+            return;
+        }
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply SelectEffectTargetResult. " +
+            $"actor={result.actor}, effectRef={result.resolvedEffectRef}, target={GetSlotId(result, 0)}");
+        battleManager.ApplySelectEffectTargetFromResult(result);
     }
 
     private void ApplyStartMainGameResult(BattleActionResult result)

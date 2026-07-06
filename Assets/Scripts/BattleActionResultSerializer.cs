@@ -71,5 +71,15 @@ public static class BattleActionResultSerializer
         if (result.actionStateDeltas == null) result.actionStateDeltas = new System.Collections.Generic.List<ActionStateDelta>();
         if (result.selectionRequests == null) result.selectionRequests = new System.Collections.Generic.List<SelectionRequestDelta>();
         if (result.messageDeltas == null) result.messageDeltas = new System.Collections.Generic.List<MessageDelta>();
+
+        foreach (SelectionRequestDelta request in result.selectionRequests)
+        {
+            if (request == null)
+                continue;
+
+            if (request.candidateTargets == null) request.candidateTargets = new System.Collections.Generic.List<SelectionRequestTarget>();
+            if (request.candidatePublicIds == null) request.candidatePublicIds = new System.Collections.Generic.List<string>();
+            if (request.candidatePrivateIdsForOwnerOnly == null) request.candidatePrivateIdsForOwnerOnly = new System.Collections.Generic.List<string>();
+        }
     }
 }

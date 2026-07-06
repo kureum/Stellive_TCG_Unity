@@ -93,8 +93,41 @@ public class BattleActionResolver
                 $"[BattleActionResolver] Host resolving UseContent. " +
                 $"actor={action.actor}, card={action.cardInstanceId}, " +
                 $"effectRef={action.effectRef}, timing={action.effectTiming}");
+            if (string.Equals(
+                action.effectRef,
+                "content.silenceCharacterCollabThisTurn",
+                System.StringComparison.OrdinalIgnoreCase))
+            {
+                return battleManager.CreateUseContentSelectionRequestResultFromExternal(action);
+            }
+
             battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);
             return battleManager.CreateUseContentResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.UseIdolActive)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving UseIdolActive. " +
+                $"actor={action.actor}, card={action.cardInstanceId}, effectRef={action.effectRef}");
+            return battleManager.CreateUseIdolActiveSelectionRequestResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.UseCharacterActive)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving UseCharacterActive. " +
+                $"actor={action.actor}, card={action.cardInstanceId}, sourceSlot={action.sourceSlotId}, effectRef={action.effectRef}");
+            return battleManager.CreateUseCharacterActiveSelectionRequestResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.SelectEffectTarget)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving SelectEffectTarget. " +
+                $"actor={action.actor}, requestId={action.selectionRequestId}, " +
+                $"effectRef={action.effectRef}, target={action.targetSlotId}");
+            return battleManager.CreateSelectEffectTargetResultFromExternal(action);
         }
 
         battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);

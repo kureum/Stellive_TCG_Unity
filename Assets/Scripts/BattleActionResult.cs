@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 
 [Serializable]
 public class BattleActionResult
@@ -206,16 +207,40 @@ public class ActionStateDelta
 [Serializable]
 public class SelectionRequestDelta
 {
+    public string requestId = "";
+    public int sourceActionSequence;
+    public string sourceEffectId = "";
+    public string sourceCardInstanceId = "";
     public BattleSlotOwner requestingPlayer;
+    public BattleSlotOwner requestedPlayer;
     public string choiceType = "";
+    public string selectionType = "";
     public string sourceActionId = "";
     public string sourceEffectRef = "";
+    public string promptText = "";
+    public List<SelectionRequestTarget> candidateTargets = new List<SelectionRequestTarget>();
     public List<string> candidatePublicIds = new List<string>();
     public List<string> candidatePrivateIdsForOwnerOnly = new List<string>();
     public int minSelect;
     public int maxSelect;
     public string cancelPolicy = "";
     public string nextActionType = "";
+}
+
+[Serializable]
+public class SelectionRequestTarget
+{
+    public string targetKind = "";
+    public string slotId = "";
+    public BattleSlotOwner slotOwner;
+    public int slotIndex = -1;
+    public string row = "";
+    public string characterInstanceId = "";
+    public string targetCardInstanceId = "";
+    public string cardId = "";
+    public string displayName = "";
+    public bool isPublicCardInfo;
+    public bool isFaceDown;
 }
 
 [Serializable]
@@ -245,6 +270,18 @@ public enum OnlineEffectSupportCategory
     NeedsUserDecision
 }
 
+public enum OnlineEffectProgressStatus
+{
+    Implemented,
+    IncludedInHostCalculation,
+    DetectedOnly,
+    NeedsSelection,
+    NeedsPrivatePayload,
+    NeedsPersistentStatus,
+    NeedsHostRng,
+    NotImplemented
+}
+
 [Serializable]
 public class OnlineEffectRefMetadata
 {
@@ -258,6 +295,18 @@ public class OnlineEffectRefMetadata
     public bool requiresPrivateInfoProtocol;
     public bool requiresPersistentStateDelta;
     public bool requiresTimingTriggerResult;
+}
+
+[Serializable]
+public class OnlineEffectProgressEntry
+{
+    public string effectRef = "";
+    public string cardId = "";
+    public string cardName = "";
+    public string timing = "";
+    public OnlineEffectProgressStatus status;
+    public string reason = "";
+    public string resolverPath = "";
 }
 
 [Serializable]
@@ -332,20 +381,24 @@ public class OnlineEffectResolver
                 return Meta(normalized, OnlineEffectSupportCategory.SupportedImmediateWithDelta, "field content removal and field content to rest zone move", "FieldContentDelta, CardZoneMoveDelta, MessageDelta", "supported");
             case "content.postCollabHealOwnParticipant":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresTimingTriggerResult, "collab participant HP heal after collab", "FieldStatDelta, MessageDelta", "pending trigger result");
-            case "character.active.adjacentHpDownAndTensionUpForTag":
             case "character.active.modifyTaggedOnBoard":
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "select a tagged face-up field character and apply permanent max HP/tension stat changes", "SelectionRequestDelta, FieldStatDelta, ViewerDelta, ActionStateDelta, MessageDelta", "implemented via online character active selection flow", true, false, false, false, false);
+            case "character.active.adjacentHpDownAndTensionUpForTag":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "selected or filtered field character HP/tension changes", "SelectionRequestDelta, FieldStatDelta, ActionStateDelta, MessageDelta", "pending selection flow", true, false, false, false, false);
             case "character.onAppear.adjacentOppCollabTensionDeltaThisTurn":
             case "character.active.adjacentOppCollabTensionDeltaThisTurn":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPersistentStateDelta, "temporary collab tension modifier for adjacent opponent", "StatusDelta, FieldStatDelta, MessageDelta", "pending persistent state", false, false, false, true, true);
             case "character.onAppear.callFromRestByTagToEmptyPlatforms":
                 return Meta(normalized, OnlineEffectSupportCategory.NeedsUserDecision, "on-appear rest zone candidate selection and empty platform selection, plus possible OnAppear chain", "SelectionRequestDelta, CardZoneMoveDelta, MessageDelta", "pending user decision", true, false, false, false, true);
-            case "content.silenceCharacterCollabThisTurn":
-            case "content.moveOwnCharToEmptyOrBattleIfTagged":
             case "content.forceOpponentFlipOrSack":
-            case "idol.active.fullHealOneControlled":
             case "idol.active.callFromRestByTagThenDonateViewers":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "field target selection and zone/stat changes", "SelectionRequestDelta, CardZoneMoveDelta, FieldStatDelta, ViewerDelta, ActionStateDelta, MessageDelta", "pending selection flow", true, false, false, false, false);
+            case "content.moveOwnCharToEmptyOrBattleIfTagged":
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "multi-step selection for own tagged character then empty destination or effect-started collab destination", "SelectionRequestDelta, CardZoneMoveDelta, ViewerDelta, StartCollabResult, MessageDelta", "implemented via multi-step online selection flow", true, false, false, false, false);
+            case "content.silenceCharacterCollabThisTurn":
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "select a public face-up field character and silence its collab effects until this turn expires", "SelectionRequestDelta, StatusDelta, CardZoneMoveDelta, ViewerDelta, MessageDelta", "implemented via online selection flow", true, false, false, false, false);
+            case "idol.active.fullHealOneControlled":
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "select one controlled face-up character and heal to max HP", "SelectionRequestDelta, FieldStatDelta, ViewerDelta, ActionStateDelta, MessageDelta", "implemented via online selection flow", true, false, false, false, false);
             case "character.fetchCardsToHandByTags":
             case "character.active.peekTopAndTakeTaggedContents":
             case "character.active.discardOneThenFetchContentByTagFromDeck":
@@ -358,19 +411,19 @@ public class OnlineEffectResolver
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPrivateInfoProtocol, "opponent private hand choice then summon or discard", "SelectionRequestDelta, CardZoneMoveDelta, CardRevealDelta, MessageDelta", "pending private protocol", true, false, true, false, false);
             case "content.returnUpToNFromRestToDeck":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "rest zone card selection and rest to deck move", "SelectionRequestDelta, CardZoneMoveDelta, DeckOrderDelta, MessageDelta", "pending selection flow", true, false, false, false, false);
-            case "content.lasting.buffTagTensionAndHp":
             case "content.lockBroadcastIdNoMoveNoKOUntilNextEnd":
             case "content.invertNegativeAmountForTagThisTurn":
             case "content.forbidOpponentAttackUntilNextTurn":
             case "broadcast.always.noFaceDownSummonAndDisablePreCollabEffects":
             case "broadcast.always.disableIdolActiveAndLockMoveOnEnter":
             case "character.passive.doubleStepMoveNoJump":
-            case "character.passive.adjacentCollabTensionDeltaForTag":
             case "character.rest.reduceOpponentCollabTensionOnCollab":
             case "idol.passive.collabNoKOByTag":
             case "idol.passive.collabTensionByCurrentHpForTag":
             case "idol.passive.allowActionOnAppearByTag":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPersistentStateDelta, "continuous or turn-duration rules, locks, silence, collab modifiers, KO prevention", "StatusDelta, ActionStateDelta, MessageDelta", "pending persistent state", false, false, false, true, true);
+            case "content.lasting.buffTagTensionAndHp":
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresPersistentStateDelta, "installed lasting content changes collab HP/tension in host calculation; online install/status still pending", "StatusDelta, FieldStatDelta, MessageDelta", "pending persistent state", false, false, false, true, true);
             case "broadcast.always.prepViewersAndOccupantHpDelta":
             case "broadcast.always.taggedOccupantPrepViewersBonus":
             case "broadcast.always.prepViewersAndHealBonus":
@@ -379,7 +432,9 @@ public class OnlineEffectResolver
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresTimingTriggerResult, "viewer gain when public field occupant leaves broadcast slot", "ViewerDelta, MessageDelta", "pending leave trigger result", false, false, false, false, true);
             case "character.passive.viewersBonusIfAdjacentToTag":
             case "character.passive.reduceOwnerPrepViewers":
-                return Meta(normalized, OnlineEffectSupportCategory.RequiresTimingTriggerResult, "broadcast/passive trigger modifies viewers or occupant HP", "ViewerDelta, FieldStatDelta, MessageDelta", "pending trigger result", false, false, false, false, true);
+                return Meta(normalized, OnlineEffectSupportCategory.IncludedInHostCalculation, "prep viewer passive is read by host prep viewer calculation", "BattleCountSnapshot", "included in host calculation", false, false, false, false, true);
+            case "character.passive.adjacentCollabTensionDeltaForTag":
+                return Meta(normalized, OnlineEffectSupportCategory.IncludedInHostCalculation, "adjacent collab tension passive is read by host collab tension calculation", "StartCollabResult battle stats", "included in host calculation", false, false, false, false, true);
             case "character.active.forceBattleTargetAnywhere":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "battle target selection override", "SelectionRequestDelta, StatusDelta, ActionStateDelta, MessageDelta", "pending selection flow", true, false, false, true, false);
             case "content.postCollabTabiBoostAndRebattle":
@@ -780,5 +835,303 @@ public class OnlineEffectResolver
         result.rejectReason = reason;
         result.unsupportedReason = reason;
         return result;
+    }
+}
+
+public static class OnlineEffectProgressReporter
+{
+    public static List<OnlineEffectProgressEntry> BuildEntries(CardDatabase database)
+    {
+        Dictionary<string, OnlineEffectProgressEntry> entries =
+            new Dictionary<string, OnlineEffectProgressEntry>(StringComparer.OrdinalIgnoreCase);
+
+        if (database == null)
+            return new List<OnlineEffectProgressEntry>();
+
+        AddEntries(entries, database.idols, "Idol", card => card.active);
+        AddEntries(entries, database.idols, "Idol", card => card.passive);
+        AddEntries(entries, database.broadcasts, "Broadcast", card => card.effects);
+        AddEntries(entries, database.characters, "Character", card => card.effects);
+        AddEntries(entries, database.contents, "Content", card => card.effects);
+
+        List<OnlineEffectProgressEntry> result = new List<OnlineEffectProgressEntry>(entries.Values);
+        result.Sort((left, right) => string.Compare(left.effectRef, right.effectRef, StringComparison.OrdinalIgnoreCase));
+        return result;
+    }
+
+    public static string BuildReport(CardDatabase database)
+    {
+        List<OnlineEffectProgressEntry> entries = BuildEntries(database);
+        Dictionary<OnlineEffectProgressStatus, int> counts = CountByStatus(entries);
+        StringBuilder sb = new StringBuilder();
+
+        int total = entries.Count;
+        int implemented = GetCount(counts, OnlineEffectProgressStatus.Implemented);
+
+        sb.AppendLine("[OnlineEffectProgress]");
+        AppendCount(sb, counts, OnlineEffectProgressStatus.Implemented);
+        AppendCount(sb, counts, OnlineEffectProgressStatus.IncludedInHostCalculation);
+        AppendCount(sb, counts, OnlineEffectProgressStatus.DetectedOnly);
+        AppendCount(sb, counts, OnlineEffectProgressStatus.NeedsSelection);
+        AppendCount(sb, counts, OnlineEffectProgressStatus.NeedsPrivatePayload);
+        AppendCount(sb, counts, OnlineEffectProgressStatus.NeedsPersistentStatus);
+        AppendCount(sb, counts, OnlineEffectProgressStatus.NeedsHostRng);
+        AppendCount(sb, counts, OnlineEffectProgressStatus.NotImplemented);
+        sb.AppendLine($"Total online-relevant effectRefs: {total}");
+        sb.AppendLine($"Implemented / Total: {implemented} / {total}");
+        sb.AppendLine();
+        sb.AppendLine("NoRef effects are ignored for the online-relevant denominator because they have no stable protocol key.");
+        sb.AppendLine();
+        sb.AppendLine("Pending effectRefs:");
+
+        bool hasPending = false;
+        foreach (OnlineEffectProgressEntry entry in entries)
+        {
+            if (entry == null ||
+                entry.status == OnlineEffectProgressStatus.Implemented ||
+                entry.status == OnlineEffectProgressStatus.IncludedInHostCalculation)
+            {
+                continue;
+            }
+
+            hasPending = true;
+            sb.AppendLine($"- {entry.effectRef} : {entry.status} ({entry.reason})");
+        }
+
+        if (!hasPending)
+            sb.AppendLine("- none");
+
+        return sb.ToString();
+    }
+
+    private static void AddEntries<TCard>(
+        Dictionary<string, OnlineEffectProgressEntry> entries,
+        List<TCard> cards,
+        string fallbackKind,
+        Func<TCard, EffectData[]> getEffects)
+        where TCard : BaseCardData
+    {
+        if (entries == null || cards == null || getEffects == null)
+            return;
+
+        foreach (TCard card in cards)
+        {
+            if (card == null)
+                continue;
+
+            EffectData[] effects = getEffects(card);
+            if (effects == null)
+                continue;
+
+            foreach (EffectData effect in effects)
+            {
+                string effectRef = GetEffectRef(effect);
+
+                if (string.IsNullOrWhiteSpace(effectRef))
+                    continue;
+
+                if (entries.ContainsKey(effectRef))
+                    continue;
+
+                OnlineEffectRefMetadata metadata = OnlineEffectResolver.GetMetadata(effectRef);
+                entries.Add(effectRef, new OnlineEffectProgressEntry
+                {
+                    effectRef = effectRef,
+                    cardId = card.id ?? "",
+                    cardName = card.name ?? "",
+                    timing = effect != null ? effect.timing ?? "" : "",
+                    status = ToProgressStatus(metadata),
+                    reason = BuildReason(metadata),
+                    resolverPath = BuildResolverPath(metadata, fallbackKind)
+                });
+            }
+        }
+    }
+
+    private static OnlineEffectProgressStatus ToProgressStatus(OnlineEffectRefMetadata metadata)
+    {
+        if (metadata == null)
+            return OnlineEffectProgressStatus.NotImplemented;
+
+        if (string.Equals(
+            metadata.effectRef,
+            "idol.active.fullHealOneControlled",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return OnlineEffectProgressStatus.Implemented;
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "content.silenceCharacterCollabThisTurn",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return OnlineEffectProgressStatus.Implemented;
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "content.moveOwnCharToEmptyOrBattleIfTagged",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return OnlineEffectProgressStatus.Implemented;
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "character.active.modifyTaggedOnBoard",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return OnlineEffectProgressStatus.Implemented;
+        }
+
+        if (metadata.requiresPrivateInfoProtocol)
+            return OnlineEffectProgressStatus.NeedsPrivatePayload;
+
+        if (metadata.requiresRandomResolution)
+            return OnlineEffectProgressStatus.NeedsHostRng;
+
+        if (metadata.requiresSelectionFlow ||
+            metadata.category == OnlineEffectSupportCategory.NeedsUserDecision ||
+            metadata.category == OnlineEffectSupportCategory.RequiresSelectionFlow)
+        {
+            return OnlineEffectProgressStatus.NeedsSelection;
+        }
+
+        if (metadata.requiresPersistentStateDelta ||
+            metadata.category == OnlineEffectSupportCategory.RequiresPersistentStateDelta)
+        {
+            return OnlineEffectProgressStatus.NeedsPersistentStatus;
+        }
+
+        switch (metadata.category)
+        {
+            case OnlineEffectSupportCategory.SupportedImmediate:
+            case OnlineEffectSupportCategory.SupportedImmediateWithDelta:
+            case OnlineEffectSupportCategory.CurrentDeltaSupported:
+                return OnlineEffectProgressStatus.Implemented;
+
+            case OnlineEffectSupportCategory.IncludedInHostCalculation:
+                return OnlineEffectProgressStatus.IncludedInHostCalculation;
+
+            case OnlineEffectSupportCategory.RequiresTimingTriggerResult:
+            case OnlineEffectSupportCategory.RequiresKOOrRestResolution:
+                return OnlineEffectProgressStatus.DetectedOnly;
+
+            case OnlineEffectSupportCategory.RequiresRandomResolution:
+                return OnlineEffectProgressStatus.NeedsHostRng;
+
+            case OnlineEffectSupportCategory.RequiresPrivateInfoProtocol:
+                return OnlineEffectProgressStatus.NeedsPrivatePayload;
+
+            case OnlineEffectSupportCategory.UnsupportedForNow:
+            case OnlineEffectSupportCategory.RequiresNewDelta:
+            default:
+                return OnlineEffectProgressStatus.NotImplemented;
+        }
+    }
+
+    private static string BuildReason(OnlineEffectRefMetadata metadata)
+    {
+        if (metadata == null)
+            return "metadata missing";
+
+        if (!string.IsNullOrWhiteSpace(metadata.onlineStatus))
+            return metadata.onlineStatus;
+
+        return metadata.category.ToString();
+    }
+
+    private static string BuildResolverPath(OnlineEffectRefMetadata metadata, string fallbackKind)
+    {
+        if (metadata == null)
+            return "OnlineEffectResolver metadata missing";
+
+        if (string.Equals(
+            metadata.effectRef,
+            "idol.active.fullHealOneControlled",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return "BattleManager online SelectionRequest -> SelectEffectTarget -> FieldStatDelta/ActionStateDelta";
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "content.silenceCharacterCollabThisTurn",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return "BattleManager online SelectionRequest -> SelectEffectTarget -> StatusDelta/CardZoneMoveDelta";
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "character.active.modifyTaggedOnBoard",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return "BattleManager online UseCharacterActive SelectionRequest -> SelectEffectTarget -> FieldStatDelta/ActionStateDelta";
+        }
+
+        switch (metadata.category)
+        {
+            case OnlineEffectSupportCategory.SupportedImmediate:
+            case OnlineEffectSupportCategory.SupportedImmediateWithDelta:
+            case OnlineEffectSupportCategory.CurrentDeltaSupported:
+                return "OnlineEffectResolver.ResolveSimpleEffectForHost / BattleManager MergeOnlineEffectResolveResult";
+
+            case OnlineEffectSupportCategory.IncludedInHostCalculation:
+                return "BattleManager host battle/prep calculation";
+
+            default:
+                return $"Detected via {fallbackKind} effect metadata; online resolver pending";
+        }
+    }
+
+    private static Dictionary<OnlineEffectProgressStatus, int> CountByStatus(List<OnlineEffectProgressEntry> entries)
+    {
+        Dictionary<OnlineEffectProgressStatus, int> counts = new Dictionary<OnlineEffectProgressStatus, int>();
+
+        if (entries == null)
+            return counts;
+
+        foreach (OnlineEffectProgressEntry entry in entries)
+        {
+            if (entry == null)
+                continue;
+
+            if (!counts.ContainsKey(entry.status))
+                counts[entry.status] = 0;
+
+            counts[entry.status]++;
+        }
+
+        return counts;
+    }
+
+    private static int GetCount(
+        Dictionary<OnlineEffectProgressStatus, int> counts,
+        OnlineEffectProgressStatus status)
+    {
+        if (counts == null || !counts.ContainsKey(status))
+            return 0;
+
+        return counts[status];
+    }
+
+    private static void AppendCount(
+        StringBuilder sb,
+        Dictionary<OnlineEffectProgressStatus, int> counts,
+        OnlineEffectProgressStatus status)
+    {
+        sb.AppendLine($"{status}: {GetCount(counts, status)}");
+    }
+
+    private static string GetEffectRef(EffectData effect)
+    {
+        if (effect == null)
+            return "";
+
+        return !string.IsNullOrWhiteSpace(effect.@ref)
+            ? effect.@ref.Trim()
+            : (effect.refName != null ? effect.refName.Trim() : "");
     }
 }

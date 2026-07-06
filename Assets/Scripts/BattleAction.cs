@@ -14,6 +14,7 @@ public class BattleAction
     public string sourceSlotId;
     public string targetSlotId;
     public string effectRef;
+    public string selectionRequestId;
     public EffectTiming effectTiming = EffectTiming.Content;
 
     public List<string> selectedTargetIds = new List<string>();

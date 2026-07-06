@@ -271,7 +271,108 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
                 $"[OnlineBattle] Host accepted {action.actionType}. actor={result.actor}");
         }
 
+        DispatchBattleActionResult(result);
+    }
+
+    private void DispatchBattleActionResult(BattleActionResult result)
+    {
+        if (TryDispatchSelectionRequestResult(result))
+            return;
+
         BroadcastBattleActionResult(BattleActionResultSerializer.ToJson(result));
+    }
+
+    private bool TryDispatchSelectionRequestResult(BattleActionResult result)
+    {
+        if (result == null ||
+            !result.isAccepted ||
+            result.selectionRequests == null ||
+            result.selectionRequests.Count == 0)
+        {
+            return false;
+        }
+
+        SelectionRequestDelta request = result.selectionRequests[0];
+        if (request == null || string.IsNullOrWhiteSpace(request.requestId))
+            return false;
+
+        int requestedActorNumber = ResolveActorNumberForOwner(request.requestedPlayer);
+        int otherActorNumber = requestedActorNumber == LocalActorNumber
+            ? RemoteActorNumber
+            : LocalActorNumber;
+
+        BattleActionResult publicResult = CloneResult(result);
+        SanitizeSelectionRequestsForNonRequestedPlayer(publicResult);
+
+        if (requestedActorNumber == LocalActorNumber)
+            ApplyHostLocalResult(result);
+        else
+            SendBattleActionResultToActor(BattleActionResultSerializer.ToJson(result), requestedActorNumber);
+
+        if (otherActorNumber == LocalActorNumber)
+            ApplyHostLocalResult(publicResult);
+        else
+            SendBattleActionResultToActor(BattleActionResultSerializer.ToJson(publicResult), otherActorNumber);
+
+        Debug.Log(
+            $"[OnlineBattle] Dispatched selection request result. " +
+            $"requestId={request.requestId}, requestedOwner={request.requestedPlayer}, " +
+            $"requestedActor={requestedActorNumber}, otherActor={otherActorNumber}");
+        return true;
+    }
+
+    private void ApplyHostLocalResult(BattleActionResult result)
+    {
+        if (result == null || resultApplier == null)
+            return;
+
+        resultApplier.Apply(result);
+    }
+
+    private bool SendBattleActionResultToActor(string resultJson, int actorNumber)
+    {
+        if (string.IsNullOrWhiteSpace(resultJson) || actorNumber <= 0)
+            return false;
+
+        bool sent = PhotonNetwork.RaiseEvent(
+            BattleActionResultEventCode,
+            resultJson,
+            new RaiseEventOptions { TargetActors = new[] { actorNumber } },
+            SendOptions.SendReliable);
+
+        Debug.Log($"[OnlineBattle] Send BattleActionResult to actor={actorNumber}, sent={sent}");
+        return sent;
+    }
+
+    private int ResolveActorNumberForOwner(BattleSlotOwner owner)
+    {
+        return owner == BattleSlotOwner.My
+            ? LocalActorNumber
+            : RemoteActorNumber;
+    }
+
+    private static BattleActionResult CloneResult(BattleActionResult result)
+    {
+        return BattleActionResultSerializer.FromJson(BattleActionResultSerializer.ToJson(result));
+    }
+
+    private static void SanitizeSelectionRequestsForNonRequestedPlayer(BattleActionResult result)
+    {
+        if (result == null || result.selectionRequests == null)
+            return;
+
+        foreach (SelectionRequestDelta request in result.selectionRequests)
+        {
+            if (request == null)
+                continue;
+
+            if (request.candidateTargets != null)
+                request.candidateTargets.Clear();
+            if (request.candidatePublicIds != null)
+                request.candidatePublicIds.Clear();
+            if (request.candidatePrivateIdsForOwnerOnly != null)
+                request.candidatePrivateIdsForOwnerOnly.Clear();
+        }
     }
 
     private void HandleBattleActionResult(EventData photonEvent)
@@ -291,7 +392,9 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
                 result.requestActionType == BattleActionType.FlipSummon ||
                 result.requestActionType == BattleActionType.MoveCharacter ||
                 result.requestActionType == BattleActionType.StartCollab ||
-                result.requestActionType == BattleActionType.UseContent)
+                result.requestActionType == BattleActionType.UseContent ||
+                result.requestActionType == BattleActionType.UseIdolActive ||
+                result.requestActionType == BattleActionType.SelectEffectTarget)
             {
                 result.currentTurnPlayer = InvertOwner(result.currentTurnPlayer);
             }
@@ -323,7 +426,9 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             result.requestActionType == BattleActionType.FlipSummon ||
             result.requestActionType == BattleActionType.MoveCharacter ||
             result.requestActionType == BattleActionType.StartCollab ||
-            result.requestActionType == BattleActionType.UseContent)
+            result.requestActionType == BattleActionType.UseContent ||
+            result.requestActionType == BattleActionType.UseIdolActive ||
+            result.requestActionType == BattleActionType.SelectEffectTarget)
         {
             Debug.Log($"[OnlineBattle] Received {result.requestActionType}Result.");
         }
@@ -988,6 +1093,60 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             {
                 if (result.fieldStatDeltas[i] != null)
                     result.fieldStatDeltas[i].slotId = InvertSlotIdOwner(result.fieldStatDeltas[i].slotId);
+            }
+        }
+
+        if (result.selectionRequests != null)
+        {
+            for (int i = 0; i < result.selectionRequests.Count; i++)
+            {
+                SelectionRequestDelta request = result.selectionRequests[i];
+                if (request == null)
+                    continue;
+
+                request.requestingPlayer = InvertOwner(request.requestingPlayer);
+                request.requestedPlayer = InvertOwner(request.requestedPlayer);
+
+                if (request.candidatePublicIds != null)
+                {
+                    for (int j = 0; j < request.candidatePublicIds.Count; j++)
+                        request.candidatePublicIds[j] = InvertSlotIdOwner(request.candidatePublicIds[j]);
+                }
+
+                if (request.candidateTargets != null)
+                {
+                    for (int j = 0; j < request.candidateTargets.Count; j++)
+                    {
+                        SelectionRequestTarget target = request.candidateTargets[j];
+                        if (target == null)
+                            continue;
+
+                        target.slotId = InvertSlotIdOwner(target.slotId);
+                        target.slotOwner = InvertOwner(target.slotOwner);
+                    }
+                }
+            }
+        }
+
+        if (result.statusDeltas != null)
+        {
+            for (int i = 0; i < result.statusDeltas.Count; i++)
+            {
+                StatusDelta delta = result.statusDeltas[i];
+                if (delta == null)
+                    continue;
+
+                delta.owner = InvertOwner(delta.owner);
+                delta.targetSlotId = InvertSlotIdOwner(delta.targetSlotId);
+            }
+        }
+
+        if (result.actionStateDeltas != null)
+        {
+            for (int i = 0; i < result.actionStateDeltas.Count; i++)
+            {
+                if (result.actionStateDeltas[i] != null)
+                    result.actionStateDeltas[i].owner = InvertOwner(result.actionStateDeltas[i].owner);
             }
         }
 

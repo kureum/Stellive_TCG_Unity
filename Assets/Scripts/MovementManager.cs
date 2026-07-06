@@ -448,6 +448,31 @@ public class MovementManager : MonoBehaviour
         return BuildTeleportMoveCandidatesForEffect(fromSlot);
     }
 
+    public List<BattleFieldSlot> BuildMoveCandidatesForEffectFromExternal(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot)
+    {
+        return BuildTeleportMoveCandidatesForEffect(actingOwner, fromSlot);
+    }
+
+    public bool CanMoveCharacterByEffectForOwnerFromExternal(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        return CanTeleportMoveToEmptySlotForEffect(actingOwner, fromSlot, toSlot, out failReason);
+    }
+
+    public bool CanStartCollaborationByEffectForOwnerFromExternal(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        return CanStartTeleportCollaborationForEffect(actingOwner, fromSlot, toSlot, out failReason);
+    }
+
     public bool TryMoveCharacterByEffect(
         BattleFieldSlot fromSlot,
         BattleFieldSlot toSlot,
@@ -557,15 +582,23 @@ public class MovementManager : MonoBehaviour
 
     private List<BattleFieldSlot> BuildTeleportMoveCandidatesForEffect(BattleFieldSlot fromSlot)
     {
+        return BuildTeleportMoveCandidatesForEffect(BattleSlotOwner.My, fromSlot);
+    }
+
+    private List<BattleFieldSlot> BuildTeleportMoveCandidatesForEffect(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot)
+    {
         List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
 
-        AddTeleportMoveCandidatesForEffect(fromSlot, BattlePlayerSide.My, candidates);
-        AddTeleportMoveCandidatesForEffect(fromSlot, BattlePlayerSide.Enemy, candidates);
+        AddTeleportMoveCandidatesForEffect(actingOwner, fromSlot, BattlePlayerSide.My, candidates);
+        AddTeleportMoveCandidatesForEffect(actingOwner, fromSlot, BattlePlayerSide.Enemy, candidates);
 
         return candidates;
     }
 
     private void AddTeleportMoveCandidatesForEffect(
+        BattleSlotOwner actingOwner,
         BattleFieldSlot fromSlot,
         BattlePlayerSide side,
         List<BattleFieldSlot> candidates)
@@ -580,8 +613,8 @@ public class MovementManager : MonoBehaviour
                 continue;
 
             string failReason;
-            if (CanTeleportMoveToEmptySlotForEffect(fromSlot, slot, out failReason) ||
-                CanStartTeleportCollaborationForEffect(fromSlot, slot, out failReason))
+            if (CanTeleportMoveToEmptySlotForEffect(actingOwner, fromSlot, slot, out failReason) ||
+                CanStartTeleportCollaborationForEffect(actingOwner, fromSlot, slot, out failReason))
             {
                 candidates.Add(slot);
             }
@@ -593,7 +626,16 @@ public class MovementManager : MonoBehaviour
         BattleFieldSlot toSlot,
         out string failReason)
     {
-        if (!CanUseTeleportMoveSourceAndTargetForEffect(fromSlot, toSlot, out failReason))
+        return CanTeleportMoveToEmptySlotForEffect(BattleSlotOwner.My, fromSlot, toSlot, out failReason);
+    }
+
+    private bool CanTeleportMoveToEmptySlotForEffect(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        if (!CanUseTeleportMoveSourceAndTargetForEffect(actingOwner, fromSlot, toSlot, out failReason))
             return false;
 
         if (toSlot.HasCharacter)
@@ -612,7 +654,16 @@ public class MovementManager : MonoBehaviour
         BattleFieldSlot toSlot,
         out string failReason)
     {
-        if (!CanUseTeleportMoveSourceAndTargetForEffect(fromSlot, toSlot, out failReason))
+        return CanStartTeleportCollaborationForEffect(BattleSlotOwner.My, fromSlot, toSlot, out failReason);
+    }
+
+    private bool CanStartTeleportCollaborationForEffect(
+        BattleSlotOwner actingOwner,
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        if (!CanUseTeleportMoveSourceAndTargetForEffect(actingOwner, fromSlot, toSlot, out failReason))
             return false;
 
         if (battleManager.IsCollabAttackForbiddenFromExternal(fromSlot))
@@ -632,6 +683,15 @@ public class MovementManager : MonoBehaviour
     }
 
     private bool CanUseTeleportMoveSourceAndTargetForEffect(
+        BattleFieldSlot fromSlot,
+        BattleFieldSlot toSlot,
+        out string failReason)
+    {
+        return CanUseTeleportMoveSourceAndTargetForEffect(BattleSlotOwner.My, fromSlot, toSlot, out failReason);
+    }
+
+    private bool CanUseTeleportMoveSourceAndTargetForEffect(
+        BattleSlotOwner actingOwner,
         BattleFieldSlot fromSlot,
         BattleFieldSlot toSlot,
         out string failReason)
@@ -656,9 +716,11 @@ public class MovementManager : MonoBehaviour
             return false;
         }
 
-        if (fromSlot.characterOwner != BattleSlotOwner.My)
+        if (fromSlot.characterOwner != actingOwner)
         {
-            failReason = "현재는 내 캐릭터만 효과로 이동할 수 있습니다.";
+            failReason = actingOwner == BattleSlotOwner.My
+                ? "현재는 내 캐릭터만 효과로 이동할 수 있습니다."
+                : "현재는 상대 캐릭터만 효과로 이동할 수 있습니다.";
             return false;
         }
 

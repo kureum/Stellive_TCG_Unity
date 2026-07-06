@@ -43,6 +43,15 @@ public class BattleActionValidator
             case BattleActionType.UseContent:
                 return ValidateUseContent(action);
 
+            case BattleActionType.UseCharacterActive:
+                return ValidateUseCharacterActive(action);
+
+            case BattleActionType.UseIdolActive:
+                return ValidateUseIdolActive(action);
+
+            case BattleActionType.SelectEffectTarget:
+                return ValidateSelectEffectTarget(action);
+
             case BattleActionType.Surrender:
                 return ValidateSurrender(action);
 
@@ -454,6 +463,56 @@ public class BattleActionValidator
     {
         if (!Enum.IsDefined(typeof(BattleSlotOwner), action.actor))
             return BattleActionValidationResult.Invalid($"Invalid surrender actor: {action.actor}");
+
+        return BattleActionValidationResult.Valid();
+    }
+
+    private BattleActionValidationResult ValidateUseIdolActive(BattleAction action)
+    {
+        if (!BattleStartSettings.IsOnlineBattle)
+            return BattleActionValidationResult.Valid();
+
+        BattleActionValidationResult priorityResult = ValidateActionPriority(action);
+        if (!priorityResult.isValid)
+            return priorityResult;
+
+        if (!battleManager.CanResolveUseIdolActiveOnlineFromExternal(action, out string failReason))
+            return BattleActionValidationResult.Invalid(failReason);
+
+        return BattleActionValidationResult.Valid();
+    }
+
+    private BattleActionValidationResult ValidateUseCharacterActive(BattleAction action)
+    {
+        if (!BattleStartSettings.IsOnlineBattle)
+            return BattleActionValidationResult.Valid();
+
+        BattleActionValidationResult priorityResult = ValidateActionPriority(action);
+        if (!priorityResult.isValid)
+            return priorityResult;
+
+        if (!battleManager.CanResolveUseCharacterActiveOnlineFromExternal(action, out string failReason))
+            return BattleActionValidationResult.Invalid(failReason);
+
+        return BattleActionValidationResult.Valid();
+    }
+
+    private BattleActionValidationResult ValidateSelectEffectTarget(BattleAction action)
+    {
+        if (!BattleStartSettings.IsOnlineBattle)
+            return BattleActionValidationResult.Valid();
+
+        if (string.IsNullOrWhiteSpace(action.selectionRequestId))
+            return BattleActionValidationResult.Invalid("Selection request id is missing.");
+
+        if (string.IsNullOrWhiteSpace(action.effectRef))
+            return BattleActionValidationResult.Invalid("Selection effectRef is missing.");
+
+        if (string.IsNullOrWhiteSpace(action.targetSlotId))
+            return BattleActionValidationResult.Invalid("Selection targetSlotId is missing.");
+
+        if (battleManager.FindFieldSlotBySlotId(action.targetSlotId) == null)
+            return BattleActionValidationResult.Invalid($"Unknown targetSlotId: {action.targetSlotId}");
 
         return BattleActionValidationResult.Valid();
     }
