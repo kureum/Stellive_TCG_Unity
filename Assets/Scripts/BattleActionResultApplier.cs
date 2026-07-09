@@ -58,6 +58,18 @@ public class BattleActionResultApplier
             battleManager.SetSystemMessageFromExternal(result.message);
         }
 
+        if (battleManager != null &&
+            result.selectionRequests != null &&
+            result.selectionRequests.Count > 0)
+        {
+            Debug.Log(
+                $"[BattleActionResultApplier] Apply selection request only. " +
+                $"actionType={result.requestActionType}, actor={result.actor}, " +
+                $"effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests.Count}");
+            battleManager.ApplyOnlineSelectionRequestFromResult(result);
+            return;
+        }
+
         LogResolvedRandoms(result);
         ApplyDeckOrders(result);
 
@@ -105,6 +117,14 @@ public class BattleActionResultApplier
 
             case BattleActionType.SelectEffectTarget:
                 ApplySelectEffectTargetResult(result);
+                break;
+
+            case BattleActionType.SelectCardOption:
+                ApplySelectCardOptionResult(result);
+                break;
+
+            case BattleActionType.SelectEffectChoice:
+                ApplySelectEffectChoiceResult(result);
                 break;
 
             case BattleActionType.StartMainGame:
@@ -198,15 +218,6 @@ public class BattleActionResultApplier
         if (battleManager == null)
             return;
 
-        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
-        {
-            Debug.Log(
-                $"[BattleActionResultApplier] Apply UseContent selection request. " +
-                $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests.Count}");
-            battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
-            return;
-        }
-
         Debug.Log(
             $"[BattleActionResultApplier] Apply UseContentResult. " +
             $"actor={result.actor}, card={GetCardId(result, 0)}, effectRef={result.resolvedEffectRef}, " +
@@ -222,7 +233,13 @@ public class BattleActionResultApplier
         Debug.Log(
             $"[BattleActionResultApplier] Apply UseIdolActiveResult. " +
             $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests?.Count ?? 0}");
-        battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
+        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
+        {
+            battleManager.ApplyOnlineSelectionRequestFromResult(result);
+            return;
+        }
+
+        battleManager.ApplySelectEffectTargetFromResult(result);
     }
 
     private void ApplyUseCharacterActiveResult(BattleActionResult result)
@@ -233,7 +250,13 @@ public class BattleActionResultApplier
         Debug.Log(
             $"[BattleActionResultApplier] Apply UseCharacterActiveResult. " +
             $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests?.Count ?? 0}");
-        battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
+        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
+        {
+            battleManager.ApplyOnlineSelectionRequestFromResult(result);
+            return;
+        }
+
+        battleManager.ApplySelectEffectTargetFromResult(result);
     }
 
     private void ApplySelectEffectTargetResult(BattleActionResult result)
@@ -241,19 +264,32 @@ public class BattleActionResultApplier
         if (battleManager == null)
             return;
 
-        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
-        {
-            Debug.Log(
-                $"[BattleActionResultApplier] Apply chained selection request. " +
-                $"actor={result.actor}, effectRef={result.resolvedEffectRef}, selectionRequests={result.selectionRequests.Count}");
-            battleManager.ApplyUseIdolActiveSelectionRequestFromResult(result);
-            return;
-        }
-
         Debug.Log(
             $"[BattleActionResultApplier] Apply SelectEffectTargetResult. " +
             $"actor={result.actor}, effectRef={result.resolvedEffectRef}, target={GetSlotId(result, 0)}");
         battleManager.ApplySelectEffectTargetFromResult(result);
+    }
+
+    private void ApplySelectCardOptionResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply SelectCardOptionResult. " +
+            $"actor={result.actor}, effectRef={result.resolvedEffectRef}, draws={result.cardDrawDeltas?.Count ?? 0}");
+        battleManager.ApplySelectCardOptionFromResult(result);
+    }
+
+    private void ApplySelectEffectChoiceResult(BattleActionResult result)
+    {
+        if (battleManager == null)
+            return;
+
+        Debug.Log(
+            $"[BattleActionResultApplier] Apply SelectEffectChoiceResult. " +
+            $"actor={result.actor}, effectRef={result.resolvedEffectRef}, applied={result.effectApplied}");
+        battleManager.ApplySelectEffectChoiceFromResult(result);
     }
 
     private void ApplyStartMainGameResult(BattleActionResult result)

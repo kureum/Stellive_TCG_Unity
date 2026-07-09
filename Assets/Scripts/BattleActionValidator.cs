@@ -52,6 +52,12 @@ public class BattleActionValidator
             case BattleActionType.SelectEffectTarget:
                 return ValidateSelectEffectTarget(action);
 
+            case BattleActionType.SelectCardOption:
+                return ValidateSelectCardOption(action);
+
+            case BattleActionType.SelectEffectChoice:
+                return ValidateSelectEffectChoice(action);
+
             case BattleActionType.Surrender:
                 return ValidateSurrender(action);
 
@@ -508,11 +514,57 @@ public class BattleActionValidator
         if (string.IsNullOrWhiteSpace(action.effectRef))
             return BattleActionValidationResult.Invalid("Selection effectRef is missing.");
 
-        if (string.IsNullOrWhiteSpace(action.targetSlotId))
+        string targetSlotId = !string.IsNullOrWhiteSpace(action.targetSlotId)
+            ? action.targetSlotId
+            : action.selectedTargetIds != null && action.selectedTargetIds.Count > 0
+                ? action.selectedTargetIds[0]
+                : "";
+
+        if (string.IsNullOrWhiteSpace(targetSlotId))
             return BattleActionValidationResult.Invalid("Selection targetSlotId is missing.");
 
-        if (battleManager.FindFieldSlotBySlotId(action.targetSlotId) == null)
-            return BattleActionValidationResult.Invalid($"Unknown targetSlotId: {action.targetSlotId}");
+        if (battleManager.FindFieldSlotBySlotId(targetSlotId) == null)
+            return BattleActionValidationResult.Invalid($"Unknown targetSlotId: {targetSlotId}");
+
+        return BattleActionValidationResult.Valid();
+    }
+
+    private BattleActionValidationResult ValidateSelectCardOption(BattleAction action)
+    {
+        if (!BattleStartSettings.IsOnlineBattle)
+            return BattleActionValidationResult.Valid();
+
+        if (string.IsNullOrWhiteSpace(action.selectionRequestId))
+            return BattleActionValidationResult.Invalid("Selection request id is missing.");
+
+        if (string.IsNullOrWhiteSpace(action.effectRef))
+            return BattleActionValidationResult.Invalid("Selection effectRef is missing.");
+
+        if (action.selectedCardIds == null || action.selectedCardIds.Count == 0)
+            return BattleActionValidationResult.Invalid("Selection selectedCardIds is missing.");
+
+        if (string.IsNullOrWhiteSpace(action.selectedCardIds[0]))
+            return BattleActionValidationResult.Invalid("Selection selectedCardIds contains an empty card id.");
+
+        return BattleActionValidationResult.Valid();
+    }
+
+    private BattleActionValidationResult ValidateSelectEffectChoice(BattleAction action)
+    {
+        if (!BattleStartSettings.IsOnlineBattle)
+            return BattleActionValidationResult.Valid();
+
+        if (string.IsNullOrWhiteSpace(action.selectionRequestId))
+            return BattleActionValidationResult.Invalid("Selection request id is missing.");
+
+        if (string.IsNullOrWhiteSpace(action.effectRef))
+            return BattleActionValidationResult.Invalid("Selection effectRef is missing.");
+
+        if (string.IsNullOrWhiteSpace(action.choiceId))
+            return BattleActionValidationResult.Invalid("Selection choiceId is missing.");
+
+        if (string.IsNullOrWhiteSpace(action.choiceValue))
+            return BattleActionValidationResult.Invalid("Selection choiceValue is missing.");
 
         return BattleActionValidationResult.Valid();
     }

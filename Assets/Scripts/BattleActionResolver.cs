@@ -95,8 +95,12 @@ public class BattleActionResolver
                 $"effectRef={action.effectRef}, timing={action.effectTiming}");
             if (string.Equals(
                 action.effectRef,
-                "content.silenceCharacterCollabThisTurn",
-                System.StringComparison.OrdinalIgnoreCase))
+                "content.moveOwnCharToEmptyOrBattleIfTagged",
+                System.StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(
+                    action.effectRef,
+                    "content.silenceCharacterCollabThisTurn",
+                    System.StringComparison.OrdinalIgnoreCase))
             {
                 return battleManager.CreateUseContentSelectionRequestResultFromExternal(action);
             }
@@ -128,6 +132,27 @@ public class BattleActionResolver
                 $"actor={action.actor}, requestId={action.selectionRequestId}, " +
                 $"effectRef={action.effectRef}, target={action.targetSlotId}");
             return battleManager.CreateSelectEffectTargetResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.SelectCardOption)
+        {
+            string selectedCardId = action.selectedCardIds != null && action.selectedCardIds.Count > 0
+                ? action.selectedCardIds[0]
+                : "";
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving SelectCardOption. " +
+                $"actor={action.actor}, requestId={action.selectionRequestId}, " +
+                $"effectRef={action.effectRef}, selectedCard={selectedCardId}");
+            return battleManager.CreateSelectCardOptionResultFromExternal(action);
+        }
+
+        if (action.actionType == BattleActionType.SelectEffectChoice)
+        {
+            Debug.Log(
+                $"[BattleActionResolver] Host resolving SelectEffectChoice. " +
+                $"actor={action.actor}, requestId={action.selectionRequestId}, " +
+                $"effectRef={action.effectRef}, choice={action.choiceId}/{action.choiceValue}");
+            return battleManager.CreateSelectEffectChoiceResultFromExternal(action);
         }
 
         battleManager.ClearOnlineTurnPassStateForAcceptedActionFromExternal(action);

@@ -215,6 +215,10 @@ public class BattleManager : MonoBehaviour
     private bool isExecutingFieldSlotSelectionAction;
     private PendingOnlineSelection pendingOnlineSelection;
     private SelectionRequestDelta activeOnlineSelectionRequest;
+    private readonly Dictionary<string, PendingOnlineSelection> pendingOnlineSelectionsByRequestId =
+        new Dictionary<string, PendingOnlineSelection>(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> resolvedOnlineSelectionRequestIds =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     private bool enemyHasSummonedFaceDownThisTurn = false;
     private TestEnemy testEnemyController;
@@ -247,6 +251,71 @@ public class BattleManager : MonoBehaviour
         public BattleActionType sourceActionType;
         public int stepIndex;
         public readonly List<string> candidateSlotIds = new List<string>();
+        public readonly List<string> candidateCardInstanceIds = new List<string>();
+        public string paidBoongCardInstanceId = "";
+        public string paidBoongFromSlotId = "";
+        public string selectedTabiCardInstanceId = "";
+        public bool costPaid;
+        public bool basicFallbackAvailable;
+        public bool cancelAllowed;
+    }
+
+    private void RegisterPendingOnlineSelection(PendingOnlineSelection selection)
+    {
+        if (selection == null || string.IsNullOrWhiteSpace(selection.requestId))
+            return;
+
+        pendingOnlineSelection = selection;
+        pendingOnlineSelectionsByRequestId[selection.requestId] = selection;
+
+        Debug.Log(
+            $"[OnlineSelectionFlow][PendingRegister] requestId={selection.requestId}, " +
+            $"actor={selection.requestedPlayer}, effectRef={selection.effectRef}, " +
+            $"source={selection.sourceCardInstanceId}/{selection.selectedSourceSlotId}, " +
+            $"candidates={selection.candidateSlotIds.Count + selection.candidateCardInstanceIds.Count}, " +
+            $"resolveKind={selection.resolveKind}");
+    }
+
+    private void CompletePendingOnlineSelection(string requestId, string reason = "")
+    {
+        if (string.IsNullOrWhiteSpace(requestId))
+            return;
+
+        pendingOnlineSelectionsByRequestId.Remove(requestId);
+        resolvedOnlineSelectionRequestIds.Add(requestId);
+
+        if (pendingOnlineSelection != null &&
+            string.Equals(pendingOnlineSelection.requestId, requestId, StringComparison.OrdinalIgnoreCase))
+        {
+            pendingOnlineSelection = null;
+        }
+
+        Debug.Log(
+            $"[OnlineSelectionFlow][PendingComplete] requestId={requestId}, " +
+            $"reason={(string.IsNullOrWhiteSpace(reason) ? "Complete" : reason)}");
+    }
+
+    private void ClearAllPendingOnlineSelections()
+    {
+        pendingOnlineSelection = null;
+        pendingOnlineSelectionsByRequestId.Clear();
+        activeOnlineSelectionRequest = null;
+    }
+
+    private string BuildOnlineSelectionRequestId(
+        BattleSlotOwner actor,
+        int actionSequence,
+        string effectRef,
+        string suffix = "")
+    {
+        string normalizedEffectRef = string.IsNullOrWhiteSpace(effectRef)
+            ? "unknown"
+            : effectRef.Replace('.', '_');
+        string normalizedSuffix = string.IsNullOrWhiteSpace(suffix)
+            ? ""
+            : $"_{suffix}";
+
+        return $"sel_{actor}_{actionSequence}_{normalizedEffectRef}{normalizedSuffix}";
     }
 
     private void Start()
@@ -1983,14 +2052,17 @@ public class BattleManager : MonoBehaviour
 
         if (result.requestActionType == BattleActionType.UseIdolActive ||
             result.requestActionType == BattleActionType.UseCharacterActive ||
-            result.requestActionType == BattleActionType.SelectEffectTarget)
+            result.requestActionType == BattleActionType.SelectEffectTarget ||
+            result.requestActionType == BattleActionType.SelectCardOption ||
+            result.requestActionType == BattleActionType.SelectEffectChoice)
         {
             onlineUseIdolActiveRequestPending = false;
             onlineUseContentRequestPending = false;
             onlineUseCharacterActiveRequestPending = false;
-            activeOnlineSelectionRequest = null;
-            pendingOnlineSelection = null;
+            ClearAllPendingOnlineSelections();
             ClearPendingFieldSlotSelection(false);
+            if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+                cardQuestionPanel.Hide();
 
             Debug.Log(
                 $"[OnlineSelection] {result.requestActionType} rejected pending cleared. " +
@@ -3117,7 +3189,12 @@ public class BattleManager : MonoBehaviour
         BattleActionType actionType)
     {
         if (currentPhase != BattlePhase.MainGame)
+        {
+            Debug.Log(
+                $"[OnlineActionStateAudit][Skip] reason=NotMainGame, action={actionType}, " +
+                $"actor={actor}, phase={currentPhase}");
             return;
+        }
 
         onlineHostNoActionPassed = false;
         onlineClientNoActionPassed = false;
@@ -3136,6 +3213,12 @@ public class BattleManager : MonoBehaviour
             $"hostActed={onlineHostActedInCurrentPassCycle}, " +
             $"clientActed={onlineClientActedInCurrentPassCycle}, " +
             "no-action pass count reset to 0.");
+        Debug.Log(
+            $"[OnlineActionStateAudit] action={actionType}, result=MarkUsed, actor={actor}, " +
+            $"hasActionStateDelta=unknown, markUsedCalled=True");
+        Debug.Log(
+            $"[OnlinePassAudit] actor={actor}, usedAction={actionType}, " +
+            $"passCount={onlineConsecutiveNoActionPassCount}, turn={turnCount}");
     }
 
     private void FillAdvancedTurnResultSnapshot(BattleActionResult result)
@@ -4086,6 +4169,15 @@ public class BattleManager : MonoBehaviour
                 $"[OnlineOnRest] Detected OnRest. reason={restReason}, " +
                 $"card={restedCard.cardInstanceId}/{restedCard.id}, owner={restedOwner}, " +
                 $"slot={sourceSlotId}, effectRef={effectRef}, category={metadata.category}");
+            BattleFieldSlot sourceSlot = FindSlotById(sourceSlotId);
+            Debug.Log(
+                $"[OnlineEffectSimpleDelta][OnRest] card={restedCard.cardInstanceId}/{restedCard.id}, " +
+                $"characterOwner={restedOwner}, slotOwner={(sourceSlot != null ? sourceSlot.owner.ToString() : "")}, " +
+                $"viewerDelta=pending");
+            Debug.Log(
+                $"[OnlineOwnerAudit] effectRef={effectRef}, actor={restedOwner}, " +
+                $"slotOwner={(sourceSlot != null ? sourceSlot.owner.ToString() : "")}, " +
+                $"characterOwner={restedOwner}, resultOwner={restedOwner}");
 
             if (metadata.category != OnlineEffectSupportCategory.SupportedImmediateWithDelta &&
                 metadata.category != OnlineEffectSupportCategory.SupportedImmediate &&
@@ -4105,14 +4197,31 @@ public class BattleManager : MonoBehaviour
                 Debug.LogWarning(
                     $"[OnlineOnRest] OnRest delta resolve failed. effectRef={effectRef}, " +
                     $"reason={onRestResult?.rejectReason ?? "null result"}");
+                Debug.LogWarning(
+                    $"[OnlineOnRestMergeAudit] source={restReason}, onRestEffect={effectRef}, " +
+                    $"owner={restedOwner}, merged=False");
                 continue;
             }
 
             MergeOnlineEffectResolveResult(result, onRestResult);
 
             Debug.Log(
+                $"[OnlineOnRestMergeAudit] source={restReason}, onRestEffect={effectRef}, " +
+                $"owner={restedOwner}, merged=True");
+
+            Debug.Log(
                 $"[OnlineOnRest] Merged OnRest deltas. effectRef={effectRef}, " +
                 $"viewerDeltas={onRestResult.viewerDeltas.Count}, messages={onRestResult.messageDeltas.Count}");
+            foreach (ViewerDelta delta in onRestResult.viewerDeltas)
+            {
+                if (delta == null)
+                    continue;
+
+                Debug.Log(
+                    $"[OnlineEffectSimpleDelta][OnRest] card={restedCard.cardInstanceId}/{restedCard.id}, " +
+                    $"characterOwner={restedOwner}, slotOwner={(sourceSlot != null ? sourceSlot.owner.ToString() : "")}, " +
+                    $"viewerDelta={delta.amount}");
+            }
         }
     }
 
@@ -4729,6 +4838,18 @@ public class BattleManager : MonoBehaviour
 
         ApplyEffectDeltasFromResult(result);
         ApplyBattleCountSnapshot(result);
+
+        if (string.Equals(
+            result.resolvedEffectRef,
+            "content.moveOwnCharToEmptyOrBattleIfTagged",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.Log(
+                $"[OnlineUseContent] Applied final UseContentResult. actor={result.actor}, " +
+                $"effectRef={result.resolvedEffectRef}, cost={result.paidViewerCost}, " +
+                $"zoneMoves={result.cardZoneMoveDeltas?.Count ?? 0}, actionStates={result.actionStateDeltas?.Count ?? 0}");
+        }
+
         ClearPendingCollaborationChoice();
         ClearPendingMoveChoice();
 
@@ -4836,13 +4957,51 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        if (!CanUseIdolActive(action.actor, out failReason))
-            return false;
-
         BaseCardData idolCard = GetIdolCardFromExternal(action.actor);
+        string sourceIdolCardInstanceId = idolCard != null ? idolCard.cardInstanceId : "";
+        bool isOwnIdol = idolCard != null &&
+            (string.IsNullOrWhiteSpace(action.cardInstanceId) ||
+             string.Equals(action.cardInstanceId, sourceIdolCardInstanceId, StringComparison.OrdinalIgnoreCase));
+
+        Debug.Log(
+            $"[OnlineOwnerAudit][UseIdolActiveValidate] actor={action.actor}, " +
+            $"resolvedIdolOwner={action.actor}, isOwnIdol={isOwnIdol}, " +
+            $"sourceIdolCard={sourceIdolCardInstanceId}, actionCard={action.cardInstanceId}, rejectReason=");
+
+        if (!isOwnIdol)
+        {
+            failReason = "상대 아이돌의 효과는 발동할 수 없습니다.";
+            Debug.Log(
+                $"[OnlineOwnerAudit][UseIdolActiveValidate] actor={action.actor}, " +
+                $"resolvedIdolOwner={action.actor}, isOwnIdol=False, " +
+                $"sourceIdolCard={sourceIdolCardInstanceId}, actionCard={action.cardInstanceId}, rejectReason={failReason}");
+            return false;
+        }
+
+        if (!CanUseIdolActiveForOnlineActor(action.actor, idolCard, out failReason))
+        {
+            Debug.Log(
+                $"[OnlineOwnerAudit][UseIdolActiveValidate] actor={action.actor}, " +
+                $"resolvedIdolOwner={action.actor}, isOwnIdol=True, " +
+                $"sourceIdolCard={sourceIdolCardInstanceId}, actionCard={action.cardInstanceId}, rejectReason={failReason}");
+            return false;
+        }
+
         string effectRef = !string.IsNullOrWhiteSpace(action.effectRef)
             ? action.effectRef
             : GetPrimaryActiveEffectRef(idolCard, EffectTiming.IdolActive);
+
+        if (string.Equals(effectRef, "idol.active.fetchTabiOrRestBoongAndFetchBoth", StringComparison.OrdinalIgnoreCase))
+        {
+            string tabiTag = GetPrimaryEffectStringParam(idolCard, effectRef, "tag", "#타비");
+            if (BuildOnlineDeckTaggedCardCandidates(action.actor, tabiTag).Count == 0)
+            {
+                failReason = $"덱에 {tabiTag} 카드가 없어 아이돌 액티브를 발동할 수 없습니다.";
+                return false;
+            }
+
+            return true;
+        }
 
         if (!string.Equals(effectRef, "idol.active.fullHealOneControlled", StringComparison.OrdinalIgnoreCase))
         {
@@ -4859,22 +5018,142 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
+    private bool CanUseIdolActiveForOnlineActor(
+        BattleSlotOwner owner,
+        BaseCardData idolCard,
+        out string failReason)
+    {
+        failReason = "";
+
+        if (idolCard == null)
+        {
+            failReason = "아이돌 카드가 없습니다.";
+            return false;
+        }
+
+        if (!HasActiveEffect(idolCard))
+        {
+            failReason = "발동 가능한 아이돌 액티브 효과가 없습니다.";
+            return false;
+        }
+
+        if (IsIdolActiveDisabledByBroadcastFromExternal(owner))
+        {
+            failReason = "공포게임 위에 있는 캐릭터 때문에 아이돌 액티브를 사용할 수 없습니다.";
+            return false;
+        }
+
+        if (HasUsedIdolActiveThisTurn(owner))
+        {
+            failReason = "이미 이번 턴에 아이돌 액티브 효과를 사용했습니다.";
+            return false;
+        }
+
+        BattlePlayerSide expectedSide = owner == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        if (currentPhase != BattlePhase.MainGame)
+        {
+            failReason = "아직 본게임 단계가 아닙니다.";
+            return false;
+        }
+
+        if (currentActionSide != expectedSide)
+        {
+            failReason = owner == BattleSlotOwner.My
+                ? "현재는 내 행동권이 아닙니다."
+                : "현재는 상대 행동권이 아닙니다.";
+            return false;
+        }
+
+        int cost = GetActiveCost(idolCard);
+        if (!CanPayViewerCostFromExternal(owner, cost))
+        {
+            failReason = "시청자가 부족합니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private BattleActionResult CreateBaseOnlineEffectResult(
+        BattleAction action,
+        BattleActionType requestActionType,
+        BattleSlotOwner actor,
+        string effectRef)
+    {
+        return new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = actor,
+            requestActionType = requestActionType,
+            currentTurnPlayer = actor,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            resolvedEffectRef = effectRef
+        };
+    }
+
     public BattleActionResult CreateUseIdolActiveSelectionRequestResultFromExternal(BattleAction action)
     {
         BaseCardData idolCard = action != null ? GetIdolCardFromExternal(action.actor) : null;
         string effectRef = action != null && !string.IsNullOrWhiteSpace(action.effectRef)
             ? action.effectRef
             : GetPrimaryActiveEffectRef(idolCard, EffectTiming.IdolActive);
-        List<BattleFieldSlot> candidates = BuildOnlineControlledFaceUpCharacterSlots(action != null ? action.actor : BattleSlotOwner.My);
+        Debug.Log(
+            $"[OnlineOwnerAudit][UseIdolActive] localActor=Host, action.actor={action?.actor}, " +
+            $"sourceIdolOwner={action?.actor}, sourceIdolCard={idolCard?.cardInstanceId ?? ""}, " +
+            $"effectRef={effectRef}");
+        if (string.Equals(effectRef, "idol.active.fetchTabiOrRestBoongAndFetchBoth", StringComparison.OrdinalIgnoreCase))
+            return CreateFetchTabiIdolActiveSelectionRequestResultFromExternal(action, idolCard, effectRef);
+
+        BattleSlotOwner actor = action != null ? action.actor : BattleSlotOwner.My;
+        List<BattleFieldSlot> candidates = BuildOnlineControlledFaceUpCharacterSlots(actor);
+        LogOnlineControlledFaceUpCandidateAudit(effectRef, resultActor: actor);
+
+        if (candidates.Count == 1)
+        {
+            BattleActionResult autoResult = CreateBaseOnlineEffectResult(
+                action,
+                BattleActionType.UseIdolActive,
+                actor,
+                effectRef);
+            Debug.Log(
+                $"[OnlineSelectionFlow][AutoResolveSingleCandidate] effectRef={effectRef}, " +
+                $"actor={actor}, target={candidates[0].GetSlotId()}");
+            return CreateIdolFullHealOneControlledFinalResult(
+                autoResult,
+                actor,
+                effectRef,
+                idolCard,
+                candidates[0],
+                "",
+                false);
+        }
+
+        if (candidates.Count == 0)
+        {
+            BattleActionResult rejectResult = CreateBaseOnlineEffectResult(
+                action,
+                BattleActionType.UseIdolActive,
+                actor,
+                effectRef);
+            rejectResult.isAccepted = false;
+            rejectResult.rejectReason = "회복할 캐릭터가 없습니다.";
+            rejectResult.message = rejectResult.rejectReason;
+            rejectResult.effectApplied = false;
+            rejectResult.requiresFollowUpAction = false;
+            return rejectResult;
+        }
 
         BattleActionResult result = new BattleActionResult
         {
             actionSequence = action != null ? action.actionSequence : nextActionSequence++,
-            actor = action != null ? action.actor : BattleSlotOwner.My,
+            actor = actor,
             requestActionType = BattleActionType.UseIdolActive,
             isAccepted = true,
             message = "아이돌 액티브 대상 선택이 필요합니다.",
-            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            currentTurnPlayer = actor,
             turnCount = Mathf.Max(1, turnCount),
             nextPhase = BattlePhase.MainGame.ToString(),
             resolvedEffectRef = effectRef,
@@ -4885,15 +5164,16 @@ public class BattleManager : MonoBehaviour
         if (idolCard != null)
             result.affectedCardIds.Add(idolCard.cardInstanceId);
 
-        string requestId = $"sel_{result.actionSequence}_{effectRef}";
-        pendingOnlineSelection = new PendingOnlineSelection
+        string requestId = BuildOnlineSelectionRequestId(result.actor, result.actionSequence, effectRef);
+        PendingOnlineSelection selection = new PendingOnlineSelection
         {
             requestId = requestId,
             effectRef = effectRef,
             sourceCardInstanceId = idolCard != null ? idolCard.cardInstanceId : "",
             requestedPlayer = result.actor,
             sourceActionSequence = result.actionSequence,
-            sourceActionType = BattleActionType.UseIdolActive
+            sourceActionType = BattleActionType.UseIdolActive,
+            cancelAllowed = candidates.Count > 1
         };
 
         SelectionRequestDelta request = new SelectionRequestDelta
@@ -4903,12 +5183,13 @@ public class BattleManager : MonoBehaviour
             sourceCardInstanceId = idolCard != null ? idolCard.cardInstanceId : "",
             requestedPlayer = result.actor,
             requestingPlayer = result.actor,
+            sourceActionType = BattleActionType.UseIdolActive.ToString(),
             sourceEffectRef = effectRef,
             choiceType = "FieldTarget",
             selectionType = "FieldCharacter",
             minSelect = 1,
             maxSelect = 1,
-            cancelPolicy = "DisallowCancel",
+            cancelPolicy = candidates.Count > 1 ? "AllowCancel" : "DisallowCancel",
             nextActionType = BattleActionType.SelectEffectTarget.ToString(),
             promptText = "회복할 캐릭터를 선택하세요."
         };
@@ -4919,17 +5200,257 @@ public class BattleManager : MonoBehaviour
                 continue;
 
             string slotId = slot.GetSlotId();
-            pendingOnlineSelection.candidateSlotIds.Add(slotId);
+            selection.candidateSlotIds.Add(slotId);
             request.candidatePublicIds.Add(slotId);
             request.candidateTargets.Add(BuildSelectionRequestTarget(slot));
         }
+
+        RegisterPendingOnlineSelection(selection);
 
         result.selectionRequests.Add(request);
         FillBattleCountSnapshot(result);
 
         Debug.Log(
-            $"[OnlineSelection] Host created selection request. requestId={requestId}, " +
-            $"effectRef={effectRef}, actor={result.actor}, candidates={request.candidateTargets.Count}");
+            $"[OnlineSelectionFlow][CreateRequest] effectRef={effectRef}, actor={result.actor}, " +
+            $"source={idolCard?.cardInstanceId ?? ""}, requestId={requestId}, " +
+            $"candidates={request.candidateTargets.Count}, cancelPolicy={request.cancelPolicy}");
+        return result;
+    }
+
+    private BattleActionResult CreateFetchTabiIdolActiveSelectionRequestResultFromExternal(
+        BattleAction action,
+        BaseCardData idolCard,
+        string effectRef)
+    {
+        BattleSlotOwner actor = action != null ? action.actor : BattleSlotOwner.My;
+        string tabiTag = GetPrimaryEffectStringParam(idolCard, effectRef, "tag", "#타비");
+        string bunnyTag = GetPrimaryEffectStringParam(idolCard, effectRef, "bunnyTag", "#뿡댕이");
+        List<BaseCardData> tabiCandidates = BuildOnlineDeckTaggedCardCandidates(actor, tabiTag);
+        List<BaseCardData> boongCandidates = BuildOnlineDeckTaggedCardCandidates(actor, bunnyTag);
+        List<BattleFieldSlot> boongCostCandidates = BuildOnlineBoongCostSlots(actor, bunnyTag);
+        bool enhancedAvailable = boongCostCandidates.Count > 0 && tabiCandidates.Count > 0 && boongCandidates.Count > 0;
+
+        LogOnlineTabiIdolEnhancedCheck(
+            actor,
+            effectRef,
+            tabiCandidates.Count,
+            boongCandidates.Count,
+            boongCostCandidates.Count,
+            enhancedAvailable,
+            bunnyTag);
+
+        Debug.Log(
+            $"[OnlineTabiIdolEnhancedBranch] enhancedAvailable={enhancedAvailable}, " +
+            $"createBoongCostRequest={enhancedAvailable}, actor={actor}, effectRef={effectRef}");
+
+        if (enhancedAvailable)
+        {
+            return CreateFetchTabiChooseBoongCostSelectionRequestResultFromExternal(
+                action,
+                idolCard,
+                effectRef,
+                bunnyTag,
+                boongCostCandidates);
+        }
+
+        return CreateFetchTabiBasicSelectionRequestResultFromExternal(
+            action,
+            idolCard,
+            effectRef,
+            tabiTag,
+            null,
+            1);
+    }
+
+    private BattleActionResult CreateFetchTabiBasicSelectionRequestResultFromExternal(
+        BattleAction action,
+        BaseCardData idolCard,
+        string effectRef,
+        string tabiTag,
+        PendingOnlineSelection parentSelection,
+        int stepIndex)
+    {
+        BattleSlotOwner actor = parentSelection != null
+            ? parentSelection.requestedPlayer
+            : action != null ? action.actor : BattleSlotOwner.My;
+        List<BaseCardData> candidates = BuildOnlineDeckTaggedCardCandidates(actor, tabiTag);
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = actor,
+            requestActionType = BattleActionType.UseIdolActive,
+            isAccepted = true,
+            message = "덱에서 카드 선택이 필요합니다.",
+            currentTurnPlayer = actor,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            resolvedEffectRef = effectRef,
+            requiresFollowUpAction = true,
+            effectClassification = OnlineEffectProgressStatus.NeedsPrivatePayload.ToString(),
+            paidViewerCost = 0
+        };
+
+        if (idolCard != null)
+            result.affectedCardIds.Add(idolCard.cardInstanceId);
+
+        if (candidates.Count == 0)
+        {
+            result.isAccepted = false;
+            result.rejectReason = $"덱에 {tabiTag} 카드가 없습니다.";
+            result.message = result.rejectReason;
+            return result;
+        }
+
+        if (parentSelection != null)
+            CompletePendingOnlineSelection(parentSelection.requestId);
+
+        string chainId = parentSelection != null && !string.IsNullOrWhiteSpace(parentSelection.chainId)
+            ? parentSelection.chainId
+            : BuildOnlineSelectionRequestId(actor, result.actionSequence, effectRef);
+        string requestId = parentSelection == null
+            ? chainId
+            : $"{chainId}_basic";
+        PendingOnlineSelection selection = new PendingOnlineSelection
+        {
+            requestId = requestId,
+            effectRef = effectRef,
+            sourceCardInstanceId = idolCard != null ? idolCard.cardInstanceId : action != null ? action.cardInstanceId : "",
+            requestedPlayer = actor,
+            sourceActionSequence = result.actionSequence,
+            sourceActionType = BattleActionType.UseIdolActive,
+            stepIndex = stepIndex,
+            chainId = chainId,
+            resolveKind = "SelectPrivateDeckTaggedCardToHand",
+            basicFallbackAvailable = false
+        };
+
+        SelectionRequestDelta request = new SelectionRequestDelta
+        {
+            requestId = requestId,
+            sourceActionSequence = result.actionSequence,
+            sourceCardInstanceId = selection.sourceCardInstanceId,
+            requestedPlayer = actor,
+            requestingPlayer = actor,
+            sourceActionType = BattleActionType.UseIdolActive.ToString(),
+            sourceEffectRef = effectRef,
+            choiceType = "CardOption",
+            selectionType = "PrivateDeckCard",
+            minSelect = 1,
+            maxSelect = 1,
+            cancelPolicy = "DisallowCancel",
+            nextActionType = BattleActionType.SelectCardOption.ToString(),
+            promptText = $"덱에서 {tabiTag} 카드 1장을 선택하세요."
+        };
+
+        foreach (BaseCardData card in candidates)
+        {
+            if (card == null || string.IsNullOrWhiteSpace(card.cardInstanceId))
+                continue;
+
+            selection.candidateCardInstanceIds.Add(card.cardInstanceId);
+            request.candidatePrivateIdsForOwnerOnly.Add(card.cardInstanceId);
+        }
+
+        if (selection.candidateCardInstanceIds.Count == 0)
+        {
+            result.isAccepted = false;
+            result.rejectReason = $"덱에 {tabiTag} 카드가 없습니다.";
+            result.message = result.rejectReason;
+            return result;
+        }
+
+        RegisterPendingOnlineSelection(selection);
+        result.selectionRequests.Add(request);
+        FillBattleCountSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineSelection] Created private deck selection request. effectRef={effectRef}, " +
+            $"requestId={requestId}, resolveKind={selection.resolveKind}, candidates={selection.candidateCardInstanceIds.Count}");
+        return result;
+    }
+
+    private BattleActionResult CreateFetchTabiChooseBoongCostSelectionRequestResultFromExternal(
+        BattleAction action,
+        BaseCardData idolCard,
+        string effectRef,
+        string bunnyTag,
+        List<BattleFieldSlot> candidates)
+    {
+        BattleSlotOwner actor = action != null ? action.actor : BattleSlotOwner.My;
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = actor,
+            requestActionType = BattleActionType.UseIdolActive,
+            isAccepted = true,
+            message = "강화 효과 비용 선택이 필요합니다.",
+            currentTurnPlayer = actor,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            resolvedEffectRef = effectRef,
+            requiresFollowUpAction = true,
+            effectClassification = OnlineEffectProgressStatus.NeedsSelection.ToString(),
+            paidViewerCost = 0
+        };
+
+        if (idolCard != null)
+            result.affectedCardIds.Add(idolCard.cardInstanceId);
+
+        string requestId = BuildOnlineSelectionRequestId(actor, result.actionSequence, effectRef, "boongCost");
+        PendingOnlineSelection selection = new PendingOnlineSelection
+        {
+            requestId = requestId,
+            effectRef = effectRef,
+            sourceCardInstanceId = idolCard != null ? idolCard.cardInstanceId : action != null ? action.cardInstanceId : "",
+            requestedPlayer = actor,
+            sourceActionSequence = result.actionSequence,
+            sourceActionType = BattleActionType.UseIdolActive,
+            stepIndex = 1,
+            chainId = requestId,
+            resolveKind = "ChooseBoongCostForEnhancedTabiIdolActive",
+            basicFallbackAvailable = true
+        };
+
+        SelectionRequestDelta request = new SelectionRequestDelta
+        {
+            requestId = requestId,
+            sourceActionSequence = result.actionSequence,
+            sourceCardInstanceId = selection.sourceCardInstanceId,
+            requestedPlayer = actor,
+            requestingPlayer = actor,
+            sourceActionType = BattleActionType.UseIdolActive.ToString(),
+            sourceEffectRef = effectRef,
+            choiceType = "FieldTarget",
+            selectionType = "ChooseBoongCostForEnhancedTabiIdolActive",
+            minSelect = 0,
+            maxSelect = 1,
+            cancelPolicy = "AllowCancel",
+            nextActionType = BattleActionType.SelectEffectTarget.ToString(),
+            promptText = $"강화 효과에 사용할 {bunnyTag} 캐릭터를 선택하세요. 취소하면 기본 효과로 진행합니다."
+        };
+
+        foreach (BattleFieldSlot slot in candidates)
+        {
+            if (slot == null || !slot.HasCharacter)
+                continue;
+
+            string slotId = slot.GetSlotId();
+            selection.candidateSlotIds.Add(slotId);
+            request.candidatePublicIds.Add(slotId);
+            request.candidateTargets.Add(BuildSelectionRequestTarget(slot));
+        }
+
+        RegisterPendingOnlineSelection(selection);
+        result.selectionRequests.Add(request);
+        FillBattleCountSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineTabiIdolEnhancedBranch] result.selectionRequests.Count={result.selectionRequests.Count}, " +
+            $"selectionKind={request.selectionType}, candidateTargets={request.candidateTargets.Count}");
+
+        Debug.Log(
+            $"[OnlineSelection] Created enhanced Boong cost selection request. " +
+            $"effectRef={effectRef}, requestId={requestId}, candidates={request.candidateTargets.Count}");
         return result;
     }
 
@@ -4965,7 +5486,16 @@ public class BattleManager : MonoBehaviour
             ? action.effectRef
             : GetPrimaryActiveEffectRef(sourceSlot.characterCard, EffectTiming.CharacterActive);
 
-        if (!string.Equals(effectRef, "character.active.modifyTaggedOnBoard", StringComparison.OrdinalIgnoreCase))
+        bool isModifyTaggedOnBoard = string.Equals(
+            effectRef,
+            "character.active.modifyTaggedOnBoard",
+            StringComparison.OrdinalIgnoreCase);
+        bool isAdjacentHpDownAndTensionUp = string.Equals(
+            effectRef,
+            "character.active.adjacentHpDownAndTensionUpForTag",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!isModifyTaggedOnBoard && !isAdjacentHpDownAndTensionUp)
         {
             failReason = $"온라인 캐릭터 액티브 효과가 아직 지원되지 않습니다: {effectRef}";
             return false;
@@ -4977,7 +5507,11 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        if (BuildOnlineModifyTaggedOnBoardTargetSlots(sourceSlot.characterCard, effectRef, action.actor).Count == 0)
+        int candidateCount = isAdjacentHpDownAndTensionUp
+            ? BuildOnlineAdjacentHpDownAndTensionUpTargetSlots(sourceSlot, sourceSlot.characterCard, effectRef).Count
+            : BuildOnlineModifyTaggedOnBoardTargetSlots(sourceSlot.characterCard, effectRef, action.actor).Count;
+
+        if (candidateCount == 0)
         {
             failReason = "스탯을 변경할 대상 캐릭터가 없습니다.";
             return false;
@@ -4995,10 +5529,44 @@ public class BattleManager : MonoBehaviour
         string effectRef = action != null && !string.IsNullOrWhiteSpace(action.effectRef)
             ? action.effectRef
             : GetPrimaryActiveEffectRef(sourceCard, EffectTiming.CharacterActive);
+
+        if (string.Equals(effectRef, "character.active.adjacentHpDownAndTensionUpForTag", StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.Log(
+                "[OnlineEffectCandidate] selected=character.active.adjacentHpDownAndTensionUpForTag, " +
+                "category=PublicAutoResolveMultiTarget, " +
+                "reason=local requireTargetSelection=false/maxTargets=0; public adjacent field targets only; no private/status/rng/post-collab payload");
+            return CreateAdjacentHpDownAndTensionUpForTagResultFromExternal(
+                action,
+                sourceSlot,
+                sourceCard,
+                effectRef);
+        }
+
         List<BattleFieldSlot> candidates = BuildOnlineModifyTaggedOnBoardTargetSlots(
             sourceCard,
             effectRef,
             action != null ? action.actor : BattleSlotOwner.My);
+        LogOnlineModifyTaggedOnBoardCandidateAudit(
+            effectRef,
+            sourceCard,
+            action != null ? action.actor : BattleSlotOwner.My);
+
+        if (candidates.Count == 0)
+        {
+            BattleSlotOwner actor = action != null ? action.actor : BattleSlotOwner.My;
+            BattleActionResult rejectResult = CreateBaseOnlineEffectResult(
+                action,
+                BattleActionType.UseCharacterActive,
+                actor,
+                effectRef);
+            rejectResult.isAccepted = false;
+            rejectResult.rejectReason = "대상 캐릭터가 없습니다.";
+            rejectResult.message = rejectResult.rejectReason;
+            rejectResult.effectApplied = false;
+            rejectResult.requiresFollowUpAction = false;
+            return rejectResult;
+        }
 
         BattleActionResult result = new BattleActionResult
         {
@@ -5013,14 +5581,14 @@ public class BattleManager : MonoBehaviour
             resolvedEffectRef = effectRef,
             requiresFollowUpAction = true,
             effectClassification = OnlineEffectProgressStatus.NeedsSelection.ToString(),
-            paidViewerCost = GetActiveCost(sourceCard)
+            paidViewerCost = 0
         };
 
         if (sourceCard != null)
             result.affectedCardIds.Add(sourceCard.cardInstanceId);
 
-        string requestId = $"sel_{result.actionSequence}_{effectRef}";
-        pendingOnlineSelection = new PendingOnlineSelection
+        string requestId = BuildOnlineSelectionRequestId(result.actor, result.actionSequence, effectRef);
+        PendingOnlineSelection selection = new PendingOnlineSelection
         {
             requestId = requestId,
             effectRef = effectRef,
@@ -5039,8 +5607,10 @@ public class BattleManager : MonoBehaviour
             requestId = requestId,
             sourceActionSequence = result.actionSequence,
             sourceCardInstanceId = sourceCard != null ? sourceCard.cardInstanceId : "",
+            sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : action != null ? action.sourceSlotId : "",
             requestedPlayer = result.actor,
             requestingPlayer = result.actor,
+            sourceActionType = BattleActionType.UseCharacterActive.ToString(),
             sourceEffectRef = effectRef,
             choiceType = "FieldTarget",
             selectionType = "FieldCharacter",
@@ -5057,19 +5627,60 @@ public class BattleManager : MonoBehaviour
                 continue;
 
             string slotId = slot.GetSlotId();
-            pendingOnlineSelection.candidateSlotIds.Add(slotId);
+            selection.candidateSlotIds.Add(slotId);
             request.candidatePublicIds.Add(slotId);
             request.candidateTargets.Add(BuildSelectionRequestTarget(slot));
         }
+
+        RegisterPendingOnlineSelection(selection);
 
         result.selectionRequests.Add(request);
         FillBattleCountSnapshot(result);
 
         Debug.Log(
-            $"[OnlineSelection] Host created character active selection request. requestId={requestId}, " +
-            $"effectRef={effectRef}, actor={result.actor}, source={pendingOnlineSelection.selectedSourceSlotId}, " +
+            $"[OnlineSelectionFlow][CreateRequest] effectRef={effectRef}, action=UseCharacterActive, " +
+            $"actor={result.actor}, source={selection.selectedSourceSlotId}, requestId={requestId}, " +
             $"candidates={request.candidateTargets.Count}");
         return result;
+    }
+
+    private SelectionRequestDelta BuildPrivateDeckSelectionRequest(
+        PendingOnlineSelection selection,
+        int sourceActionSequence,
+        List<BaseCardData> candidates,
+        string promptText)
+    {
+        SelectionRequestDelta request = new SelectionRequestDelta
+        {
+            requestId = selection != null ? selection.requestId : "",
+            sourceActionSequence = sourceActionSequence,
+            sourceCardInstanceId = selection != null ? selection.sourceCardInstanceId : "",
+            requestedPlayer = selection != null ? selection.requestedPlayer : BattleSlotOwner.My,
+            requestingPlayer = selection != null ? selection.requestedPlayer : BattleSlotOwner.My,
+            sourceActionType = BattleActionType.UseIdolActive.ToString(),
+            sourceEffectRef = selection != null ? selection.effectRef : "",
+            choiceType = "CardOption",
+            selectionType = "PrivateDeckCard",
+            minSelect = 1,
+            maxSelect = 1,
+            cancelPolicy = "DisallowCancel",
+            nextActionType = BattleActionType.SelectCardOption.ToString(),
+            promptText = promptText ?? "덱에서 카드 1장을 선택하세요."
+        };
+
+        if (selection == null || candidates == null)
+            return request;
+
+        foreach (BaseCardData card in candidates)
+        {
+            if (card == null || string.IsNullOrWhiteSpace(card.cardInstanceId))
+                continue;
+
+            selection.candidateCardInstanceIds.Add(card.cardInstanceId);
+            request.candidatePrivateIdsForOwnerOnly.Add(card.cardInstanceId);
+        }
+
+        return request;
     }
 
     public BattleActionResult CreateUseContentSelectionRequestResultFromExternal(BattleAction action)
@@ -5102,7 +5713,7 @@ public class BattleManager : MonoBehaviour
             resolvedEffectRef = effectRef,
             requiresFollowUpAction = true,
             effectClassification = OnlineEffectProgressStatus.NeedsSelection.ToString(),
-            paidViewerCost = GetContentCardCost(contentCard)
+            paidViewerCost = 0
         };
 
         if (contentCard != null)
@@ -5110,8 +5721,8 @@ public class BattleManager : MonoBehaviour
         else if (action != null)
             result.affectedCardIds.Add(action.cardInstanceId);
 
-        string requestId = $"sel_{result.actionSequence}_{effectRef}";
-        pendingOnlineSelection = new PendingOnlineSelection
+        string requestId = BuildOnlineSelectionRequestId(result.actor, result.actionSequence, effectRef);
+        PendingOnlineSelection selection = new PendingOnlineSelection
         {
             requestId = requestId,
             effectRef = effectRef,
@@ -5130,9 +5741,10 @@ public class BattleManager : MonoBehaviour
         {
             requestId = requestId,
             sourceActionSequence = result.actionSequence,
-            sourceCardInstanceId = pendingOnlineSelection.sourceCardInstanceId,
+            sourceCardInstanceId = selection.sourceCardInstanceId,
             requestedPlayer = result.actor,
             requestingPlayer = result.actor,
+            sourceActionType = BattleActionType.UseContent.ToString(),
             sourceEffectRef = effectRef,
             choiceType = "FieldTarget",
             selectionType = "FieldCharacter",
@@ -5151,17 +5763,20 @@ public class BattleManager : MonoBehaviour
                 continue;
 
             string slotId = slot.GetSlotId();
-            pendingOnlineSelection.candidateSlotIds.Add(slotId);
+            selection.candidateSlotIds.Add(slotId);
             request.candidatePublicIds.Add(slotId);
             request.candidateTargets.Add(BuildSelectionRequestTarget(slot));
         }
+
+        RegisterPendingOnlineSelection(selection);
 
         result.selectionRequests.Add(request);
         FillBattleCountSnapshot(result);
 
         Debug.Log(
-            $"[OnlineSelection] Host created content selection request. requestId={requestId}, " +
-            $"effectRef={effectRef}, actor={result.actor}, candidates={request.candidateTargets.Count}");
+            $"[OnlineSelection] Created UseContent selection request. effectRef={effectRef}, " +
+            $"requestId={requestId}, resolveKind={selection.resolveKind}, " +
+            $"candidates={request.candidateTargets.Count}");
         return result;
     }
 
@@ -5179,6 +5794,10 @@ public class BattleManager : MonoBehaviour
 
         if (!TryValidatePendingOnlineSelection(action, out BattleFieldSlot targetSlot, out string failReason))
         {
+            Debug.LogWarning(
+                $"[OnlineSelectionFlow][ValidateResponse] requestId={action?.selectionRequestId ?? ""}, " +
+                $"valid=False, reason={failReason}");
+            RejectPendingOnlineSelection(action, failReason);
             result.isAccepted = false;
             result.rejectReason = failReason;
             result.message = failReason;
@@ -5186,6 +5805,18 @@ public class BattleManager : MonoBehaviour
         }
 
         PendingOnlineSelection selection = pendingOnlineSelection;
+        Debug.Log(
+            $"[OnlineSelectionFlow][ValidateResponse] requestId={action.selectionRequestId}, " +
+            $"valid=True, reason=OK");
+        Debug.Log(
+            $"[OnlineSelectionFlow][Response] requestId={action.selectionRequestId}, " +
+            $"actor={action.actor}, selected={targetSlot.GetSlotId()}");
+        if (selection.sourceActionType == BattleActionType.UseIdolActive &&
+            string.Equals(selection.resolveKind, "ChooseBoongCostForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateEnhancedBoongCostPaidResult(action, result, selection, targetSlot);
+        }
+
         if (selection.sourceActionType == BattleActionType.UseContent &&
             string.Equals(selection.resolveKind, "SelectTaggedOwnCharacterForMove", StringComparison.OrdinalIgnoreCase))
         {
@@ -5218,29 +5849,53 @@ public class BattleManager : MonoBehaviour
             return result;
         }
 
-        BaseCardData idolCard = GetIdolCardFromExternal(selection.requestedPlayer);
+        return CreateIdolFullHealOneControlledFinalResult(
+            result,
+            selection.requestedPlayer,
+            selection.effectRef,
+            GetIdolCardFromExternal(selection.requestedPlayer),
+            targetSlot,
+            action.selectionRequestId,
+            true);
+    }
+
+    private BattleActionResult CreateIdolFullHealOneControlledFinalResult(
+        BattleActionResult result,
+        BattleSlotOwner actor,
+        string effectRef,
+        BaseCardData idolCard,
+        BattleFieldSlot targetSlot,
+        string selectionRequestId,
+        bool completePendingSelection)
+    {
         int cost = GetActiveCost(idolCard);
-        int viewerBefore = GetViewersFromExternal(selection.requestedPlayer);
+        int viewerBefore = GetViewersFromExternal(actor);
         int viewerAfter = Mathf.Max(0, viewerBefore - cost);
-        int hpBefore = targetSlot.currentCharacterHp;
-        int maxHp = Mathf.Max(1, targetSlot.currentCharacterMaxHp);
+        int hpBefore = targetSlot != null ? targetSlot.currentCharacterHp : 0;
+        int maxHp = targetSlot != null ? Mathf.Max(1, targetSlot.currentCharacterMaxHp) : 1;
 
         result.isAccepted = true;
+        result.actor = actor;
+        result.currentTurnPlayer = actor;
         result.message = "아이돌 액티브 효과가 적용되었습니다.";
-        result.resolvedEffectRef = selection.effectRef;
+        result.resolvedEffectRef = effectRef;
         result.effectApplied = true;
+        result.requiresFollowUpAction = false;
+        result.effectClassification = OnlineEffectProgressStatus.Implemented.ToString();
         result.paidViewerCost = cost;
-        result.affectedSlotIds.Add(targetSlot.GetSlotId());
+
+        if (targetSlot != null)
+            result.affectedSlotIds.Add(targetSlot.GetSlotId());
         if (idolCard != null)
             result.affectedCardIds.Add(idolCard.cardInstanceId);
-        if (targetSlot.characterCard != null)
+        if (targetSlot != null && targetSlot.characterCard != null)
             result.affectedCardIds.Add(targetSlot.characterCard.cardInstanceId);
 
         if (cost > 0)
         {
             result.viewerDeltas.Add(new ViewerDelta
             {
-                owner = selection.requestedPlayer,
+                owner = actor,
                 before = viewerBefore,
                 after = viewerAfter,
                 amount = viewerAfter - viewerBefore
@@ -5249,22 +5904,22 @@ public class BattleManager : MonoBehaviour
 
         result.fieldStatDeltas.Add(new FieldStatDelta
         {
-            slotId = targetSlot.GetSlotId(),
-            cardInstanceId = targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : "",
+            slotId = targetSlot != null ? targetSlot.GetSlotId() : "",
+            cardInstanceId = targetSlot != null && targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : "",
             hpBefore = hpBefore,
             hpAfter = maxHp,
-            tensionBefore = targetSlot.currentCharacterTension,
-            tensionAfter = targetSlot.currentCharacterTension,
-            maxHpBefore = targetSlot.currentCharacterMaxHp,
-            maxHpAfter = targetSlot.currentCharacterMaxHp
+            tensionBefore = targetSlot != null ? targetSlot.currentCharacterTension : 0,
+            tensionAfter = targetSlot != null ? targetSlot.currentCharacterTension : 0,
+            maxHpBefore = targetSlot != null ? targetSlot.currentCharacterMaxHp : maxHp,
+            maxHpAfter = targetSlot != null ? targetSlot.currentCharacterMaxHp : maxHp
         });
 
         result.actionStateDeltas.Add(new ActionStateDelta
         {
-            owner = selection.requestedPlayer,
+            owner = actor,
             cardInstanceId = idolCard != null ? idolCard.cardInstanceId : "",
             actionStateType = "IdolActiveUsedThisTurn",
-            before = HasUsedIdolActiveThisTurn(selection.requestedPlayer),
+            before = HasUsedIdolActiveThisTurn(actor),
             after = true,
             turn = turnCount
         });
@@ -5272,19 +5927,184 @@ public class BattleManager : MonoBehaviour
         result.messageDeltas.Add(new MessageDelta
         {
             audience = "Public",
-            messageKey = selection.effectRef,
-            messageText = $"{(idolCard != null ? idolCard.name : "아이돌")}의 액티브 효과로 {(targetSlot.characterCard != null ? targetSlot.characterCard.name : "선택 캐릭터")}의 체력을 모두 회복했습니다.",
-            relatedCardId = targetSlot.characterCard != null ? targetSlot.characterCard.id : "",
-            relatedInstanceId = targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : ""
+            messageKey = effectRef,
+            messageText = $"{(idolCard != null ? idolCard.name : "아이돌")}의 액티브 효과로 {(targetSlot != null && targetSlot.characterCard != null ? targetSlot.characterCard.name : "선택 캐릭터")}의 체력을 모두 회복했습니다.",
+            relatedCardId = targetSlot != null && targetSlot.characterCard != null ? targetSlot.characterCard.id : "",
+            relatedInstanceId = targetSlot != null && targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : ""
         });
 
-        pendingOnlineSelection = null;
+        if (completePendingSelection)
+            CompletePendingOnlineSelection(selectionRequestId);
+
         FillBattleCountSnapshot(result);
-        ProjectUseContentSelectionSnapshot(result, selection.requestedPlayer, cost);
+        ProjectViewerDeltasIntoSnapshot(result);
 
         Debug.Log(
-            $"[OnlineSelection] Host resolved selection. requestId={action.selectionRequestId}, " +
-            $"effectRef={selection.effectRef}, target={targetSlot.GetSlotId()}, hp={hpBefore}->{maxHp}, cost={cost}");
+            $"[OnlineSelection] Host resolved full heal. requestId={selectionRequestId}, " +
+            $"effectRef={effectRef}, actor={actor}, target={targetSlot?.GetSlotId() ?? ""}, " +
+            $"hp={hpBefore}->{maxHp}, cost={cost}");
+        return result;
+    }
+
+    private BattleActionResult CreateAdjacentHpDownAndTensionUpForTagResultFromExternal(
+        BattleAction action,
+        BattleFieldSlot sourceSlot,
+        BaseCardData sourceCard,
+        string effectRef)
+    {
+        BattleSlotOwner actor = action != null ? action.actor : BattleSlotOwner.My;
+        List<BattleFieldSlot> targets = BuildOnlineAdjacentHpDownAndTensionUpTargetSlots(
+            sourceSlot,
+            sourceCard,
+            effectRef);
+        LogOnlineAdjacentHpDownAndTensionUpCandidateAudit(effectRef, sourceSlot, sourceCard);
+
+        BattleActionResult result = CreateBaseOnlineEffectResult(
+            action,
+            BattleActionType.UseCharacterActive,
+            actor,
+            effectRef);
+
+        EffectData effect = FindEffectDataByRefForBattleManager(sourceCard, effectRef);
+        int hpAmount = -Mathf.Abs(GetEffectIntParamForBattleManager(effect, "hp", 0));
+        int tensionAmount = GetEffectIntParamForBattleManager(effect, "tensionDelta", 0);
+
+        if (targets.Count == 0)
+        {
+            result.isAccepted = false;
+            result.rejectReason = "대상 캐릭터가 없습니다.";
+            result.message = result.rejectReason;
+            return result;
+        }
+
+        if (hpAmount == 0 && tensionAmount == 0)
+        {
+            result.isAccepted = false;
+            result.rejectReason = "적용할 스탯 변경 정보가 없습니다.";
+            result.message = result.rejectReason;
+            return result;
+        }
+
+        int cost = GetActiveCost(sourceCard);
+        int viewerBefore = GetViewersFromExternal(actor);
+        int viewerAfter = Mathf.Max(0, viewerBefore - cost);
+
+        result.isAccepted = true;
+        result.message = "캐릭터 액티브 효과가 적용되었습니다.";
+        result.effectApplied = true;
+        result.requiresFollowUpAction = false;
+        result.effectClassification = OnlineEffectProgressStatus.Implemented.ToString();
+        result.paidViewerCost = cost;
+        if (sourceSlot != null)
+            result.affectedSlotIds.Add(sourceSlot.GetSlotId());
+        if (sourceCard != null)
+            result.affectedCardIds.Add(sourceCard.cardInstanceId);
+
+        if (cost > 0)
+        {
+            result.viewerDeltas.Add(new ViewerDelta
+            {
+                owner = actor,
+                before = viewerBefore,
+                after = viewerAfter,
+                amount = viewerAfter - viewerBefore
+            });
+        }
+
+        int appliedHpAmount = ApplyNegativeAmountInvertForEffectSource(actor, sourceCard, hpAmount);
+        int appliedTensionAmount = ApplyNegativeAmountInvertForEffectSource(actor, sourceCard, tensionAmount);
+
+        foreach (BattleFieldSlot targetSlot in targets)
+        {
+            if (targetSlot == null || !targetSlot.HasCharacter || targetSlot.characterCard == null)
+                continue;
+
+            int hpBefore = targetSlot.currentCharacterHp;
+            int maxHpBefore = targetSlot.currentCharacterMaxHp;
+            int tensionBefore = targetSlot.currentCharacterTension;
+            int hpAfter = Mathf.Max(0, hpBefore + appliedHpAmount);
+            int tensionAfter = Mathf.Max(0, tensionBefore + appliedTensionAmount);
+            bool willRest = hpAfter <= 0;
+
+            Debug.Log(
+                $"[OnlineStatKOAudit] effectRef={effectRef}, target={targetSlot.GetSlotId()}, " +
+                $"beforeHp={hpBefore}, delta={appliedHpAmount}, afterHp={hpAfter}, willRest={willRest}");
+
+            result.affectedSlotIds.Add(targetSlot.GetSlotId());
+            result.affectedCardIds.Add(targetSlot.characterCard.cardInstanceId);
+            result.fieldStatDeltas.Add(new FieldStatDelta
+            {
+                slotId = targetSlot.GetSlotId(),
+                cardInstanceId = targetSlot.characterCard.cardInstanceId,
+                hpBefore = hpBefore,
+                hpAfter = hpAfter,
+                tensionBefore = tensionBefore,
+                tensionAfter = tensionAfter,
+                maxHpBefore = maxHpBefore,
+                maxHpAfter = maxHpBefore
+            });
+
+            if (willRest)
+            {
+                BaseCardData restedCard = targetSlot.characterCard;
+                BattleSlotOwner restedOwner = targetSlot.characterOwner;
+                string slotId = targetSlot.GetSlotId();
+                result.cardZoneMoveDeltas.Add(new CardZoneMoveDelta
+                {
+                    cardInstanceId = restedCard.cardInstanceId,
+                    cardId = restedCard.id,
+                    owner = restedOwner,
+                    fromZone = "FieldCharacter",
+                    toZone = "RestZone",
+                    fromSlotId = slotId,
+                    toSlotId = "",
+                    isPublic = true,
+                    faceDown = false
+                });
+                Debug.Log(
+                    $"[OnlineRestDeltaAudit] card={restedCard.cardInstanceId}/{restedCard.id}, " +
+                    $"characterOwner={restedOwner}, slotOwner={targetSlot.owner}, " +
+                    $"restOwner={restedOwner}, reason={effectRef}");
+                AppendOnlineOnRestDeltasForHost(
+                    result,
+                    restedCard,
+                    restedOwner,
+                    slotId,
+                    true,
+                    effectRef);
+            }
+        }
+
+        result.actionStateDeltas.Add(new ActionStateDelta
+        {
+            owner = actor,
+            cardInstanceId = sourceCard != null ? sourceCard.cardInstanceId : "",
+            slotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
+            actionStateType = "CharacterActiveUsedThisTurn",
+            before = sourceSlot != null && sourceSlot.characterActiveUsedThisTurn,
+            after = true,
+            turn = turnCount
+        });
+
+        result.messageDeltas.Add(new MessageDelta
+        {
+            audience = "Public",
+            messageKey = effectRef,
+            messageText = $"{(sourceCard != null ? sourceCard.name : "캐릭터")}의 액티브 효과로 인접 캐릭터의 스탯을 변경했습니다.",
+            relatedCardId = sourceCard != null ? sourceCard.id : "",
+            relatedInstanceId = sourceCard != null ? sourceCard.cardInstanceId : ""
+        });
+
+        FillBattleCountSnapshot(result);
+        ProjectViewerDeltasIntoSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineSelectionFlow][CreateRequest] effectRef={effectRef}, action=UseCharacterActive, " +
+            $"actor={actor}, source={sourceSlot?.GetSlotId() ?? ""}, candidates={targets.Count}, autoResolve=True");
+        Debug.Log(
+            $"[OnlineSelection] Host resolved adjacent character active. effectRef={effectRef}, " +
+            $"actor={actor}, source={sourceSlot?.GetSlotId() ?? ""}, targets={targets.Count}, " +
+            $"hpAmount={appliedHpAmount}, tensionAmount={appliedTensionAmount}, cost={cost}");
         return result;
     }
 
@@ -5375,7 +6195,7 @@ public class BattleManager : MonoBehaviour
             relatedInstanceId = targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : ""
         });
 
-        pendingOnlineSelection = null;
+        CompletePendingOnlineSelection(action.selectionRequestId, "Cancel");
         FillBattleCountSnapshot(result);
         ProjectViewerDeltasIntoSnapshot(result);
 
@@ -5463,7 +6283,7 @@ public class BattleManager : MonoBehaviour
             relatedInstanceId = targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : ""
         });
 
-        pendingOnlineSelection = null;
+        CompletePendingOnlineSelection(action.selectionRequestId, "Cancel");
         FillBattleCountSnapshot(result);
         ProjectUseContentSelectionSnapshot(result, selection.requestedPlayer, cost);
 
@@ -5490,8 +6310,10 @@ public class BattleManager : MonoBehaviour
             return result;
         }
 
+        CompletePendingOnlineSelection(selection.requestId);
+
         string requestId = $"{selection.chainId}_step2";
-        pendingOnlineSelection = new PendingOnlineSelection
+        PendingOnlineSelection nextSelection = new PendingOnlineSelection
         {
             requestId = requestId,
             parentRequestId = selection.requestId,
@@ -5521,6 +6343,7 @@ public class BattleManager : MonoBehaviour
             sourceCardInstanceId = selection.sourceCardInstanceId,
             requestedPlayer = selection.requestedPlayer,
             requestingPlayer = selection.requestedPlayer,
+            sourceActionType = BattleActionType.UseContent.ToString(),
             sourceEffectRef = selection.effectRef,
             choiceType = "FieldTarget",
             selectionType = "MoveDestination",
@@ -5537,19 +6360,126 @@ public class BattleManager : MonoBehaviour
                 continue;
 
             string slotId = slot.GetSlotId();
-            pendingOnlineSelection.candidateSlotIds.Add(slotId);
+            nextSelection.candidateSlotIds.Add(slotId);
             request.candidatePublicIds.Add(slotId);
             request.candidateTargets.Add(BuildSelectionRequestTarget(
                 slot,
                 GetEffectMoveTargetKind(sourceSlot, slot)));
         }
 
+        RegisterPendingOnlineSelection(nextSelection);
+
         result.selectionRequests.Add(request);
         FillBattleCountSnapshot(result);
 
         Debug.Log(
-            $"[OnlineSelection] Host created move destination request. requestId={requestId}, " +
-            $"source={sourceSlot.GetSlotId()}, candidates={request.candidateTargets.Count}");
+            $"[OnlineSelection] Created UseContent selection request. effectRef={selection.effectRef}, " +
+            $"requestId={requestId}, resolveKind={nextSelection.resolveKind}, " +
+            $"candidates={request.candidateTargets.Count}");
+        return result;
+    }
+
+    private BattleActionResult CreateEnhancedBoongCostPaidResult(
+        BattleAction action,
+        BattleActionResult result,
+        PendingOnlineSelection selection,
+        BattleFieldSlot boongSlot)
+    {
+        BaseCardData idolCard = GetIdolCardFromExternal(selection.requestedPlayer);
+        string tabiTag = GetPrimaryEffectStringParam(idolCard, selection.effectRef, "tag", "#타비");
+        BaseCardData boongCard = boongSlot != null ? boongSlot.characterCard : null;
+        BattleSlotOwner boongOwner = boongSlot != null ? boongSlot.characterOwner : selection.requestedPlayer;
+        string boongSlotId = boongSlot != null ? boongSlot.GetSlotId() : "";
+
+        List<BaseCardData> tabiCandidates = BuildOnlineDeckTaggedCardCandidates(selection.requestedPlayer, tabiTag);
+        if (tabiCandidates.Count == 0)
+        {
+            result.isAccepted = false;
+            result.rejectReason = $"덱에 {tabiTag} 카드가 없습니다.";
+            result.message = result.rejectReason;
+            return result;
+        }
+
+        CompletePendingOnlineSelection(selection.requestId);
+
+        result.isAccepted = true;
+        result.message = "강화 비용을 지불했습니다. 덱에서 #타비 카드를 선택하세요.";
+        result.resolvedEffectRef = selection.effectRef;
+        result.effectApplied = false;
+        result.requiresFollowUpAction = true;
+        result.effectClassification = OnlineEffectProgressStatus.NeedsPrivatePayload.ToString();
+        result.selectionRequests.Clear();
+
+        if (!string.IsNullOrWhiteSpace(selection.sourceCardInstanceId))
+            result.affectedCardIds.Add(selection.sourceCardInstanceId);
+        if (boongCard != null)
+        {
+            result.affectedCardIds.Add(boongCard.cardInstanceId);
+            result.movedCardIds.Add(boongCard.cardInstanceId);
+        }
+        if (!string.IsNullOrWhiteSpace(boongSlotId))
+            result.affectedSlotIds.Add(boongSlotId);
+
+        result.cardZoneMoveDeltas.Add(new CardZoneMoveDelta
+        {
+            owner = boongOwner,
+            cardInstanceId = boongCard != null ? boongCard.cardInstanceId : "",
+            cardId = boongCard != null ? boongCard.id : "",
+            fromZone = "FieldCharacter",
+            toZone = "RestZone",
+            fromSlotId = boongSlotId,
+            isPublic = true,
+            faceDown = false
+        });
+
+        result.messageDeltas.Add(new MessageDelta
+        {
+            audience = "Public",
+            messageKey = selection.effectRef,
+            messageText = "강화 비용으로 #뿡댕이 캐릭터를 휴식존으로 보냈습니다.",
+            relatedCardId = boongCard != null ? boongCard.id : "",
+            relatedInstanceId = boongCard != null ? boongCard.cardInstanceId : ""
+        });
+
+        AppendOnlineOnRestDeltasForHost(
+            result,
+            boongCard,
+            boongOwner,
+            boongSlotId,
+            true,
+            "EnhancedTabiIdolBoongCost");
+
+        PendingOnlineSelection nextSelection = new PendingOnlineSelection
+        {
+            requestId = $"{selection.chainId}_tabi",
+            parentRequestId = selection.requestId,
+            chainId = selection.chainId,
+            effectRef = selection.effectRef,
+            sourceCardInstanceId = selection.sourceCardInstanceId,
+            requestedPlayer = selection.requestedPlayer,
+            sourceActionSequence = selection.sourceActionSequence,
+            sourceActionType = BattleActionType.UseIdolActive,
+            stepIndex = 2,
+            resolveKind = "ChooseTabiFromDeckForEnhancedTabiIdolActive",
+            paidBoongCardInstanceId = boongCard != null ? boongCard.cardInstanceId : "",
+            paidBoongFromSlotId = boongSlotId,
+            costPaid = true
+        };
+
+        SelectionRequestDelta request = BuildPrivateDeckSelectionRequest(
+            nextSelection,
+            result.actionSequence,
+            tabiCandidates,
+            "덱에서 #타비 카드 1장을 선택하세요.");
+
+        RegisterPendingOnlineSelection(nextSelection);
+        result.selectionRequests.Add(request);
+        FillBattleCountSnapshot(result);
+        ProjectViewerDeltasIntoSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineSelection] Host paid enhanced Boong cost. requestId={action.selectionRequestId}, " +
+            $"boongSlot={boongSlotId}, nextRequest={nextSelection.requestId}, tabiCandidates={nextSelection.candidateCardInstanceIds.Count}");
         return result;
     }
 
@@ -5610,7 +6540,32 @@ public class BattleManager : MonoBehaviour
         {
             result.affectedCardIds.Add(sourceSlot.characterCard.cardInstanceId);
             result.movedCardIds.Add(sourceSlot.characterCard.cardInstanceId);
+            result.cardZoneMoveDeltas.Add(new CardZoneMoveDelta
+            {
+                cardInstanceId = sourceSlot.characterCard.cardInstanceId,
+                cardId = sourceSlot.characterCard.id,
+                owner = sourceSlot.characterOwner,
+                fromZone = "FieldCharacter",
+                toZone = "FieldCharacter",
+                fromSlotId = sourceSlot.GetSlotId(),
+                toSlotId = targetSlot.GetSlotId(),
+                isPublic = true,
+                faceDown = sourceSlot.isCharacterFaceDown
+            });
         }
+
+        CardZoneMoveDelta characterMoveDelta = result.cardZoneMoveDeltas.Find(delta =>
+            delta != null &&
+            string.Equals(delta.fromZone, "FieldCharacter", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(delta.toZone, "FieldCharacter", StringComparison.OrdinalIgnoreCase));
+
+        Debug.Log(
+            $"[OnlineOwnerAudit][MoveTagged] actor={selection.requestedPlayer}, " +
+            $"from={sourceSlot.GetSlotId()}, to={targetSlot.GetSlotId()}, " +
+            $"fromSlotOwner={sourceSlot.owner}, toSlotOwner={targetSlot.owner}, " +
+            $"characterOwnerBefore={sourceSlot.characterOwner}, " +
+            $"characterOwnerDelta={(characterMoveDelta != null ? characterMoveDelta.owner.ToString() : "")}, " +
+            $"characterOwnerAfter={result.characterOwner}");
 
         result.affectedSlotIds.Add(sourceSlot.GetSlotId());
         result.affectedSlotIds.Add(targetSlot.GetSlotId());
@@ -5641,6 +6596,8 @@ public class BattleManager : MonoBehaviour
             result.movedCardIds.Add(contentCard.cardInstanceId);
         }
 
+        AddUseContentActionStateDelta(result, selection.requestedPlayer, contentCard);
+
         result.messageDeltas.Add(new MessageDelta
         {
             audience = "Public",
@@ -5650,7 +6607,7 @@ public class BattleManager : MonoBehaviour
             relatedInstanceId = sourceSlot.characterCard != null ? sourceSlot.characterCard.cardInstanceId : ""
         });
 
-        pendingOnlineSelection = null;
+        CompletePendingOnlineSelection(action.selectionRequestId);
         FillBattleCountSnapshot(result);
         ProjectViewerDeltasIntoSnapshot(result);
 
@@ -5714,6 +6671,8 @@ public class BattleManager : MonoBehaviour
             collabResult.movedCardIds.Add(contentCard.cardInstanceId);
         }
 
+        AddUseContentActionStateDelta(collabResult, selection.requestedPlayer, contentCard);
+
         collabResult.messageDeltas.Add(new MessageDelta
         {
             audience = "Public",
@@ -5724,13 +6683,32 @@ public class BattleManager : MonoBehaviour
         });
 
         ProjectUseContentCostAndHandIntoSnapshot(collabResult, selection.requestedPlayer, cost);
-        pendingOnlineSelection = null;
+        CompletePendingOnlineSelection(action?.selectionRequestId);
 
         Debug.Log(
             $"[OnlineSelection] Host resolved move effect collab. requestId={action?.selectionRequestId}, " +
             $"source={sourceSlot.GetSlotId()}, target={targetSlot.GetSlotId()}, cost={cost}, " +
             $"attackerDefeated={collabResult.attackerDefeated}, defenderDefeated={collabResult.defenderDefeated}");
         return collabResult;
+    }
+
+    private void AddUseContentActionStateDelta(
+        BattleActionResult result,
+        BattleSlotOwner owner,
+        BaseCardData contentCard)
+    {
+        if (result == null)
+            return;
+
+        result.actionStateDeltas.Add(new ActionStateDelta
+        {
+            owner = owner,
+            cardInstanceId = contentCard != null ? contentCard.cardInstanceId : "",
+            actionStateType = "UseContent",
+            before = false,
+            after = true,
+            turn = turnCount
+        });
     }
 
     private void ProjectUseContentSelectionSnapshot(
@@ -5769,6 +6747,28 @@ public class BattleManager : MonoBehaviour
         }
     }
 
+    private void ProjectPrivateDeckToHandIntoSnapshot(
+        BattleActionResult result,
+        BattleSlotOwner owner,
+        int cost)
+    {
+        if (result == null)
+            return;
+
+        ProjectViewerDeltasIntoSnapshot(result);
+
+        if (owner == BattleSlotOwner.My)
+        {
+            result.hostHandCount += 1;
+            result.hostDeckCount = Mathf.Max(0, result.hostDeckCount - 1);
+        }
+        else
+        {
+            result.clientHandCount += 1;
+            result.clientDeckCount = Mathf.Max(0, result.clientDeckCount - 1);
+        }
+    }
+
 
     private List<BattleFieldSlot> BuildOnlineControlledFaceUpCharacterSlots(BattleSlotOwner owner)
     {
@@ -5778,12 +6778,230 @@ public class BattleManager : MonoBehaviour
         return candidates;
     }
 
+    private void LogOnlineControlledFaceUpCandidateAudit(string effectRef, BattleSlotOwner resultActor)
+    {
+        LogOnlineControlledFaceUpCandidateAudit(effectRef, resultActor, myBattleSlots);
+        LogOnlineControlledFaceUpCandidateAudit(effectRef, resultActor, enemyBattleSlots);
+    }
+
+    private void LogOnlineControlledFaceUpCandidateAudit(
+        string effectRef,
+        BattleSlotOwner resultActor,
+        List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            string reason = GetOnlineControlledFaceUpCharacterRejectReason(slot, resultActor);
+            bool isValid = string.IsNullOrWhiteSpace(reason);
+            string slotOwner = slot != null ? slot.owner.ToString() : "";
+            string characterOwner = slot != null ? slot.characterOwner.ToString() : "";
+            string cardInstanceId = slot != null && slot.characterCard != null
+                ? slot.characterCard.cardInstanceId
+                : "";
+            Debug.Log(
+                $"[OnlineSelectionFlow][Candidate] slot={slot?.GetSlotId() ?? ""}, " +
+                $"slotOwner={slotOwner}, characterOwner={characterOwner}, " +
+                $"card={cardInstanceId}, isValid={isValid}, " +
+                $"reason={(isValid ? "OK" : reason)}, effectRef={effectRef}");
+        }
+    }
+
+    private string GetOnlineControlledFaceUpCharacterRejectReason(BattleFieldSlot slot, BattleSlotOwner owner)
+    {
+        if (slot == null)
+            return "slot-null";
+
+        if (!slot.HasCharacter)
+            return "no-character";
+
+        if (slot.characterCard == null)
+            return "character-card-null";
+
+        if (slot.isCharacterFaceDown)
+            return "face-down";
+
+        if (slot.characterOwner != owner)
+            return "characterOwner-mismatch";
+
+        return "";
+    }
+
     private List<BattleFieldSlot> BuildOnlineFaceUpCharacterSlotsOnBoard()
     {
         List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
         AddOnlineFaceUpCharacterSlots(candidates, myBattleSlots);
         AddOnlineFaceUpCharacterSlots(candidates, enemyBattleSlots);
         return candidates;
+    }
+
+    private List<BattleFieldSlot> BuildOnlineAdjacentHpDownAndTensionUpTargetSlots(
+        BattleFieldSlot sourceSlot,
+        BaseCardData sourceCard,
+        string effectRef)
+    {
+        List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
+        EffectData effect = FindEffectDataByRefForBattleManager(sourceCard, effectRef);
+        string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
+        string[] allTags = effect != null && effect.@params != null
+            ? effect.@params.allTags
+            : null;
+
+        AddOnlineAdjacentHpDownAndTensionUpTargetSlots(candidates, sourceSlot, myBattleSlots, tag, allTags);
+        AddOnlineAdjacentHpDownAndTensionUpTargetSlots(candidates, sourceSlot, enemyBattleSlots, tag, allTags);
+        return candidates;
+    }
+
+    private void AddOnlineAdjacentHpDownAndTensionUpTargetSlots(
+        List<BattleFieldSlot> candidates,
+        BattleFieldSlot sourceSlot,
+        List<BattleFieldSlot> slots,
+        string tag,
+        string[] allTags)
+    {
+        if (candidates == null || slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (IsOnlineAdjacentHpDownAndTensionUpTargetSlot(sourceSlot, slot, tag, allTags))
+                candidates.Add(slot);
+        }
+    }
+
+    private void LogOnlineAdjacentHpDownAndTensionUpCandidateAudit(
+        string effectRef,
+        BattleFieldSlot sourceSlot,
+        BaseCardData sourceCard)
+    {
+        EffectData effect = FindEffectDataByRefForBattleManager(sourceCard, effectRef);
+        string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
+        string[] allTags = effect != null && effect.@params != null
+            ? effect.@params.allTags
+            : null;
+
+        LogOnlineAdjacentHpDownAndTensionUpCandidateAudit(effectRef, sourceSlot, tag, allTags, myBattleSlots);
+        LogOnlineAdjacentHpDownAndTensionUpCandidateAudit(effectRef, sourceSlot, tag, allTags, enemyBattleSlots);
+    }
+
+    private void LogOnlineAdjacentHpDownAndTensionUpCandidateAudit(
+        string effectRef,
+        BattleFieldSlot sourceSlot,
+        string tag,
+        string[] allTags,
+        List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            bool adjacent = AreOnlineSlotsAdjacent(sourceSlot, slot);
+            string reason = GetOnlineAdjacentHpDownAndTensionUpTargetRejectReason(sourceSlot, slot, tag, allTags);
+            bool isValid = string.IsNullOrWhiteSpace(reason);
+            string slotId = slot != null ? slot.GetSlotId() : "";
+            string slotOwner = slot != null ? slot.owner.ToString() : "";
+            string characterOwner = slot != null ? slot.characterOwner.ToString() : "";
+            string cardInstanceId = slot != null && slot.characterCard != null
+                ? slot.characterCard.cardInstanceId
+                : "";
+
+            Debug.Log(
+                $"[OnlineSelectionFlow][Candidate] effectRef={effectRef}, slot={slotId}, " +
+                $"slotOwner={slotOwner}, characterOwner={characterOwner}, card={cardInstanceId}, " +
+                $"adjacent={adjacent}, isValid={isValid}, reason={(isValid ? "OK" : reason)}");
+        }
+    }
+
+    private bool IsOnlineAdjacentHpDownAndTensionUpTargetSlot(
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        string tag,
+        string[] allTags)
+    {
+        return string.IsNullOrWhiteSpace(GetOnlineAdjacentHpDownAndTensionUpTargetRejectReason(
+            sourceSlot,
+            targetSlot,
+            tag,
+            allTags));
+    }
+
+    private string GetOnlineAdjacentHpDownAndTensionUpTargetRejectReason(
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        string tag,
+        string[] allTags)
+    {
+        if (sourceSlot == null)
+            return "source-null";
+
+        if (targetSlot == null)
+            return "slot-null";
+
+        if (targetSlot == sourceSlot)
+            return "source-slot";
+
+        if (!AreOnlineSlotsAdjacent(sourceSlot, targetSlot))
+            return "not-adjacent";
+
+        if (!targetSlot.HasCharacter)
+            return "no-character";
+
+        if (targetSlot.characterCard == null)
+            return "character-card-null";
+
+        if (targetSlot.isCharacterFaceDown)
+            return "face-down";
+
+        if (!string.Equals(targetSlot.characterCard.kind, EffectCardKind.Character.ToString(), StringComparison.OrdinalIgnoreCase))
+            return "kind-mismatch";
+
+        if (!string.IsNullOrWhiteSpace(tag) &&
+            !CardHasHashtag(targetSlot.characterCard, tag))
+        {
+            return "tag-mismatch";
+        }
+
+        if (!CardHasAllTags(targetSlot.characterCard, allTags))
+            return "allTags-mismatch";
+
+        return "";
+    }
+
+    private bool AreOnlineSlotsAdjacent(BattleFieldSlot sourceSlot, BattleFieldSlot targetSlot)
+    {
+        if (sourceSlot == null || targetSlot == null || sourceSlot == targetSlot)
+            return false;
+
+        if (sourceSlot.owner == targetSlot.owner)
+        {
+            int distance = Mathf.Abs(sourceSlot.x - targetSlot.x) + Mathf.Abs(sourceSlot.y - targetSlot.y);
+            return distance == 1;
+        }
+
+        int mirroredX = 4 - sourceSlot.x;
+        return sourceSlot.y == 2 &&
+            targetSlot.y == 2 &&
+            targetSlot.x == mirroredX;
+    }
+
+    private bool CardHasAllTags(BaseCardData card, string[] allTags)
+    {
+        if (allTags == null || allTags.Length == 0)
+            return true;
+
+        foreach (string requiredTag in allTags)
+        {
+            if (string.IsNullOrWhiteSpace(requiredTag))
+                continue;
+
+            if (!CardHasHashtag(card, requiredTag))
+                return false;
+        }
+
+        return true;
     }
 
     private List<BattleFieldSlot> BuildOnlineModifyTaggedOnBoardTargetSlots(
@@ -5804,6 +7022,58 @@ public class BattleManager : MonoBehaviour
         AddOnlineModifyTaggedOnBoardTargetSlots(candidates, myBattleSlots, tag, targetOwner, targetScope, actingOwner);
         AddOnlineModifyTaggedOnBoardTargetSlots(candidates, enemyBattleSlots, tag, targetOwner, targetScope, actingOwner);
         return candidates;
+    }
+
+    private void LogOnlineModifyTaggedOnBoardCandidateAudit(
+        string effectRef,
+        BaseCardData sourceCard,
+        BattleSlotOwner actingOwner)
+    {
+        EffectData effect = FindEffectDataByRefForBattleManager(sourceCard, effectRef);
+        string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
+        string targetOwner = effect != null && effect.@params != null
+            ? effect.@params.targetOwner
+            : "";
+        string targetScope = effect != null && effect.@params != null
+            ? effect.@params.targetScope
+            : "";
+
+        LogOnlineModifyTaggedOnBoardCandidateAudit(effectRef, tag, targetOwner, targetScope, actingOwner, myBattleSlots);
+        LogOnlineModifyTaggedOnBoardCandidateAudit(effectRef, tag, targetOwner, targetScope, actingOwner, enemyBattleSlots);
+    }
+
+    private void LogOnlineModifyTaggedOnBoardCandidateAudit(
+        string effectRef,
+        string tag,
+        string targetOwner,
+        string targetScope,
+        BattleSlotOwner actingOwner,
+        List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            string reason = GetOnlineModifyTaggedOnBoardTargetRejectReason(
+                slot,
+                tag,
+                targetOwner,
+                targetScope,
+                actingOwner);
+            bool isValid = string.IsNullOrWhiteSpace(reason);
+            string slotId = slot != null ? slot.GetSlotId() : "";
+            string slotOwner = slot != null ? slot.owner.ToString() : "";
+            string characterOwner = slot != null ? slot.characterOwner.ToString() : "";
+            string cardInstanceId = slot != null && slot.characterCard != null
+                ? slot.characterCard.cardInstanceId
+                : "";
+
+            Debug.Log(
+                $"[OnlineSelectionFlow][Candidate] effectRef={effectRef}, slot={slotId}, " +
+                $"slotOwner={slotOwner}, characterOwner={characterOwner}, card={cardInstanceId}, " +
+                $"isValid={isValid}, reason={(isValid ? "OK" : reason)}");
+        }
     }
 
     private void AddOnlineModifyTaggedOnBoardTargetSlots(
@@ -5833,40 +7103,59 @@ public class BattleManager : MonoBehaviour
         string targetScope,
         BattleSlotOwner actingOwner)
     {
-        if (slot == null ||
-            !slot.HasCharacter ||
-            slot.characterCard == null ||
-            slot.isCharacterFaceDown)
-        {
-            return false;
-        }
+        return string.IsNullOrWhiteSpace(GetOnlineModifyTaggedOnBoardTargetRejectReason(
+            slot,
+            tag,
+            targetOwner,
+            targetScope,
+            actingOwner));
+    }
+
+    private string GetOnlineModifyTaggedOnBoardTargetRejectReason(
+        BattleFieldSlot slot,
+        string tag,
+        string targetOwner,
+        string targetScope,
+        BattleSlotOwner actingOwner)
+    {
+        if (slot == null)
+            return "slot-null";
+
+        if (!slot.HasCharacter)
+            return "no-character";
+
+        if (slot.characterCard == null)
+            return "character-card-null";
+
+        if (slot.isCharacterFaceDown)
+            return "face-down";
 
         if (!string.IsNullOrWhiteSpace(targetScope) &&
             !string.Equals(targetScope, "FieldCharacters", StringComparison.OrdinalIgnoreCase))
         {
-            return false;
+            return "targetScope-mismatch";
         }
 
         if (!string.IsNullOrWhiteSpace(tag) &&
             !CardHasHashtag(slot.characterCard, tag))
         {
-            return false;
+            return "tag-mismatch";
         }
 
         if (string.Equals(targetOwner, "My", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(targetOwner, "Own", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(targetOwner, "ActingOwner", StringComparison.OrdinalIgnoreCase))
         {
-            return slot.characterOwner == actingOwner;
+            return slot.characterOwner == actingOwner ? "" : "characterOwner-mismatch";
         }
 
         if (string.Equals(targetOwner, "Opponent", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(targetOwner, "Enemy", StringComparison.OrdinalIgnoreCase))
         {
-            return slot.characterOwner != actingOwner;
+            return slot.characterOwner != actingOwner ? "" : "opponentOwner-mismatch";
         }
 
-        return true;
+        return "";
     }
 
     private List<BattleFieldSlot> BuildOnlineTaggedMovableCharacterSlots(
@@ -6081,6 +7370,7 @@ public class BattleManager : MonoBehaviour
     {
         targetSlot = null;
         failReason = "";
+        PendingOnlineSelection selection = null;
 
         if (action == null)
         {
@@ -6088,50 +7378,80 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        if (pendingOnlineSelection == null)
+        if (string.IsNullOrWhiteSpace(action.selectionRequestId))
+        {
+            failReason = "선택 요청 ID가 없습니다.";
+            return false;
+        }
+
+        if (resolvedOnlineSelectionRequestIds.Contains(action.selectionRequestId))
+        {
+            failReason = "이미 처리된 선택 요청입니다.";
+            return false;
+        }
+
+        if (!pendingOnlineSelectionsByRequestId.TryGetValue(action.selectionRequestId, out selection) ||
+            selection == null)
         {
             failReason = "대기 중인 온라인 선택 요청이 없습니다.";
             return false;
         }
 
-        if (!string.Equals(pendingOnlineSelection.requestId, action.selectionRequestId, StringComparison.OrdinalIgnoreCase))
+        if (pendingOnlineSelection == null ||
+            !string.Equals(pendingOnlineSelection.requestId, selection.requestId, StringComparison.OrdinalIgnoreCase))
         {
-            failReason = "선택 요청 ID가 일치하지 않습니다.";
+            failReason = "현재 활성 온라인 선택 요청이 일치하지 않습니다.";
             return false;
         }
 
-        if (!string.Equals(pendingOnlineSelection.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(selection.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
         {
             failReason = "대기 중인 효과와 선택 액션의 effectRef가 일치하지 않습니다.";
             return false;
         }
 
-        if (action.actor != pendingOnlineSelection.requestedPlayer)
+        if (action.actor != selection.requestedPlayer)
         {
             failReason = "선택 요청 대상 플레이어와 응답 플레이어가 일치하지 않습니다.";
             return false;
         }
 
-        if (string.IsNullOrWhiteSpace(action.targetSlotId))
+        string targetSlotId = ResolveSelectionTargetSlotId(action);
+        if (string.IsNullOrWhiteSpace(targetSlotId))
         {
             failReason = "선택한 효과 대상 슬롯 ID가 없습니다.";
             return false;
         }
 
-        if (!pendingOnlineSelection.candidateSlotIds.Contains(action.targetSlotId))
+        if (!IsPendingSelectionCandidate(selection, targetSlotId))
         {
             failReason = "선택할 수 없는 효과 대상 슬롯입니다.";
             return false;
         }
 
-        targetSlot = FindSlotById(action.targetSlotId);
+        targetSlot = FindSlotById(targetSlotId);
         if (targetSlot == null)
         {
             failReason = "선택한 효과 대상 슬롯 상태가 유효하지 않습니다.";
             return false;
         }
 
-        if (pendingOnlineSelection.sourceActionType == BattleActionType.UseIdolActive)
+        if (selection.sourceActionType == BattleActionType.UseIdolActive &&
+            string.Equals(selection.resolveKind, "ChooseBoongCostForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase))
+        {
+            BaseCardData idolCard = GetIdolCardFromExternal(selection.requestedPlayer);
+            string bunnyTag = GetPrimaryEffectStringParam(idolCard, selection.effectRef, "bunnyTag", "#뿡댕이");
+
+            if (!IsOnlineBoongCostSlot(targetSlot, selection.requestedPlayer, bunnyTag))
+            {
+                failReason = "선택한 캐릭터가 강화 비용 조건을 만족하지 않습니다.";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (selection.sourceActionType == BattleActionType.UseIdolActive)
         {
             if (!targetSlot.HasCharacter ||
                 targetSlot.characterCard == null ||
@@ -6141,21 +7461,21 @@ public class BattleManager : MonoBehaviour
                 return false;
             }
 
-            if (targetSlot.characterOwner != pendingOnlineSelection.requestedPlayer)
+            if (targetSlot.characterOwner != selection.requestedPlayer)
             {
                 failReason = "선택한 효과 대상 슬롯 상태가 유효하지 않습니다.";
                 return false;
             }
 
-            BaseCardData idolCard = GetIdolCardFromExternal(pendingOnlineSelection.requestedPlayer);
+            BaseCardData idolCard = GetIdolCardFromExternal(selection.requestedPlayer);
             int cost = GetActiveCost(idolCard);
-            if (!CanPayViewerCostFromExternal(pendingOnlineSelection.requestedPlayer, cost))
+            if (!CanPayViewerCostFromExternal(selection.requestedPlayer, cost))
             {
                 failReason = "시청자가 부족합니다.";
                 return false;
             }
 
-            if (HasUsedIdolActiveThisTurn(pendingOnlineSelection.requestedPlayer))
+            if (HasUsedIdolActiveThisTurn(selection.requestedPlayer))
             {
                 failReason = "이미 이번 턴에 아이돌 액티브 효과를 사용했습니다.";
                 return false;
@@ -6164,22 +7484,22 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
-        if (pendingOnlineSelection.sourceActionType == BattleActionType.UseContent &&
-            string.Equals(pendingOnlineSelection.resolveKind, "SelectTaggedOwnCharacterForMove", StringComparison.OrdinalIgnoreCase))
+        if (selection.sourceActionType == BattleActionType.UseContent &&
+            string.Equals(selection.resolveKind, "SelectTaggedOwnCharacterForMove", StringComparison.OrdinalIgnoreCase))
         {
             BaseCardData contentCard = FindHandCardByInstanceId(
-                pendingOnlineSelection.requestedPlayer,
-                pendingOnlineSelection.sourceCardInstanceId);
-            string tag = GetPrimaryEffectStringParam(contentCard, pendingOnlineSelection.effectRef, "tag", "");
+                selection.requestedPlayer,
+                selection.sourceCardInstanceId);
+            string tag = GetPrimaryEffectStringParam(contentCard, selection.effectRef, "tag", "");
 
-            if (!IsOnlineTaggedMoveSourceSlot(targetSlot, pendingOnlineSelection.requestedPlayer, tag))
+            if (!IsOnlineTaggedMoveSourceSlot(targetSlot, selection.requestedPlayer, tag))
             {
                 failReason = "선택한 캐릭터가 이동 효과 조건을 만족하지 않습니다.";
                 return false;
             }
 
             if (BuildOnlineEffectMoveDestinationSlots(
-                    pendingOnlineSelection.requestedPlayer,
+                    selection.requestedPlayer,
                     targetSlot).Count == 0)
             {
                 failReason = "선택한 캐릭터가 이동할 수 있는 위치가 없습니다.";
@@ -6189,17 +7509,17 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
-        if (pendingOnlineSelection.sourceActionType == BattleActionType.UseContent &&
-            string.Equals(pendingOnlineSelection.resolveKind, "SelectDestinationForSelectedCharacter", StringComparison.OrdinalIgnoreCase))
+        if (selection.sourceActionType == BattleActionType.UseContent &&
+            string.Equals(selection.resolveKind, "SelectDestinationForSelectedCharacter", StringComparison.OrdinalIgnoreCase))
         {
-            BattleFieldSlot sourceSlot = FindSlotById(pendingOnlineSelection.selectedSourceSlotId);
+            BattleFieldSlot sourceSlot = FindSlotById(selection.selectedSourceSlotId);
             if (sourceSlot == null ||
                 !sourceSlot.HasCharacter ||
                 sourceSlot.characterCard == null ||
                 sourceSlot.isCharacterFaceDown ||
                 !string.Equals(
                     sourceSlot.characterCard.cardInstanceId,
-                    pendingOnlineSelection.selectedSourceCharacterInstanceId,
+                    selection.selectedSourceCharacterInstanceId,
                     StringComparison.OrdinalIgnoreCase))
             {
                 failReason = "이동할 캐릭터가 더 이상 유효하지 않습니다.";
@@ -6208,7 +7528,7 @@ public class BattleManager : MonoBehaviour
 
             if (targetSlot.HasCharacter)
             {
-                if (targetSlot.characterOwner == pendingOnlineSelection.requestedPlayer)
+                if (targetSlot.characterOwner == selection.requestedPlayer)
                 {
                     failReason = "아군 캐릭터가 있는 슬롯으로는 이동할 수 없습니다.";
                     return false;
@@ -6216,7 +7536,7 @@ public class BattleManager : MonoBehaviour
 
                 if (movementManager == null ||
                     !movementManager.CanStartCollaborationByEffectForOwnerFromExternal(
-                        pendingOnlineSelection.requestedPlayer,
+                        selection.requestedPlayer,
                         sourceSlot,
                         targetSlot,
                         out failReason))
@@ -6226,7 +7546,7 @@ public class BattleManager : MonoBehaviour
             }
             else if (movementManager == null ||
                 !movementManager.CanMoveCharacterByEffectForOwnerFromExternal(
-                    pendingOnlineSelection.requestedPlayer,
+                    selection.requestedPlayer,
                     sourceSlot,
                     targetSlot,
                     out failReason))
@@ -6235,8 +7555,8 @@ public class BattleManager : MonoBehaviour
             }
 
             BaseCardData contentCard = FindHandCardByInstanceId(
-                pendingOnlineSelection.requestedPlayer,
-                pendingOnlineSelection.sourceCardInstanceId);
+                selection.requestedPlayer,
+                selection.sourceCardInstanceId);
             if (contentCard == null)
             {
                 failReason = "효과 발동 콘텐츠 카드가 손패에 없습니다.";
@@ -6244,7 +7564,7 @@ public class BattleManager : MonoBehaviour
             }
 
             int cost = GetContentCardCost(contentCard);
-            if (!CanPayViewerCostFromExternal(pendingOnlineSelection.requestedPlayer, cost))
+            if (!CanPayViewerCostFromExternal(selection.requestedPlayer, cost))
             {
                 failReason = "시청자가 부족합니다.";
                 return false;
@@ -6253,23 +7573,23 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
-        if (pendingOnlineSelection.sourceActionType == BattleActionType.UseCharacterActive &&
-            string.Equals(pendingOnlineSelection.resolveKind, "SelectTargetForCharacterActiveModifyTaggedOnBoard", StringComparison.OrdinalIgnoreCase))
+        if (selection.sourceActionType == BattleActionType.UseCharacterActive &&
+            string.Equals(selection.resolveKind, "SelectTargetForCharacterActiveModifyTaggedOnBoard", StringComparison.OrdinalIgnoreCase))
         {
-            BattleFieldSlot sourceSlot = FindSlotById(pendingOnlineSelection.selectedSourceSlotId);
+            BattleFieldSlot sourceSlot = FindSlotById(selection.selectedSourceSlotId);
             if (sourceSlot == null ||
                 !sourceSlot.HasCharacter ||
                 sourceSlot.characterCard == null ||
                 !string.Equals(
                     sourceSlot.characterCard.cardInstanceId,
-                    pendingOnlineSelection.sourceCardInstanceId,
+                    selection.sourceCardInstanceId,
                     StringComparison.OrdinalIgnoreCase))
             {
                 failReason = "액티브 효과 발동 캐릭터가 더 이상 유효하지 않습니다.";
                 return false;
             }
 
-            if (sourceSlot.characterOwner != pendingOnlineSelection.requestedPlayer ||
+            if (sourceSlot.characterOwner != selection.requestedPlayer ||
                 sourceSlot.isCharacterFaceDown ||
                 !HasActiveEffect(sourceSlot.characterCard) ||
                 sourceSlot.characterActiveUsedThisTurn)
@@ -6278,7 +7598,7 @@ public class BattleManager : MonoBehaviour
                 return false;
             }
 
-            EffectData effect = FindEffectDataByRefForBattleManager(sourceSlot.characterCard, pendingOnlineSelection.effectRef);
+            EffectData effect = FindEffectDataByRefForBattleManager(sourceSlot.characterCard, selection.effectRef);
             string tag = GetEffectStringParamForBattleManager(effect, "tag", "");
             string targetOwner = effect != null && effect.@params != null
                 ? effect.@params.targetOwner
@@ -6292,14 +7612,14 @@ public class BattleManager : MonoBehaviour
                     tag,
                     targetOwner,
                     targetScope,
-                    pendingOnlineSelection.requestedPlayer))
+                    selection.requestedPlayer))
             {
                 failReason = "선택한 캐릭터가 액티브 효과 대상 조건을 만족하지 않습니다.";
                 return false;
             }
 
             int cost = GetActiveCost(sourceSlot.characterCard);
-            if (!CanPayViewerCostFromExternal(pendingOnlineSelection.requestedPlayer, cost))
+            if (!CanPayViewerCostFromExternal(selection.requestedPlayer, cost))
             {
                 failReason = "시청자가 부족합니다.";
                 return false;
@@ -6308,8 +7628,8 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
-        if (pendingOnlineSelection.sourceActionType == BattleActionType.UseContent &&
-            string.Equals(pendingOnlineSelection.effectRef, "content.silenceCharacterCollabThisTurn", StringComparison.OrdinalIgnoreCase))
+        if (selection.sourceActionType == BattleActionType.UseContent &&
+            string.Equals(selection.effectRef, "content.silenceCharacterCollabThisTurn", StringComparison.OrdinalIgnoreCase))
         {
             if (!targetSlot.HasCharacter ||
                 targetSlot.characterCard == null ||
@@ -6320,8 +7640,8 @@ public class BattleManager : MonoBehaviour
             }
 
             BaseCardData contentCard = FindHandCardByInstanceId(
-                pendingOnlineSelection.requestedPlayer,
-                pendingOnlineSelection.sourceCardInstanceId);
+                selection.requestedPlayer,
+                selection.sourceCardInstanceId);
             if (contentCard == null)
             {
                 failReason = "효과 발동 콘텐츠 카드가 손패에 없습니다.";
@@ -6329,7 +7649,7 @@ public class BattleManager : MonoBehaviour
             }
 
             int cost = GetContentCardCost(contentCard);
-            if (!CanPayViewerCostFromExternal(pendingOnlineSelection.requestedPlayer, cost))
+            if (!CanPayViewerCostFromExternal(selection.requestedPlayer, cost))
             {
                 failReason = "시청자가 부족합니다.";
                 return false;
@@ -6338,7 +7658,675 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
-        failReason = $"지원하지 않는 선택 요청입니다: {pendingOnlineSelection.sourceActionType}/{pendingOnlineSelection.effectRef}";
+        failReason = $"지원하지 않는 선택 요청입니다: {selection.sourceActionType}/{selection.effectRef}";
+        return false;
+    }
+
+    public BattleActionResult CreateSelectCardOptionResultFromExternal(BattleAction action)
+    {
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.SelectCardOption,
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString()
+        };
+
+        if (!TryValidatePendingOnlineCardSelection(action, out PendingOnlineSelection selection, out BaseCardData selectedCard, out string failReason))
+        {
+            RejectPendingOnlineSelection(action, failReason);
+            result.isAccepted = false;
+            result.rejectReason = failReason;
+            result.message = failReason;
+            return result;
+        }
+
+        BaseCardData idolCard = GetIdolCardFromExternal(selection.requestedPlayer);
+        int cost = GetActiveCost(idolCard);
+
+        if (string.Equals(selection.resolveKind, "ChooseTabiFromDeckForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase))
+            return CreateEnhancedTabiDeckSelectedResult(action, result, selection, selectedCard, idolCard);
+
+        if (string.Equals(selection.resolveKind, "ChooseBoongFromDeckForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase))
+            return CreatePrivateDeckToHandFinalResult(
+                action,
+                result,
+                selection,
+                selectedCard,
+                idolCard,
+                cost,
+                "PrivateDeckSearchEnhanced",
+                "강화 효과로 덱에서 카드를 손패에 추가했습니다.");
+
+        return CreatePrivateDeckToHandFinalResult(
+            action,
+            result,
+            selection,
+            selectedCard,
+            idolCard,
+            cost,
+            "PrivateDeckSearchBasic",
+            "덱에서 카드를 손패에 추가했습니다.");
+    }
+
+    public BattleActionResult CreateSelectEffectChoiceResultFromExternal(BattleAction action)
+    {
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = action != null ? action.actor : BattleSlotOwner.My,
+            requestActionType = BattleActionType.SelectEffectChoice,
+            currentTurnPlayer = action != null ? action.actor : BattleSlotOwner.My,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString()
+        };
+
+        if (IsOnlinePublicSelectionCancelAction(action))
+        {
+            if (!TryValidatePendingOnlineSelectionCancel(
+                    action,
+                    out PendingOnlineSelection cancelledSelection,
+                    out string cancelFailReason))
+            {
+                Debug.LogWarning(
+                    $"[OnlineSelectionFlow][ValidateResponse] requestId={action?.selectionRequestId ?? ""}, " +
+                    $"valid=False, reason={cancelFailReason}");
+                RejectPendingOnlineSelectionCancel(action, cancelFailReason);
+                result.isAccepted = false;
+                result.rejectReason = cancelFailReason;
+                result.message = cancelFailReason;
+                return result;
+            }
+
+            Debug.Log(
+                $"[OnlineSelectionFlow][ValidateResponse] requestId={action.selectionRequestId}, " +
+                $"valid=True, reason=Cancelled");
+            return CreatePublicSelectionCancelledResult(action, result, cancelledSelection);
+        }
+
+        if (!TryValidatePendingOnlineEffectChoice(
+                action,
+                out PendingOnlineSelection selection,
+                out BaseCardData idolCard,
+                out string failReason))
+        {
+            RejectPendingOnlineSelection(action, failReason);
+            result.isAccepted = false;
+            result.rejectReason = failReason;
+            result.message = failReason;
+            return result;
+        }
+
+        string tabiTag = GetPrimaryEffectStringParam(idolCard, selection.effectRef, "tag", "#타비");
+        BattleActionResult basicResult = CreateFetchTabiBasicSelectionRequestResultFromExternal(
+            action,
+            idolCard,
+            selection.effectRef,
+            tabiTag,
+            selection,
+            2);
+        basicResult.requestActionType = BattleActionType.SelectEffectChoice;
+        basicResult.actor = selection.requestedPlayer;
+
+        Debug.Log(
+            $"[OnlineSelection] Host resolved effect choice. " +
+            $"requestId={action.selectionRequestId}, effectRef={selection.effectRef}, " +
+            $"choiceId={action.choiceId}, choiceValue={action.choiceValue}");
+        return basicResult;
+    }
+
+    private bool IsOnlinePublicSelectionCancelAction(BattleAction action)
+    {
+        return action != null &&
+            string.Equals(action.choiceId, "publicSelection", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(action.choiceValue, "cancel", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool TryValidatePendingOnlineSelectionCancel(
+        BattleAction action,
+        out PendingOnlineSelection selection,
+        out string failReason)
+    {
+        selection = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "SelectEffectChoice action is null.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.selectionRequestId))
+        {
+            failReason = "선택 요청 ID가 없습니다.";
+            return false;
+        }
+
+        if (resolvedOnlineSelectionRequestIds.Contains(action.selectionRequestId))
+        {
+            failReason = "이미 처리된 선택 요청입니다.";
+            return false;
+        }
+
+        if (!pendingOnlineSelectionsByRequestId.TryGetValue(action.selectionRequestId, out selection) ||
+            selection == null)
+        {
+            failReason = "대기 중인 온라인 선택 요청이 없습니다.";
+            return false;
+        }
+
+        if (pendingOnlineSelection == null ||
+            !string.Equals(pendingOnlineSelection.requestId, selection.requestId, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "현재 활성 온라인 선택 요청이 일치하지 않습니다.";
+            return false;
+        }
+
+        if (action.actor != selection.requestedPlayer)
+        {
+            failReason = "선택 요청 대상 플레이어와 응답 플레이어가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (!string.Equals(selection.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "대기 중인 효과와 선택 액션의 effectRef가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (!selection.cancelAllowed)
+        {
+            failReason = "취소할 수 없는 온라인 선택 요청입니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private BattleActionResult CreatePublicSelectionCancelledResult(
+        BattleAction action,
+        BattleActionResult result,
+        PendingOnlineSelection selection)
+    {
+        result.isAccepted = true;
+        result.actor = selection.requestedPlayer;
+        result.currentTurnPlayer = selection.requestedPlayer;
+        result.requestActionType = BattleActionType.SelectEffectChoice;
+        result.resolvedEffectRef = selection.effectRef;
+        result.effectApplied = false;
+        result.requiresFollowUpAction = false;
+        result.effectClassification = OnlineEffectProgressStatus.Implemented.ToString();
+        result.message = "효과 발동을 취소했습니다.";
+
+        CompletePendingOnlineSelection(action.selectionRequestId);
+        FillBattleCountSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineSelectionFlow][Cancel] requestId={action.selectionRequestId}, " +
+            $"actor={action.actor}, effectRef={selection.effectRef}, completed=True");
+        Debug.Log(
+            $"[OnlineSelectionFlow][Response] requestId={action.selectionRequestId}, " +
+            $"actor={action.actor}, selected=cancel");
+        Debug.Log(
+            $"[OnlineSelection] Host cancelled public selection. requestId={action.selectionRequestId}, " +
+            $"effectRef={selection.effectRef}, actor={selection.requestedPlayer}");
+        return result;
+    }
+
+    private bool TryValidatePendingOnlineEffectChoice(
+        BattleAction action,
+        out PendingOnlineSelection selection,
+        out BaseCardData idolCard,
+        out string failReason)
+    {
+        selection = null;
+        idolCard = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "SelectEffectChoice action is null.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.selectionRequestId))
+        {
+            failReason = "선택 요청 ID가 없습니다.";
+            return false;
+        }
+
+        if (resolvedOnlineSelectionRequestIds.Contains(action.selectionRequestId))
+        {
+            failReason = "이미 처리된 선택 요청입니다.";
+            return false;
+        }
+
+        if (!pendingOnlineSelectionsByRequestId.TryGetValue(action.selectionRequestId, out selection) ||
+            selection == null)
+        {
+            failReason = "대기 중인 온라인 선택 요청이 없습니다.";
+            return false;
+        }
+
+        if (action.actor != selection.requestedPlayer)
+        {
+            failReason = "선택 요청 대상 플레이어와 응답 플레이어가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (!string.Equals(selection.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "대기 중인 효과와 선택 액션의 effectRef가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (!string.Equals(selection.resolveKind, "ChooseBoongCostForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase) ||
+            !selection.basicFallbackAvailable)
+        {
+            failReason = $"지원하지 않는 효과 선택 요청입니다: {selection.resolveKind}";
+            return false;
+        }
+
+        if (!string.Equals(action.choiceId, "tabiIdolEnhance", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(action.choiceValue, "basic", StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "지원하지 않는 효과 선택 값입니다.";
+            return false;
+        }
+
+        idolCard = GetIdolCardFromExternal(selection.requestedPlayer);
+        if (idolCard == null ||
+            !string.Equals(idolCard.cardInstanceId, selection.sourceCardInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "효과 발동 아이돌 카드가 유효하지 않습니다.";
+            return false;
+        }
+
+        if (HasUsedIdolActiveThisTurn(selection.requestedPlayer))
+        {
+            failReason = "이미 이번 턴에 아이돌 액티브 효과를 사용했습니다.";
+            return false;
+        }
+
+        int cost = GetActiveCost(idolCard);
+        if (!CanPayViewerCostFromExternal(selection.requestedPlayer, cost))
+        {
+            failReason = "시청자가 부족합니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private BattleActionResult CreatePrivateDeckToHandFinalResult(
+        BattleAction action,
+        BattleActionResult result,
+        PendingOnlineSelection selection,
+        BaseCardData selectedCard,
+        BaseCardData idolCard,
+        int cost,
+        string effectClassification,
+        string ownerMessage)
+    {
+        int viewerBefore = GetViewersFromExternal(selection.requestedPlayer);
+        int viewerAfter = Mathf.Max(0, viewerBefore - cost);
+
+        result.isAccepted = true;
+        result.message = ownerMessage;
+        result.resolvedEffectRef = selection.effectRef;
+        result.effectApplied = true;
+        result.effectClassification = effectClassification;
+        result.paidViewerCost = cost;
+
+        if (idolCard != null)
+            result.affectedCardIds.Add(idolCard.cardInstanceId);
+
+        if (cost > 0)
+        {
+            result.viewerDeltas.Add(new ViewerDelta
+            {
+                owner = selection.requestedPlayer,
+                before = viewerBefore,
+                after = viewerAfter,
+                amount = viewerAfter - viewerBefore
+            });
+        }
+
+        AppendPrivateDeckToHandDeltas(result, selection, selectedCard, ownerMessage);
+
+        result.actionStateDeltas.Add(new ActionStateDelta
+        {
+            owner = selection.requestedPlayer,
+            cardInstanceId = idolCard != null ? idolCard.cardInstanceId : "",
+            actionStateType = "IdolActiveUsedThisTurn",
+            before = HasUsedIdolActiveThisTurn(selection.requestedPlayer),
+            after = true,
+            turn = turnCount
+        });
+
+        result.messageDeltas.Add(new MessageDelta
+        {
+            audience = "Opponent",
+            messageKey = selection.effectRef,
+            messageText = "상대가 덱에서 카드 1장을 손패에 추가했습니다."
+        });
+
+        CompletePendingOnlineSelection(action.selectionRequestId);
+        FillBattleCountSnapshot(result);
+        ProjectPrivateDeckToHandIntoSnapshot(result, selection.requestedPlayer, cost);
+
+        Debug.Log(
+            $"[OnlinePrivateSelection] Host resolved private deck selection. " +
+            $"requestId={action.selectionRequestId}, actor={selection.requestedPlayer}, " +
+            $"effectRef={selection.effectRef}, cost={cost}");
+        return result;
+    }
+
+    private BattleActionResult CreateEnhancedTabiDeckSelectedResult(
+        BattleAction action,
+        BattleActionResult result,
+        PendingOnlineSelection selection,
+        BaseCardData selectedTabiCard,
+        BaseCardData idolCard)
+    {
+        string bunnyTag = GetPrimaryEffectStringParam(idolCard, selection.effectRef, "bunnyTag", "#뿡댕이");
+        List<BaseCardData> boongCandidates = BuildOnlineDeckTaggedCardCandidates(selection.requestedPlayer, bunnyTag);
+        if (selectedTabiCard != null && !string.IsNullOrWhiteSpace(selectedTabiCard.cardInstanceId))
+        {
+            boongCandidates.RemoveAll(card =>
+                card != null &&
+                string.Equals(card.cardInstanceId, selectedTabiCard.cardInstanceId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (boongCandidates.Count == 0)
+        {
+            result.isAccepted = false;
+            result.rejectReason = $"덱에 {bunnyTag} 카드가 없습니다.";
+            result.message = result.rejectReason;
+            CompletePendingOnlineSelection(action.selectionRequestId);
+            return result;
+        }
+
+        CompletePendingOnlineSelection(action.selectionRequestId);
+
+        result.isAccepted = true;
+        result.message = "덱에서 #타비 카드를 손패에 추가했습니다. 덱에서 #뿡댕이 카드를 선택하세요.";
+        result.resolvedEffectRef = selection.effectRef;
+        result.effectApplied = false;
+        result.requiresFollowUpAction = true;
+        result.effectClassification = OnlineEffectProgressStatus.NeedsPrivatePayload.ToString();
+        result.paidViewerCost = 0;
+
+        if (idolCard != null)
+            result.affectedCardIds.Add(idolCard.cardInstanceId);
+        AppendPrivateDeckToHandDeltas(result, selection, selectedTabiCard, "덱에서 #타비 카드를 손패에 추가했습니다.");
+
+        PendingOnlineSelection nextSelection = new PendingOnlineSelection
+        {
+            requestId = $"{selection.chainId}_boong",
+            parentRequestId = selection.requestId,
+            chainId = selection.chainId,
+            effectRef = selection.effectRef,
+            sourceCardInstanceId = selection.sourceCardInstanceId,
+            requestedPlayer = selection.requestedPlayer,
+            sourceActionSequence = selection.sourceActionSequence,
+            sourceActionType = BattleActionType.UseIdolActive,
+            stepIndex = 3,
+            resolveKind = "ChooseBoongFromDeckForEnhancedTabiIdolActive",
+            paidBoongCardInstanceId = selection.paidBoongCardInstanceId,
+            paidBoongFromSlotId = selection.paidBoongFromSlotId,
+            selectedTabiCardInstanceId = selectedTabiCard != null ? selectedTabiCard.cardInstanceId : "",
+            costPaid = selection.costPaid
+        };
+
+        SelectionRequestDelta request = BuildPrivateDeckSelectionRequest(
+            nextSelection,
+            result.actionSequence,
+            boongCandidates,
+            $"덱에서 {bunnyTag} 카드 1장을 선택하세요.");
+
+        RegisterPendingOnlineSelection(nextSelection);
+        result.selectionRequests.Add(request);
+        FillBattleCountSnapshot(result);
+        ProjectPrivateDeckToHandIntoSnapshot(result, selection.requestedPlayer, 0);
+
+        Debug.Log(
+            $"[OnlinePrivateSelection] Host resolved enhanced Tabi selection. " +
+            $"requestId={action.selectionRequestId}, nextRequest={nextSelection.requestId}, " +
+            $"boongCandidates={nextSelection.candidateCardInstanceIds.Count}");
+        return result;
+    }
+
+    private void AppendPrivateDeckToHandDeltas(
+        BattleActionResult result,
+        PendingOnlineSelection selection,
+        BaseCardData selectedCard,
+        string ownerMessage)
+    {
+        if (result == null || selection == null || selectedCard == null)
+            return;
+
+        result.affectedCardIds.Add(selectedCard.cardInstanceId);
+        result.drawnCardInstanceIds.Add(selectedCard.cardInstanceId);
+        result.cardDrawDeltas.Add(new CardDrawDelta
+        {
+            owner = selection.requestedPlayer,
+            cardInstanceId = selectedCard.cardInstanceId,
+            cardId = selectedCard.id,
+            fromDeckIndex = FindMainDeckCardIndexByInstanceId(selection.requestedPlayer, selectedCard.cardInstanceId),
+            toHand = true,
+            visibleToOwnerOnly = true,
+            publicCardIdForOpponent = ""
+        });
+
+        result.cardZoneMoveDeltas.Add(new CardZoneMoveDelta
+        {
+            owner = selection.requestedPlayer,
+            cardInstanceId = selectedCard.cardInstanceId,
+            cardId = selectedCard.id,
+            fromZone = "Deck",
+            toZone = "Hand",
+            isPublic = false,
+            faceDown = false
+        });
+
+        result.messageDeltas.Add(new MessageDelta
+        {
+            audience = "OwnerOnly",
+            messageKey = selection.effectRef,
+            messageText = ownerMessage,
+            relatedCardId = selectedCard.id,
+            relatedInstanceId = selectedCard.cardInstanceId
+        });
+    }
+
+    private bool TryValidatePendingOnlineCardSelection(
+        BattleAction action,
+        out PendingOnlineSelection selection,
+        out BaseCardData selectedCard,
+        out string failReason)
+    {
+        selection = null;
+        selectedCard = null;
+        failReason = "";
+
+        if (action == null)
+        {
+            failReason = "SelectCardOption action is null.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(action.selectionRequestId))
+        {
+            failReason = "선택 요청 ID가 없습니다.";
+            return false;
+        }
+
+        if (resolvedOnlineSelectionRequestIds.Contains(action.selectionRequestId))
+        {
+            failReason = "이미 처리된 선택 요청입니다.";
+            return false;
+        }
+
+        if (!pendingOnlineSelectionsByRequestId.TryGetValue(action.selectionRequestId, out selection) ||
+            selection == null)
+        {
+            failReason = "대기 중인 온라인 카드 선택 요청이 없습니다.";
+            return false;
+        }
+
+        bool supportedPrivateDeckSelection =
+            string.Equals(selection.resolveKind, "SelectPrivateDeckTaggedCardToHand", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(selection.resolveKind, "ChooseTabiFromDeckForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(selection.resolveKind, "ChooseBoongFromDeckForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase);
+        if (!supportedPrivateDeckSelection)
+        {
+            failReason = $"지원하지 않는 카드 선택 요청입니다: {selection.resolveKind}";
+            return false;
+        }
+
+        if (action.actor != selection.requestedPlayer)
+        {
+            failReason = "선택 요청 대상 플레이어와 응답 플레이어가 일치하지 않습니다.";
+            return false;
+        }
+
+        if (!string.Equals(selection.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase))
+        {
+            failReason = "대기 중인 효과와 카드 선택 액션의 effectRef가 일치하지 않습니다.";
+            return false;
+        }
+
+        string selectedCardInstanceId = ResolveSelectedCardInstanceId(action);
+        if (string.IsNullOrWhiteSpace(selectedCardInstanceId))
+        {
+            failReason = "선택한 카드 ID가 없습니다.";
+            return false;
+        }
+
+        if (!IsPendingSelectionCardCandidate(selection, selectedCardInstanceId))
+        {
+            failReason = "선택할 수 없는 카드입니다.";
+            return false;
+        }
+
+        selectedCard = FindMainDeckCardByInstanceId(selection.requestedPlayer, selectedCardInstanceId);
+        if (selectedCard == null)
+        {
+            failReason = "선택한 카드가 더 이상 덱에 없습니다.";
+            return false;
+        }
+
+        BaseCardData idolCard = GetIdolCardFromExternal(selection.requestedPlayer);
+        int cost = GetActiveCost(idolCard);
+        if (!CanPayViewerCostFromExternal(selection.requestedPlayer, cost))
+        {
+            failReason = "시청자가 부족합니다.";
+            return false;
+        }
+
+        if (HasUsedIdolActiveThisTurn(selection.requestedPlayer))
+        {
+            failReason = "이미 이번 턴에 아이돌 액티브 효과를 사용했습니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private string ResolveSelectedCardInstanceId(BattleAction action)
+    {
+        if (action == null)
+            return "";
+
+        if (action.selectedCardIds != null && action.selectedCardIds.Count > 0)
+            return action.selectedCardIds[0];
+
+        return "";
+    }
+
+    private bool IsPendingSelectionCardCandidate(PendingOnlineSelection selection, string cardInstanceId)
+    {
+        if (selection == null ||
+            selection.candidateCardInstanceIds == null ||
+            string.IsNullOrWhiteSpace(cardInstanceId))
+        {
+            return false;
+        }
+
+        foreach (string candidateId in selection.candidateCardInstanceIds)
+        {
+            if (string.Equals(candidateId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private void RejectPendingOnlineSelection(BattleAction action, string reason)
+    {
+        if (action == null || string.IsNullOrWhiteSpace(action.selectionRequestId))
+            return;
+
+        if (!pendingOnlineSelectionsByRequestId.TryGetValue(action.selectionRequestId, out PendingOnlineSelection selection) ||
+            selection == null)
+            return;
+
+        bool actorMatches = action.actor == selection.requestedPlayer;
+        bool effectRefMatches = string.Equals(selection.effectRef, action.effectRef, StringComparison.OrdinalIgnoreCase);
+        bool shouldCompletePending = actorMatches && effectRefMatches;
+
+        if (shouldCompletePending)
+            CompletePendingOnlineSelection(action.selectionRequestId, $"Rejected:{reason}");
+
+        Debug.LogWarning(
+            $"[OnlineSelectionFlow][RejectResponse] requestId={action.selectionRequestId}, " +
+            $"actor={action.actor}, effectRef={action.effectRef}, reason={reason}, " +
+            $"pendingCompleted={shouldCompletePending}");
+    }
+
+    private void RejectPendingOnlineSelectionCancel(BattleAction action, string reason)
+    {
+        if (action == null)
+            return;
+
+        Debug.LogWarning(
+            $"[OnlineSelectionFlow][RejectCancel] requestId={action.selectionRequestId ?? ""}, " +
+            $"actor={action.actor}, effectRef={action.effectRef ?? ""}, reason={reason}, " +
+            $"pendingCompleted=False");
+    }
+
+    private string ResolveSelectionTargetSlotId(BattleAction action)
+    {
+        if (action == null)
+            return "";
+
+        if (!string.IsNullOrWhiteSpace(action.targetSlotId))
+            return action.targetSlotId;
+
+        if (action.selectedTargetIds != null && action.selectedTargetIds.Count > 0)
+            return action.selectedTargetIds[0];
+
+        return "";
+    }
+
+    private bool IsPendingSelectionCandidate(PendingOnlineSelection selection, string slotId)
+    {
+        if (selection == null ||
+            selection.candidateSlotIds == null ||
+            string.IsNullOrWhiteSpace(slotId))
+        {
+            return false;
+        }
+
+        foreach (string candidateSlotId in selection.candidateSlotIds)
+        {
+            if (string.Equals(candidateSlotId, slotId, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
         return false;
     }
 
@@ -6468,6 +8456,8 @@ public class BattleManager : MonoBehaviour
             });
         }
 
+        AddUseContentActionStateDelta(result, result.actor, card);
+
         OnlineEffectResolveResult effectResult =
             new OnlineEffectResolver(this).ResolveForHost(action, card, result.actor);
 
@@ -6488,6 +8478,13 @@ public class BattleManager : MonoBehaviour
         result.selectionRequests.AddRange(effectResult.selectionRequests);
         result.messageDeltas.AddRange(effectResult.messageDeltas);
         result.effectMessages.AddRange(effectResult.messages);
+
+        if (string.Equals(effectResult.usedEffectRef, "content.removeAllLastingContentsOnBoard", StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.Log(
+                $"[OnlineEffectSimpleDelta][RemoveLasting] source={card?.cardInstanceId ?? action?.cardInstanceId ?? ""}, " +
+                $"removedCount={effectResult.zoneMoveDeltas.Count}, actor={result.actor}");
+        }
 
         foreach (CardZoneMoveDelta delta in effectResult.zoneMoveDeltas)
         {
@@ -6560,13 +8557,13 @@ public class BattleManager : MonoBehaviour
             $"시청자 -{result.paidViewerCost}");
 
         Debug.Log(
-            $"[OnlineUseContent] Applied UseContentResult. " +
+            $"[OnlineUseContent] Applied final UseContentResult. " +
             $"actor={result.actor}, effectRef={result.resolvedEffectRef}, " +
             $"cost={result.paidViewerCost}, zoneMoves={result.cardZoneMoveDeltas?.Count ?? 0}, " +
             $"viewerAfter={myPlayer?.viewers}/{enemyPlayer?.viewers}");
     }
 
-    public void ApplyUseIdolActiveSelectionRequestFromResult(BattleActionResult result)
+    public void ApplyOnlineSelectionRequestFromResult(BattleActionResult result)
     {
         if (result == null || !result.isAccepted)
             return;
@@ -6575,23 +8572,47 @@ public class BattleManager : MonoBehaviour
         onlineUseContentRequestPending = false;
         onlineUseCharacterActiveRequestPending = false;
 
+        if (HasImmediateDeltas(result))
+        {
+            ApplyEffectDeltasFromResult(result);
+            ApplyBattleCountSnapshot(result);
+            RefreshAllUI();
+        }
+
         SelectionRequestDelta request = result.selectionRequests != null && result.selectionRequests.Count > 0
             ? result.selectionRequests[0]
             : null;
 
         if (request == null)
         {
-            SetSystemMessage("아이돌 액티브 선택 요청 정보가 없습니다.");
-            SetBattleBusy(false, "UseIdolActiveSelectionRequest missing");
+            SetSystemMessage("온라인 선택 요청 정보가 없습니다.");
+            SetBattleBusy(false, "OnlineSelectionRequest missing");
             return;
         }
 
+        int candidateCount = request.candidateTargets != null ? request.candidateTargets.Count : 0;
+        int privateCandidateCount = request.candidatePrivateIdsForOwnerOnly != null
+            ? request.candidatePrivateIdsForOwnerOnly.Count
+            : 0;
+        Debug.Log(
+            $"[OnlineSelection] Received selection request. requestedPlayer={request.requestedPlayer}, " +
+            $"localPlayer={BattleSlotOwner.My}, candidates={candidateCount}, privateCandidates={privateCandidateCount}");
+
         if (request.requestedPlayer != BattleSlotOwner.My)
         {
+            Debug.Log(
+                $"[OnlineSelection] Waiting opponent selection. effectRef={request.sourceEffectRef}, " +
+                $"requestId={request.requestId}");
             activeOnlineSelectionRequest = null;
             ClearPendingFieldSlotSelection(false);
             SetBattleBusy(true, "WaitingOpponentEffectSelection");
             SetSystemMessage("상대가 효과 대상을 선택 중입니다.");
+            return;
+        }
+
+        if (string.Equals(request.selectionType, "PrivateDeckCard", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyPrivateDeckCardSelectionRequest(request);
             return;
         }
 
@@ -6612,17 +8633,37 @@ public class BattleManager : MonoBehaviour
         if (candidates.Count == 0)
         {
             SetSystemMessage("선택 가능한 효과 대상이 없습니다.");
-            SetBattleBusy(false, "UseIdolActiveSelectionRequest no candidates");
+            SetBattleBusy(false, "OnlineSelectionRequest no candidates");
             return;
         }
 
         activeOnlineSelectionRequest = request;
+        if (string.Equals(request.selectionType, "ChooseBoongCostForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.Log(
+                $"[BattleManager] Show enhanced boong cost selection requestId={request.requestId}, " +
+                $"candidates={candidates.Count}");
+        }
+
         bool opened = RequestFieldSlotSelection(
             string.IsNullOrWhiteSpace(request.promptText) ? "효과 대상을 선택하세요." : request.promptText,
             candidates,
             selectedSlot => RequestSelectEffectTargetActionFromExternal(request.sourceEffectRef, selectedSlot),
             () =>
             {
+                if (string.Equals(request.cancelPolicy, "AllowCancel", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(request.selectionType, "ChooseBoongCostForEnhancedTabiIdolActive", StringComparison.OrdinalIgnoreCase))
+                {
+                    RequestSelectEffectChoiceActionFromExternal(request.sourceEffectRef, "tabiIdolEnhance", "basic");
+                    return;
+                }
+
+                if (string.Equals(request.cancelPolicy, "AllowCancel", StringComparison.OrdinalIgnoreCase))
+                {
+                    RequestSelectEffectChoiceActionFromExternal(request.sourceEffectRef, "publicSelection", "cancel");
+                    return;
+                }
+
                 activeOnlineSelectionRequest = null;
                 SetSystemMessage("온라인 효과 대상 선택은 취소할 수 없습니다.");
             },
@@ -6631,8 +8672,109 @@ public class BattleManager : MonoBehaviour
         if (!opened)
         {
             activeOnlineSelectionRequest = null;
-            SetBattleBusy(false, "UseIdolActiveSelectionRequest open failed");
+            SetBattleBusy(false, "OnlineSelectionRequest open failed");
         }
+    }
+
+    private bool HasImmediateDeltas(BattleActionResult result)
+    {
+        return result != null &&
+            ((result.viewerDeltas != null && result.viewerDeltas.Count > 0) ||
+             (result.fieldStatDeltas != null && result.fieldStatDeltas.Count > 0) ||
+             (result.cardZoneMoveDeltas != null && result.cardZoneMoveDeltas.Count > 0) ||
+             (result.fieldContentDeltas != null && result.fieldContentDeltas.Count > 0) ||
+             (result.cardRevealDeltas != null && result.cardRevealDeltas.Count > 0) ||
+             (result.cardDrawDeltas != null && result.cardDrawDeltas.Count > 0) ||
+             (result.deckOrderDeltas != null && result.deckOrderDeltas.Count > 0) ||
+             (result.statusDeltas != null && result.statusDeltas.Count > 0) ||
+             (result.actionStateDeltas != null && result.actionStateDeltas.Count > 0));
+    }
+
+    private void ApplyPrivateDeckCardSelectionRequest(SelectionRequestDelta request)
+    {
+        if (request == null)
+            return;
+
+        List<CardQuestionOption> options = BuildPrivateDeckSelectionOptions(request);
+        if (options.Count == 0)
+        {
+            SetSystemMessage("선택 가능한 덱 카드가 없습니다.");
+            SetBattleBusy(false, "PrivateDeckSelection no candidates");
+            return;
+        }
+
+        if (cardQuestionPanel == null)
+        {
+            SetSystemMessage("CardQuestionPanel이 연결되어 있지 않습니다.");
+            SetBattleBusy(false, "PrivateDeckSelection missing panel");
+            return;
+        }
+
+        activeOnlineSelectionRequest = request;
+        bool opened = cardQuestionPanel.TryShowOptions(
+            string.IsNullOrWhiteSpace(request.promptText) ? "덱에서 카드 1장을 선택하세요." : request.promptText,
+            options,
+            CardQuestionCancelPolicy.DisallowCancel,
+            selectedOption =>
+            {
+                BaseCardData selectedCard = selectedOption != null ? selectedOption.card : null;
+                int selectedIndex = selectedCard != null
+                    ? FindPrivateSelectionOptionIndex(options, selectedCard.cardInstanceId)
+                    : -1;
+                RequestSelectCardOptionActionFromExternal(
+                    request.sourceEffectRef,
+                    selectedIndex,
+                    selectedCard != null ? selectedCard.cardInstanceId : "");
+            },
+            () =>
+            {
+                activeOnlineSelectionRequest = null;
+                SetSystemMessage("온라인 카드 선택은 취소할 수 없습니다.");
+            });
+
+        if (!opened)
+        {
+            activeOnlineSelectionRequest = null;
+            SetBattleBusy(false, "PrivateDeckSelection open failed");
+        }
+        else
+        {
+            SetBattleBusy(true, "PrivateDeckSelection");
+        }
+    }
+
+    private List<CardQuestionOption> BuildPrivateDeckSelectionOptions(SelectionRequestDelta request)
+    {
+        List<CardQuestionOption> options = new List<CardQuestionOption>();
+        if (request == null || request.candidatePrivateIdsForOwnerOnly == null)
+            return options;
+
+        foreach (string cardInstanceId in request.candidatePrivateIdsForOwnerOnly)
+        {
+            BaseCardData card = FindMainDeckCardByInstanceId(BattleSlotOwner.My, cardInstanceId);
+            if (card != null)
+                options.Add(new CardQuestionOption(card));
+        }
+
+        return options;
+    }
+
+    private int FindPrivateSelectionOptionIndex(List<CardQuestionOption> options, string cardInstanceId)
+    {
+        if (options == null || string.IsNullOrWhiteSpace(cardInstanceId))
+            return -1;
+
+        for (int i = 0; i < options.Count; i++)
+        {
+            BaseCardData card = options[i] != null ? options[i].card : null;
+            if (card != null &&
+                string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     public void ApplySelectEffectTargetFromResult(BattleActionResult result)
@@ -6669,6 +8811,10 @@ public class BattleManager : MonoBehaviour
             : string.Equals(
                 result.resolvedEffectRef,
                 "character.active.modifyTaggedOnBoard",
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(
+                result.resolvedEffectRef,
+                "character.active.adjacentHpDownAndTensionUpForTag",
                 StringComparison.OrdinalIgnoreCase)
                 ? BattleActionType.UseCharacterActive
                 : BattleActionType.UseIdolActive;
@@ -6695,35 +8841,163 @@ public class BattleManager : MonoBehaviour
         Debug.Log(
             $"[OnlineSelection] Applied SelectEffectTargetResult. actor={result.actor}, " +
             $"effectRef={result.resolvedEffectRef}, fieldStats={result.fieldStatDeltas?.Count ?? 0}");
+
+        if (string.Equals(
+            result.resolvedEffectRef,
+            "content.moveOwnCharToEmptyOrBattleIfTagged",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.Log(
+                $"[OnlineUseContent] Applied final UseContentResult. actor={result.actor}, " +
+                $"effectRef={result.resolvedEffectRef}, cost={result.paidViewerCost}, " +
+                $"zoneMoves={result.cardZoneMoveDeltas?.Count ?? 0}, actionStates={result.actionStateDeltas?.Count ?? 0}");
+        }
+    }
+
+    public void ApplySelectCardOptionFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineUseIdolActiveRequestPending = false;
+        onlineUseContentRequestPending = false;
+        onlineUseCharacterActiveRequestPending = false;
+        activeOnlineSelectionRequest = null;
+        ClearPendingFieldSlotSelection(false);
+        if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+            cardQuestionPanel.Hide();
+
+        ApplyEffectDeltasFromResult(result);
+
+        bool hasActionStateDelta = result.actionStateDeltas != null && result.actionStateDeltas.Count > 0;
+        if (hasActionStateDelta)
+        {
+            MarkOnlinePlayerUsedActionFromExternal(
+                result.actor,
+                BattleActionType.UseIdolActive);
+
+            if (result.actor == BattleSlotOwner.My)
+                myActionUsedThisActionTurn = true;
+        }
+
+        turnCount = Mathf.Max(1, result.turnCount);
+
+        ApplyBattleCountSnapshot(result);
+        SetBattleBusy(false, "SelectCardOptionResult applied");
+        RefreshAllUI();
+
+        SetSystemMessage(
+            result.actor == BattleSlotOwner.My
+                ? "덱에서 카드를 손패에 추가했습니다."
+                : "상대가 덱에서 카드 1장을 손패에 추가했습니다.");
+
+        Debug.Log(
+            $"[OnlinePrivateSelection] Applied SelectCardOptionResult. actor={result.actor}, " +
+            $"effectRef={result.resolvedEffectRef}, draws={result.cardDrawDeltas?.Count ?? 0}, " +
+            $"hasActionStateDelta={hasActionStateDelta}, currentActionSide={currentActionSide}, " +
+            $"myActionUsed={myActionUsedThisActionTurn}");
+    }
+
+    public void ApplySelectEffectChoiceFromResult(BattleActionResult result)
+    {
+        if (result == null || !result.isAccepted)
+            return;
+
+        onlineUseIdolActiveRequestPending = false;
+        onlineUseContentRequestPending = false;
+        onlineUseCharacterActiveRequestPending = false;
+        activeOnlineSelectionRequest = null;
+        ClearPendingFieldSlotSelection(false);
+        if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+            cardQuestionPanel.Hide();
+
+        ApplyEffectDeltasFromResult(result);
+
+        bool hasActionStateDelta = result.actionStateDeltas != null && result.actionStateDeltas.Count > 0;
+        if (hasActionStateDelta)
+        {
+            MarkOnlinePlayerUsedActionFromExternal(
+                result.actor,
+                BattleActionType.UseIdolActive);
+
+            if (result.actor == BattleSlotOwner.My)
+                myActionUsedThisActionTurn = true;
+        }
+        else
+        {
+            Debug.Log(
+                $"[OnlineActionStateAudit][Skip] reason=NoActionStateDelta, action={result.requestActionType}, " +
+                $"actor={result.actor}, effectRef={result.resolvedEffectRef}");
+        }
+
+        currentActionSide = result.currentTurnPlayer == BattleSlotOwner.My
+            ? BattlePlayerSide.My
+            : BattlePlayerSide.Enemy;
+        turnCount = Mathf.Max(1, result.turnCount);
+
+        ApplyBattleCountSnapshot(result);
+        SetBattleBusy(false, "SelectEffectChoiceResult applied");
+        RefreshAllUI();
+
+        SetSystemMessage(
+            !string.IsNullOrWhiteSpace(result.message)
+                ? result.message
+                : "효과 선택 결과가 적용되었습니다.");
+
+        Debug.Log(
+            $"[OnlineSelection] Applied SelectEffectChoiceResult. actor={result.actor}, " +
+            $"effectRef={result.resolvedEffectRef}, applied={result.effectApplied}, " +
+            $"hasActionStateDelta={hasActionStateDelta}");
+        Debug.Log(
+            $"[OnlineSelectionFlow][CancelApply] requestId=, clearedBusy=True, " +
+            $"effectRef={result.resolvedEffectRef}, applied={result.effectApplied}");
     }
 
     private void ApplyOnlineEffectMoveFromSelectionResult(BattleActionResult result)
     {
-        string sourceSlotId = result != null && result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
+        CardZoneMoveDelta moveDelta = FindFieldCharacterMoveDelta(result);
+        string sourceSlotId = moveDelta != null && !string.IsNullOrWhiteSpace(moveDelta.fromSlotId)
+            ? moveDelta.fromSlotId
+            : result != null && result.affectedSlotIds != null && result.affectedSlotIds.Count > 0
             ? result.affectedSlotIds[0]
             : "";
-        string targetSlotId = result != null && result.affectedSlotIds != null && result.affectedSlotIds.Count > 1
+        string targetSlotId = moveDelta != null && !string.IsNullOrWhiteSpace(moveDelta.toSlotId)
+            ? moveDelta.toSlotId
+            : result != null && result.affectedSlotIds != null && result.affectedSlotIds.Count > 1
             ? result.affectedSlotIds[1]
             : "";
-        string characterInstanceId = result != null && result.affectedCardIds != null && result.affectedCardIds.Count > 1
+        string characterInstanceId = moveDelta != null && !string.IsNullOrWhiteSpace(moveDelta.cardInstanceId)
+            ? moveDelta.cardInstanceId
+            : result != null && result.affectedCardIds != null && result.affectedCardIds.Count > 1
             ? result.affectedCardIds[1]
             : "";
+        string characterCardId = moveDelta != null ? moveDelta.cardId : "";
+        BattleSlotOwner characterOwner = moveDelta != null
+            ? moveDelta.owner
+            : result.characterOwner;
 
         BattleFieldSlot sourceSlot = FindSlotById(sourceSlotId);
         BattleFieldSlot targetSlot = FindSlotById(targetSlotId);
         BaseCardData card = sourceSlot != null ? sourceSlot.characterCard : null;
+        if (card == null ||
+            (!string.IsNullOrWhiteSpace(characterCardId) &&
+             !string.Equals(card.id, characterCardId, StringComparison.OrdinalIgnoreCase)))
+        {
+            card = CreateRuntimePublicCardFromId(characterCardId, characterInstanceId, characterOwner);
+        }
 
         if (sourceSlot == null || targetSlot == null || card == null)
         {
             Debug.LogWarning(
-                $"[OnlineSelection] Effect move apply failed. source={sourceSlotId}, target={targetSlotId}, card={characterInstanceId}");
+                $"[OnlineMoveTaggedContentApply] failed. actor={result?.actor}, " +
+                $"from={sourceSlotId}, to={targetSlotId}, cardInstanceId={characterInstanceId}, cardId={characterCardId}");
             return;
         }
 
         if (targetSlot.HasCharacter)
         {
             Debug.LogWarning(
-                $"[OnlineSelection] Effect move target already occupied. target={targetSlotId}");
+                $"[OnlineMoveTaggedContentApply] target already occupied. target={targetSlotId}");
             return;
         }
 
@@ -6731,19 +9005,37 @@ public class BattleManager : MonoBehaviour
             !string.Equals(card.cardInstanceId, characterInstanceId, StringComparison.OrdinalIgnoreCase))
         {
             Debug.LogWarning(
-                $"[OnlineSelection] Effect move card mismatch. result={characterInstanceId}, source={card.cardInstanceId}");
+                $"[OnlineMoveTaggedContentApply] card mismatch. result={characterInstanceId}, source={card.cardInstanceId}");
         }
 
-        Sprite sprite = sourceSlot.GetCurrentCharacterSprite();
-        if (sprite == null)
+        bool faceDown = moveDelta != null ? moveDelta.faceDown : result.faceDown;
+        Sprite sprite = faceDown ? cardBackSprite : sourceSlot.GetCurrentCharacterSprite();
+        if (sprite == null && !faceDown)
             sprite = LoadCardSprite(card);
+        if (sprite == null)
+        {
+            sprite = cardBackSprite;
+            Debug.LogWarning(
+                $"[OnlineMoveTaggedContentApply] sprite fallback used. " +
+                $"cardInstanceId={characterInstanceId}, cardId={card.id}, faceDown={faceDown}");
+        }
 
         int movementLockedUntilTurn = sourceSlot.movementLockedByBroadcastUntilTurn;
         int collabEffectsSilencedUntilTurn = sourceSlot.collabEffectsSilencedUntilTurn;
         int collabAttackForbiddenUntilTurn = sourceSlot.collabAttackForbiddenUntilTurn;
         int broadcastHpMaxDelta = sourceSlot.broadcastHpMaxDelta;
 
-        targetSlot.SetCharacterCard(card, sprite, result.faceDown, result.characterOwner);
+        Debug.Log(
+            $"[OnlineMoveTaggedContentApply] actor={result.actor}, from={sourceSlotId}, to={targetSlotId}, " +
+            $"cardInstanceId={characterInstanceId}, cardId={card.id}, owner={characterOwner}, " +
+            $"faceUp={!faceDown}, localOwner={BattleSlotOwner.My}");
+
+        Debug.Log(
+            $"[OnlineOwnerAudit][MoveTaggedApply] local={BattleSlotOwner.My}, toSlot={targetSlotId}, " +
+            $"slotOwner={targetSlot.owner}, characterOwner={characterOwner}, " +
+            $"isMine={characterOwner == BattleSlotOwner.My}, cardId={card.id}");
+
+        targetSlot.SetCharacterCard(card, sprite, faceDown, characterOwner);
         targetSlot.SetCharacterBattleStats(
             result.characterCurrentHp,
             result.characterCurrentMaxHp,
@@ -6760,8 +9052,48 @@ public class BattleManager : MonoBehaviour
         sourceSlot.ClearCharacterCard();
 
         Debug.Log(
-            $"[OnlineSelection] Effect move applied. card={card.cardInstanceId}, " +
-            $"source={sourceSlotId}, target={targetSlotId}, movedThisTurn={result.characterMovedThisTurn}");
+            $"[OnlineMoveTaggedContentApply] after toSlot occupied={targetSlot.HasCharacter} " +
+            $"spriteSet={targetSlot.GetCurrentCharacterSprite() != null} card={targetSlot.characterCard?.id ?? ""}, " +
+            $"instance={targetSlot.characterCard?.cardInstanceId ?? ""}");
+    }
+
+    private CardZoneMoveDelta FindFieldCharacterMoveDelta(BattleActionResult result)
+    {
+        if (result == null || result.cardZoneMoveDeltas == null)
+            return null;
+
+        foreach (CardZoneMoveDelta delta in result.cardZoneMoveDeltas)
+        {
+            if (delta == null)
+                continue;
+
+            if (string.Equals(delta.fromZone, "FieldCharacter", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(delta.toZone, "FieldCharacter", StringComparison.OrdinalIgnoreCase))
+            {
+                return delta;
+            }
+        }
+
+        return null;
+    }
+
+    private BaseCardData CreateRuntimePublicCardFromId(
+        string cardId,
+        string cardInstanceId,
+        BattleSlotOwner owner)
+    {
+        if (string.IsNullOrWhiteSpace(cardId))
+            return null;
+
+        BaseCardData sourceCard = FindCardById(cardId);
+        if (sourceCard == null)
+            return null;
+
+        BaseCardData runtimeCard = CreateRuntimeCardInstance(sourceCard, owner.ToString());
+        if (!string.IsNullOrWhiteSpace(cardInstanceId))
+            runtimeCard.cardInstanceId = cardInstanceId;
+
+        return runtimeCard;
     }
 
     public void ApplyEffectDeltasFromResult(BattleActionResult result)
@@ -6780,10 +9112,10 @@ public class BattleManager : MonoBehaviour
         ApplyOnlineMessageDeltas(result);
         ApplyOnlineViewerDeltas(result);
         ApplyOnlineCardRevealDeltas(result);
-        ApplyOnlineCardZoneMoveDeltas(result);
-        ApplyOnlineCardDrawDeltas(result);
         ApplyOnlineFieldContentDeltas(result);
         ApplyOnlineFieldStatDeltas(result);
+        ApplyOnlineCardZoneMoveDeltas(result);
+        ApplyOnlineCardDrawDeltas(result);
         ApplyOnlineStatusDeltas(result);
         ApplyOnlineActionStateDeltas(result);
         ApplyOnlineDeckOrderDeltas(result);
@@ -6849,6 +9181,13 @@ public class BattleManager : MonoBehaviour
                 string.Equals(delta.toZone, "RestZone", StringComparison.OrdinalIgnoreCase))
             {
                 ApplyFieldContentToRestZoneDelta(delta);
+                continue;
+            }
+
+            if (string.Equals(delta.fromZone, "FieldCharacter", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(delta.toZone, "RestZone", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyFieldCharacterToRestZoneDelta(delta);
             }
         }
     }
@@ -6858,8 +9197,47 @@ public class BattleManager : MonoBehaviour
         if (result == null || result.cardDrawDeltas == null || result.cardDrawDeltas.Count == 0)
             return;
 
-        Debug.LogWarning(
-            $"[EffectDelta] CardDrawDelta apply is not implemented yet. count={result.cardDrawDeltas.Count}");
+        foreach (CardDrawDelta delta in result.cardDrawDeltas)
+        {
+            if (delta == null || !delta.toHand)
+                continue;
+
+            bool applied = false;
+            if (delta.owner == BattleSlotOwner.My &&
+                !string.IsNullOrWhiteSpace(delta.cardInstanceId))
+            {
+                applied = DrawMainDeckCardByInstanceId(delta.owner, delta.cardInstanceId);
+            }
+            else
+            {
+                applied = ApplyPrivateOpponentDeckToHandCountOnly(delta.owner);
+            }
+
+            Debug.Log(
+                $"[EffectDelta] CardDrawDelta applied. owner={delta.owner}, " +
+                $"ownerOnly={delta.visibleToOwnerOnly}, hasPrivateId={!string.IsNullOrWhiteSpace(delta.cardInstanceId)}, " +
+                $"applied={applied}");
+        }
+    }
+
+    private bool ApplyPrivateOpponentDeckToHandCountOnly(BattleSlotOwner owner)
+    {
+        BattlePlayerRuntime player = GetPlayerRuntime(owner);
+        if (player == null || player.mainDeck == null || player.hand == null)
+            return false;
+
+        if (player.mainDeck.Count > 0)
+            player.mainDeck.RemoveAt(0);
+
+        player.hand.Add(new BaseCardData
+        {
+            id = "PRIVATE_UNKNOWN",
+            name = "비공개 카드",
+            kind = "Private",
+            cardInstanceId = ""
+        });
+
+        return true;
     }
 
     private void ApplyOnlineFieldContentDeltas(BattleActionResult result)
@@ -6946,10 +9324,16 @@ public class BattleManager : MonoBehaviour
 
             if (string.Equals(delta.actionStateType, "IdolActiveUsedThisTurn", StringComparison.OrdinalIgnoreCase))
             {
+                OnlineBattleSession session = BattleStartSettings.IsOnlineBattle
+                    ? OnlineBattleSession.Instance ?? FindAnyObjectByType<OnlineBattleSession>()
+                    : null;
                 SetIdolActiveUsedThisTurn(delta.owner, delta.after);
                 Debug.Log(
-                    $"[EffectDelta] IdolActiveUsedThisTurn applied. owner={delta.owner}, " +
-                    $"before={delta.before}, after={delta.after}, turn={delta.turn}");
+                    $"[EffectDelta] IdolActiveUsedThisTurn applied. " +
+                    $"localActor={session?.LocalActorNumber ?? 0}, resultActor={result.actor}, " +
+                    $"targetOwner={delta.owner}, before={delta.before}, after={delta.after}, " +
+                    $"turn={delta.turn}, currentActionSide={currentActionSide}, " +
+                    $"onlineActed={onlineHostActedInCurrentPassCycle}/{onlineClientActedInCurrentPassCycle}");
                 continue;
             }
 
@@ -6969,6 +9353,14 @@ public class BattleManager : MonoBehaviour
                         $"[EffectDelta] CharacterActiveUsedThisTurn target missing. slot={delta.slotId}, card={delta.cardInstanceId}");
                 }
 
+                continue;
+            }
+
+            if (string.Equals(delta.actionStateType, "UseContent", StringComparison.OrdinalIgnoreCase))
+            {
+                Debug.Log(
+                    $"[EffectDelta] UseContent action state applied. owner={delta.owner}, " +
+                    $"card={delta.cardInstanceId}, before={delta.before}, after={delta.after}, turn={delta.turn}");
                 continue;
             }
 
@@ -7033,6 +9425,36 @@ public class BattleManager : MonoBehaviour
         Debug.Log(
             $"[OnlineUseContent] Applied FieldContent->Rest delta. " +
             $"slot={delta.fromSlotId}, card={removedCard.cardInstanceId}/{removedCard.id}, restOwner={delta.owner}");
+    }
+
+    private void ApplyFieldCharacterToRestZoneDelta(CardZoneMoveDelta delta)
+    {
+        BattleFieldSlot slot = FindSlotById(delta.fromSlotId);
+        if (slot == null || !slot.HasCharacter || slot.characterCard == null)
+        {
+            Debug.LogWarning(
+                $"[OnlineSelection] FieldCharacter->Rest delta target missing. " +
+                $"slot={delta.fromSlotId}, card={delta.cardInstanceId}");
+            return;
+        }
+
+        BaseCardData removedCard = slot.characterCard;
+        BattleSlotOwner restOwner = slot.characterOwner;
+
+        if (!string.IsNullOrWhiteSpace(delta.cardInstanceId) &&
+            !string.Equals(removedCard.cardInstanceId, delta.cardInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning(
+                $"[OnlineSelection] FieldCharacter->Rest delta card mismatch. " +
+                $"slot={delta.fromSlotId}, result={delta.cardInstanceId}, slotCard={removedCard.cardInstanceId}");
+        }
+
+        AddToRestZoneFromExternal(removedCard, restOwner);
+        slot.ClearCharacterCard();
+
+        Debug.Log(
+            $"[OnlineSelection] Applied FieldCharacter->Rest delta. " +
+            $"slot={delta.fromSlotId}, card={removedCard.cardInstanceId}/{removedCard.id}, restOwner={restOwner}");
     }
 
     private bool HasOnlineSummonedFaceDownThisTurn(BattleSlotOwner actor)
@@ -8740,6 +11162,53 @@ public class BattleManager : MonoBehaviour
         return targetPlayer.mainDeck.Remove(card);
     }
 
+    private BaseCardData FindMainDeckCardByInstanceId(BattleSlotOwner owner, string cardInstanceId)
+    {
+        BattlePlayerRuntime targetPlayer = GetPlayerRuntime(owner);
+
+        if (targetPlayer == null ||
+            targetPlayer.mainDeck == null ||
+            string.IsNullOrWhiteSpace(cardInstanceId))
+        {
+            return null;
+        }
+
+        foreach (BaseCardData card in targetPlayer.mainDeck)
+        {
+            if (card == null)
+                continue;
+
+            if (string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+                return card;
+        }
+
+        return null;
+    }
+
+    private int FindMainDeckCardIndexByInstanceId(BattleSlotOwner owner, string cardInstanceId)
+    {
+        BattlePlayerRuntime targetPlayer = GetPlayerRuntime(owner);
+
+        if (targetPlayer == null ||
+            targetPlayer.mainDeck == null ||
+            string.IsNullOrWhiteSpace(cardInstanceId))
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < targetPlayer.mainDeck.Count; i++)
+        {
+            BaseCardData card = targetPlayer.mainDeck[i];
+            if (card == null)
+                continue;
+
+            if (string.Equals(card.cardInstanceId, cardInstanceId, StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+
+        return -1;
+    }
+
     public void AddCardToHandFromExternal(BattleSlotOwner owner, BaseCardData card)
     {
         if (card == null)
@@ -9380,6 +11849,140 @@ public class BattleManager : MonoBehaviour
         }
 
         return false;
+    }
+
+    private List<BaseCardData> BuildOnlineDeckTaggedCardCandidates(
+        BattleSlotOwner owner,
+        string tag)
+    {
+        List<BaseCardData> candidates = new List<BaseCardData>();
+        BattlePlayerRuntime player = GetPlayerRuntime(owner);
+
+        if (player == null || player.mainDeck == null)
+            return candidates;
+
+        foreach (BaseCardData card in player.mainDeck)
+        {
+            if (card == null)
+                continue;
+
+            if (CardHasHashtag(card, tag))
+                candidates.Add(card);
+        }
+
+        return candidates;
+    }
+
+    private List<BattleFieldSlot> BuildOnlineBoongCostSlots(
+        BattleSlotOwner owner,
+        string tag)
+    {
+        List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
+        AddOnlineBoongCostSlots(candidates, myBattleSlots, owner, tag);
+        AddOnlineBoongCostSlots(candidates, enemyBattleSlots, owner, tag);
+        return candidates;
+    }
+
+    private void LogOnlineTabiIdolEnhancedCheck(
+        BattleSlotOwner actor,
+        string effectRef,
+        int deckTabiCandidateCount,
+        int deckBoongCandidateCount,
+        int fieldBoongCandidateCount,
+        bool enhancedAvailable,
+        string bunnyTag)
+    {
+        Debug.Log(
+            $"[OnlineTabiIdolEnhancedCheck] actor={actor} effectRef={effectRef} " +
+            $"tabiDeck={deckTabiCandidateCount} boongDeck={deckBoongCandidateCount} " +
+            $"fieldBoong={fieldBoongCandidateCount} enhanced={enhancedAvailable}");
+
+        LogOnlineTabiIdolEnhancedSlots(myBattleSlots, actor, bunnyTag);
+        LogOnlineTabiIdolEnhancedSlots(enemyBattleSlots, actor, bunnyTag);
+    }
+
+    private void LogOnlineTabiIdolEnhancedSlots(
+        List<BattleFieldSlot> slots,
+        BattleSlotOwner actor,
+        string bunnyTag)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (slot == null)
+                continue;
+
+            string reason = GetOnlineBoongCostSlotRejectReason(slot, actor, bunnyTag);
+            bool included = string.IsNullOrWhiteSpace(reason);
+            BaseCardData card = slot.characterCard;
+            bool hasBoongTag = card != null && CardHasHashtag(card, bunnyTag);
+            Debug.Log(
+                $"[OnlineTabiIdolEnhancedCheck] slot={slot.GetSlotId()} " +
+                $"cardId={card?.id ?? ""} cardName={card?.name ?? ""} " +
+                $"owner={slot.characterOwner} slotOwner={slot.owner} " +
+                $"faceUp={!slot.isCharacterFaceDown} hasBoong={hasBoongTag} " +
+                $"hasBroadcast={slot.HasBroadcast} included={included}" +
+                (included ? "" : $" reason={reason}"));
+            Debug.Log(
+                $"[OnlineLocalParity][TabiEnhanced] slot={slot.GetSlotId()}, " +
+                $"localWouldInclude={included}, onlineIncluded={included}, " +
+                $"reason={(included ? "MatchLocalOwnBroadcastFaceUpTaggedCharacter" : reason)}");
+        }
+    }
+
+    private void AddOnlineBoongCostSlots(
+        List<BattleFieldSlot> candidates,
+        List<BattleFieldSlot> slots,
+        BattleSlotOwner owner,
+        string tag)
+    {
+        if (candidates == null || slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (IsOnlineBoongCostSlot(slot, owner, tag))
+                candidates.Add(slot);
+        }
+    }
+
+    private bool IsOnlineBoongCostSlot(
+        BattleFieldSlot slot,
+        BattleSlotOwner owner,
+        string tag)
+    {
+        return string.IsNullOrWhiteSpace(GetOnlineBoongCostSlotRejectReason(slot, owner, tag));
+    }
+
+    private string GetOnlineBoongCostSlotRejectReason(
+        BattleFieldSlot slot,
+        BattleSlotOwner owner,
+        string tag)
+    {
+        if (slot == null)
+            return "NullSlot";
+
+        if (slot.owner != owner)
+            return "NotActorOwnedBroadcastSlot";
+
+        if (!slot.HasCharacter)
+            return "NoCharacter";
+
+        if (slot.characterCard == null)
+            return "NoCharacterCard";
+
+        if (slot.characterOwner != owner)
+            return "NotActorOwnedCharacter";
+
+        if (slot.isCharacterFaceDown)
+            return "FaceDown";
+
+        if (!CardHasHashtag(slot.characterCard, tag))
+            return "MissingBoongTag";
+
+        return "";
     }
 
     private bool GetEffectBoolParamForBattleManager(
@@ -10926,6 +13529,8 @@ public class BattleManager : MonoBehaviour
         if (BattleStartSettings.IsOnlineBattle && activeOnlineSelectionRequest != null)
         {
             action.selectionRequestId = activeOnlineSelectionRequest.requestId;
+            action.cardInstanceId = activeOnlineSelectionRequest.sourceCardInstanceId;
+            action.sourceSlotId = activeOnlineSelectionRequest.sourceSlotId;
             return RequestSelectEffectTargetOnline(action);
         }
 
@@ -10943,6 +13548,8 @@ public class BattleManager : MonoBehaviour
         if (session == null)
         {
             SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            activeOnlineSelectionRequest = null;
+            ClearPendingFieldSlotSelection(false);
             return false;
         }
 
@@ -10950,6 +13557,8 @@ public class BattleManager : MonoBehaviour
         if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
         {
             SetSystemMessage("효과 대상 선택 전송에 실패했습니다.");
+            activeOnlineSelectionRequest = null;
+            ClearPendingFieldSlotSelection(false);
             return false;
         }
 
@@ -10968,10 +13577,56 @@ public class BattleManager : MonoBehaviour
     {
         BattleAction action = CreateSelectCardOptionAction(effectRef, selectedIndex, selectedCardId);
 
+        if (BattleStartSettings.IsOnlineBattle && activeOnlineSelectionRequest != null)
+        {
+            action.selectionRequestId = activeOnlineSelectionRequest.requestId;
+            action.cardInstanceId = activeOnlineSelectionRequest.sourceCardInstanceId;
+            return RequestSelectCardOptionOnline(action);
+        }
+
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
+    }
+
+    private bool RequestSelectCardOptionOnline(BattleAction action)
+    {
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            activeOnlineSelectionRequest = null;
+            if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+                cardQuestionPanel.Hide();
+            SetBattleBusy(false, "SelectCardOption session missing");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("카드 선택 전송에 실패했습니다.");
+            activeOnlineSelectionRequest = null;
+            if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+                cardQuestionPanel.Hide();
+            SetBattleBusy(false, "SelectCardOption send failed");
+            return false;
+        }
+
+        if (cardQuestionPanel != null && cardQuestionPanel.IsOpen())
+            cardQuestionPanel.Hide();
+        activeOnlineSelectionRequest = null;
+        SetBattleBusy(true, "OnlineCardSelectionResponsePending");
+        RefreshTurnEndButtonState();
+        SetSystemMessage("Host의 카드 선택 판정을 기다리고 있습니다.");
+        Debug.Log(
+            $"[OnlineSelection] SelectCardOption sent. requestId={action.selectionRequestId}, " +
+            $"effectRef={action.effectRef}, selectedCard={ResolveSelectedCardInstanceId(action)}");
+        return true;
     }
 
     public bool RequestSelectMultipleCardOptionsActionFromExternal(
@@ -10991,10 +13646,53 @@ public class BattleManager : MonoBehaviour
     {
         BattleAction action = CreateSelectEffectChoiceAction(effectRef, choiceId, choiceValue);
 
+        if (BattleStartSettings.IsOnlineBattle && activeOnlineSelectionRequest != null)
+        {
+            action.selectionRequestId = activeOnlineSelectionRequest.requestId;
+            action.cardInstanceId = activeOnlineSelectionRequest.sourceCardInstanceId;
+            return RequestSelectEffectChoiceOnline(action);
+        }
+
         if (actionExecutor == null)
             actionExecutor = new BattleActionExecutor(this);
 
         return actionExecutor.ExecuteAction(action);
+    }
+
+    private bool RequestSelectEffectChoiceOnline(BattleAction action)
+    {
+        OnlineBattleSession session = OnlineBattleSession.Instance;
+        if (session == null)
+            session = FindAnyObjectByType<OnlineBattleSession>();
+
+        if (session == null)
+        {
+            SetSystemMessage("온라인 배틀 세션을 찾을 수 없습니다.");
+            activeOnlineSelectionRequest = null;
+            ClearPendingFieldSlotSelection(false);
+            SetBattleBusy(false, "SelectEffectChoice session missing");
+            return false;
+        }
+
+        string json = BattleActionSerializer.ToJson(action);
+        if (string.IsNullOrWhiteSpace(json) || !session.SendBattleActionRequest(json))
+        {
+            SetSystemMessage("효과 선택 전송에 실패했습니다.");
+            activeOnlineSelectionRequest = null;
+            ClearPendingFieldSlotSelection(false);
+            SetBattleBusy(false, "SelectEffectChoice send failed");
+            return false;
+        }
+
+        ClearPendingFieldSlotSelection(false);
+        activeOnlineSelectionRequest = null;
+        SetBattleBusy(true, "OnlineEffectChoiceResponsePending");
+        RefreshTurnEndButtonState();
+        SetSystemMessage("Host의 효과 선택 판정을 기다리고 있습니다.");
+        Debug.Log(
+            $"[OnlineSelection] SelectEffectChoice sent. requestId={action.selectionRequestId}, " +
+            $"effectRef={action.effectRef}, choiceId={action.choiceId}, choiceValue={action.choiceValue}");
+        return true;
     }
 
     public bool ExecuteSelectEffectTargetFromAction(BattleAction action)

@@ -279,7 +279,84 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         if (TryDispatchSelectionRequestResult(result))
             return;
 
+        if (TryDispatchPrivateOwnerResult(result))
+            return;
+
+        if (result != null &&
+            string.Equals(result.resolvedEffectRef, "content.moveOwnCharToEmptyOrBattleIfTagged", StringComparison.OrdinalIgnoreCase))
+        {
+            CardZoneMoveDelta fieldMove = null;
+            if (result.cardZoneMoveDeltas != null)
+            {
+                foreach (CardZoneMoveDelta delta in result.cardZoneMoveDeltas)
+                {
+                    if (delta != null &&
+                        string.Equals(delta.fromZone, "FieldCharacter", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(delta.toZone, "FieldCharacter", StringComparison.OrdinalIgnoreCase))
+                    {
+                        fieldMove = delta;
+                        break;
+                    }
+                }
+            }
+
+            Debug.Log(
+                $"[OnlineBattleSession] Broadcast moveTagged payload. " +
+                $"zoneMoves={result.cardZoneMoveDeltas?.Count ?? 0}, " +
+                $"from={fieldMove?.fromSlotId ?? ""}, to={fieldMove?.toSlotId ?? ""}, " +
+                $"cardInstanceId={fieldMove?.cardInstanceId ?? ""}, cardId={fieldMove?.cardId ?? ""}, " +
+                $"owner={fieldMove?.owner.ToString() ?? ""}, faceDown={fieldMove?.faceDown.ToString() ?? ""}");
+        }
+
         BroadcastBattleActionResult(BattleActionResultSerializer.ToJson(result));
+    }
+
+    private bool TryDispatchPrivateOwnerResult(BattleActionResult result)
+    {
+        if (result == null ||
+            !result.isAccepted ||
+            result.cardDrawDeltas == null ||
+            result.cardDrawDeltas.Count == 0)
+        {
+            return false;
+        }
+
+        CardDrawDelta privateDraw = null;
+        foreach (CardDrawDelta delta in result.cardDrawDeltas)
+        {
+            if (delta != null && delta.visibleToOwnerOnly)
+            {
+                privateDraw = delta;
+                break;
+            }
+        }
+
+        if (privateDraw == null)
+            return false;
+
+        int ownerActorNumber = ResolveActorNumberForOwner(privateDraw.owner);
+        int otherActorNumber = ownerActorNumber == LocalActorNumber
+            ? RemoteActorNumber
+            : LocalActorNumber;
+
+        BattleActionResult publicResult = CloneResult(result);
+        SanitizePrivateOwnerPayloadForNonOwner(publicResult, privateDraw.owner);
+
+        if (ownerActorNumber == LocalActorNumber)
+            ApplyHostLocalResult(result);
+        else
+            SendBattleActionResultToActor(BattleActionResultSerializer.ToJson(result), ownerActorNumber);
+
+        if (otherActorNumber == LocalActorNumber)
+            ApplyHostLocalResult(publicResult);
+        else
+            SendBattleActionResultToActor(BattleActionResultSerializer.ToJson(publicResult), otherActorNumber);
+
+        Debug.Log(
+            $"[OnlineBattle] Dispatched private owner result. " +
+            $"owner={privateDraw.owner}, ownerActor={ownerActorNumber}, otherActor={otherActorNumber}, " +
+            $"actionType={result.requestActionType}, effectRef={result.resolvedEffectRef}");
+        return true;
     }
 
     private bool TryDispatchSelectionRequestResult(BattleActionResult result)
@@ -303,11 +380,19 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
 
         BattleActionResult publicResult = CloneResult(result);
         SanitizeSelectionRequestsForNonRequestedPlayer(publicResult);
+        if (HasOwnerOnlyPrivatePayload(publicResult, request.requestedPlayer))
+            SanitizePrivateOwnerPayloadForNonOwner(publicResult, request.requestedPlayer);
+
+        Debug.Log(
+            $"[OnlineBattleSession] Dispatch owner result selectionRequests={result.selectionRequests?.Count ?? 0}, " +
+            $"requestId={request.requestId}, requestedActor={requestedActorNumber}, localActor={LocalActorNumber}");
 
         if (requestedActorNumber == LocalActorNumber)
             ApplyHostLocalResult(result);
         else
+        {
             SendBattleActionResultToActor(BattleActionResultSerializer.ToJson(result), requestedActorNumber);
+        }
 
         if (otherActorNumber == LocalActorNumber)
             ApplyHostLocalResult(publicResult);
@@ -319,6 +404,20 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             $"requestId={request.requestId}, requestedOwner={request.requestedPlayer}, " +
             $"requestedActor={requestedActorNumber}, otherActor={otherActorNumber}");
         return true;
+    }
+
+    private static bool HasOwnerOnlyPrivatePayload(BattleActionResult result, BattleSlotOwner privateOwner)
+    {
+        if (result == null || result.cardDrawDeltas == null)
+            return false;
+
+        foreach (CardDrawDelta delta in result.cardDrawDeltas)
+        {
+            if (delta != null && delta.owner == privateOwner && delta.visibleToOwnerOnly)
+                return true;
+        }
+
+        return false;
     }
 
     private void ApplyHostLocalResult(BattleActionResult result)
@@ -375,6 +474,66 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
         }
     }
 
+    private static void SanitizePrivateOwnerPayloadForNonOwner(
+        BattleActionResult result,
+        BattleSlotOwner privateOwner)
+    {
+        if (result == null)
+            return;
+
+        if (result.drawnCardInstanceIds != null)
+            result.drawnCardInstanceIds.Clear();
+        if (result.resolvedRandomCardIds != null)
+            result.resolvedRandomCardIds.Clear();
+
+        if (result.affectedCardIds != null && result.affectedCardIds.Count > 1)
+            result.affectedCardIds.RemoveRange(1, result.affectedCardIds.Count - 1);
+
+        if (result.cardDrawDeltas != null)
+        {
+            foreach (CardDrawDelta delta in result.cardDrawDeltas)
+            {
+                if (delta == null || delta.owner != privateOwner || !delta.visibleToOwnerOnly)
+                    continue;
+
+                delta.cardInstanceId = "";
+                delta.cardId = "";
+                delta.fromDeckIndex = -1;
+                delta.publicCardIdForOpponent = "";
+            }
+        }
+
+        if (result.cardZoneMoveDeltas != null)
+        {
+            foreach (CardZoneMoveDelta delta in result.cardZoneMoveDeltas)
+            {
+                if (delta == null ||
+                    delta.owner != privateOwner ||
+                    !string.Equals(delta.fromZone, "Deck", StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(delta.toZone, "Hand", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                delta.cardInstanceId = "";
+                delta.cardId = "";
+                delta.isPublic = false;
+            }
+        }
+
+        if (result.messageDeltas != null)
+        {
+            foreach (MessageDelta delta in result.messageDeltas)
+            {
+                if (delta == null || !string.Equals(delta.audience, "OwnerOnly", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                delta.relatedCardId = "";
+                delta.relatedInstanceId = "";
+            }
+        }
+    }
+
     private void HandleBattleActionResult(EventData photonEvent)
     {
         BattleActionResult result =
@@ -394,7 +553,9 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
                 result.requestActionType == BattleActionType.StartCollab ||
                 result.requestActionType == BattleActionType.UseContent ||
                 result.requestActionType == BattleActionType.UseIdolActive ||
-                result.requestActionType == BattleActionType.SelectEffectTarget)
+                result.requestActionType == BattleActionType.SelectEffectTarget ||
+                result.requestActionType == BattleActionType.SelectCardOption ||
+                result.requestActionType == BattleActionType.SelectEffectChoice)
             {
                 result.currentTurnPlayer = InvertOwner(result.currentTurnPlayer);
             }
@@ -428,7 +589,9 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             result.requestActionType == BattleActionType.StartCollab ||
             result.requestActionType == BattleActionType.UseContent ||
             result.requestActionType == BattleActionType.UseIdolActive ||
-            result.requestActionType == BattleActionType.SelectEffectTarget)
+            result.requestActionType == BattleActionType.SelectEffectTarget ||
+            result.requestActionType == BattleActionType.SelectCardOption ||
+            result.requestActionType == BattleActionType.SelectEffectChoice)
         {
             Debug.Log($"[OnlineBattle] Received {result.requestActionType}Result.");
         }
@@ -1209,40 +1372,6 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             }
         }
 
-        if (result.statusDeltas != null)
-        {
-            for (int i = 0; i < result.statusDeltas.Count; i++)
-            {
-                StatusDelta delta = result.statusDeltas[i];
-                if (delta == null)
-                    continue;
-
-                delta.owner = InvertOwner(delta.owner);
-                delta.targetSlotId = InvertSlotIdOwner(delta.targetSlotId);
-            }
-        }
-
-        if (result.actionStateDeltas != null)
-        {
-            for (int i = 0; i < result.actionStateDeltas.Count; i++)
-            {
-                ActionStateDelta delta = result.actionStateDeltas[i];
-                if (delta == null)
-                    continue;
-
-                delta.owner = InvertOwner(delta.owner);
-                delta.slotId = InvertSlotIdOwner(delta.slotId);
-            }
-        }
-
-        if (result.selectionRequests != null)
-        {
-            for (int i = 0; i < result.selectionRequests.Count; i++)
-            {
-                if (result.selectionRequests[i] != null)
-                    result.selectionRequests[i].requestingPlayer = InvertOwner(result.selectionRequests[i].requestingPlayer);
-            }
-        }
     }
 
     private static string InvertAudience(string audience)

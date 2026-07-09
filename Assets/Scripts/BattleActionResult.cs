@@ -211,11 +211,13 @@ public class SelectionRequestDelta
     public int sourceActionSequence;
     public string sourceEffectId = "";
     public string sourceCardInstanceId = "";
+    public string sourceSlotId = "";
     public BattleSlotOwner requestingPlayer;
     public BattleSlotOwner requestedPlayer;
     public string choiceType = "";
     public string selectionType = "";
     public string sourceActionId = "";
+    public string sourceActionType = "";
     public string sourceEffectRef = "";
     public string promptText = "";
     public List<SelectionRequestTarget> candidateTargets = new List<SelectionRequestTarget>();
@@ -374,9 +376,9 @@ public class OnlineEffectResolver
         switch (normalized)
         {
             case "character.rest.gainViewers":
-                return Meta(normalized, OnlineEffectSupportCategory.SupportedImmediateWithDelta, "viewer gain for effect owner; trigger wiring still required by caller", "ViewerDelta, MessageDelta", "delta supported, pending trigger wiring");
+                return Meta(normalized, OnlineEffectSupportCategory.SupportedImmediateWithDelta, "viewer gain for rested character owner; Host OnRest callers merge ViewerDelta", "ViewerDelta, MessageDelta", "supported via Host OnRest simple delta");
             case "character.rest.loseViewers":
-                return Meta(normalized, OnlineEffectSupportCategory.SupportedImmediateWithDelta, "viewer loss for effect owner; trigger wiring still required by caller", "ViewerDelta, MessageDelta", "delta supported, pending trigger wiring");
+                return Meta(normalized, OnlineEffectSupportCategory.SupportedImmediateWithDelta, "viewer loss for rested character owner with local zero floor; Host OnRest callers merge ViewerDelta", "ViewerDelta, MessageDelta", "supported via Host OnRest simple delta");
             case RemoveAllLastingContentsOnBoard:
                 return Meta(normalized, OnlineEffectSupportCategory.SupportedImmediateWithDelta, "field content removal and field content to rest zone move", "FieldContentDelta, CardZoneMoveDelta, MessageDelta", "supported");
             case "content.postCollabHealOwnParticipant":
@@ -384,7 +386,7 @@ public class OnlineEffectResolver
             case "character.active.modifyTaggedOnBoard":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "select a tagged face-up field character and apply permanent max HP/tension stat changes", "SelectionRequestDelta, FieldStatDelta, ViewerDelta, ActionStateDelta, MessageDelta", "implemented via online character active selection flow", true, false, false, false, false);
             case "character.active.adjacentHpDownAndTensionUpForTag":
-                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "selected or filtered field character HP/tension changes", "SelectionRequestDelta, FieldStatDelta, ActionStateDelta, MessageDelta", "pending selection flow", true, false, false, false, false);
+                return Meta(normalized, OnlineEffectSupportCategory.SupportedImmediateWithDelta, "auto-resolve all adjacent public field character HP/tension changes for tagged active effect", "FieldStatDelta, ViewerDelta, ActionStateDelta, CardZoneMoveDelta, MessageDelta", "implemented via Host public auto multi-target delta flow", false, false, false, false, false);
             case "character.onAppear.adjacentOppCollabTensionDeltaThisTurn":
             case "character.active.adjacentOppCollabTensionDeltaThisTurn":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPersistentStateDelta, "temporary collab tension modifier for adjacent opponent", "StatusDelta, FieldStatDelta, MessageDelta", "pending persistent state", false, false, false, true, true);
@@ -405,8 +407,9 @@ public class OnlineEffectResolver
             case "content.peekTopAndTakeTaggedCharacterOrBottom":
             case "content.drawThenDiscard":
             case "content.redrawIfBehindAndUniverseOnly":
-            case "idol.active.fetchTabiOrRestBoongAndFetchBoth":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPrivateInfoProtocol, "deck/hand/rest search, draw, discard, reveal, deck order changes", "CardRevealDelta, CardDrawDelta, CardZoneMoveDelta, DeckOrderDelta, SelectionRequestDelta, MessageDelta", "pending private protocol", true, true, true, false, false);
+            case "idol.active.fetchTabiOrRestBoongAndFetchBoth":
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresPrivateInfoProtocol, "basic and enhanced owner-only private deck selection; enhanced public #뿡댕이 field cost to rest", "SelectionRequestDelta, CardDrawDelta, CardZoneMoveDelta, ViewerDelta, ActionStateDelta, MessageDelta", "implemented with owner-only private payload and chained enhanced selection flow", true, false, true, false, false);
             case "content.forceOpponentSummonOrSackFromHand":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPrivateInfoProtocol, "opponent private hand choice then summon or discard", "SelectionRequestDelta, CardZoneMoveDelta, CardRevealDelta, MessageDelta", "pending private protocol", true, false, true, false, false);
             case "content.returnUpToNFromRestToDeck":
@@ -593,6 +596,14 @@ public class OnlineEffectResolver
                 isPublic = true,
                 faceDown = false
             });
+
+            UnityEngine.Debug.Log(
+                $"[OnlineEffectSimpleDelta][RemoveLasting] source={result.usedEffectRef}, " +
+                $"removedCountPending={result.zoneMoveDeltas.Count}, removedCard={contentCard.cardInstanceId}/{contentCard.id}, " +
+                $"owner={slot.contentOwner}, slot={slotId}");
+            UnityEngine.Debug.Log(
+                $"[OnlineOwnerAudit] effectRef={result.usedEffectRef}, actor={slot.contentOwner}, " +
+                $"slotOwner={slot.owner}, characterOwner=, resultOwner={slot.contentOwner}");
         }
 
         string message = $"장기 콘텐츠 {result.fieldContentDeltas.Count}장을 휴식존으로 보냅니다.";
@@ -646,7 +657,7 @@ public class OnlineEffectResolver
             owner = owner,
             before = before,
             after = after,
-            amount = amount
+            amount = actualAmount
         });
 
         string sign = actualAmount >= 0 ? "+" : "";
@@ -662,8 +673,8 @@ public class OnlineEffectResolver
         });
 
         UnityEngine.Debug.Log(
-            $"[OnlineEffectResolver] ViewerDelta generated. effectRef={result.usedEffectRef}, " +
-            $"owner={owner}, before={before}, after={after}, amount={actualAmount}");
+            $"[OnlineEffectSimpleDelta] effectRef={result.usedEffectRef}, actor={owner}, " +
+            $"sourceOwner={owner}, targetOwner={owner}, amount={actualAmount}");
     }
 
     private string ResolveEffectRef(BattleAction action, BaseCardData sourceCard)
@@ -985,6 +996,22 @@ public static class OnlineEffectProgressReporter
             return OnlineEffectProgressStatus.Implemented;
         }
 
+        if (string.Equals(
+            metadata.effectRef,
+            "character.active.adjacentHpDownAndTensionUpForTag",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return OnlineEffectProgressStatus.Implemented;
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "idol.active.fetchTabiOrRestBoongAndFetchBoth",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return OnlineEffectProgressStatus.Implemented;
+        }
+
         if (metadata.requiresPrivateInfoProtocol)
             return OnlineEffectProgressStatus.NeedsPrivatePayload;
 
@@ -1065,10 +1092,34 @@ public static class OnlineEffectProgressReporter
 
         if (string.Equals(
             metadata.effectRef,
+            "content.moveOwnCharToEmptyOrBattleIfTagged",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return "BattleManager online multi-step SelectionRequest -> SelectEffectTarget -> destination SelectionRequest -> FieldMove/StartCollabResult";
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
             "character.active.modifyTaggedOnBoard",
             StringComparison.OrdinalIgnoreCase))
         {
             return "BattleManager online UseCharacterActive SelectionRequest -> SelectEffectTarget -> FieldStatDelta/ActionStateDelta";
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "character.active.adjacentHpDownAndTensionUpForTag",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return "BattleManager online UseCharacterActive auto public multi-target -> FieldStatDelta/CardZoneMoveDelta/ActionStateDelta";
+        }
+
+        if (string.Equals(
+            metadata.effectRef,
+            "idol.active.fetchTabiOrRestBoongAndFetchBoth",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            return "BattleManager online private/chained SelectionRequest -> SelectEffectTarget/SelectEffectChoice/SelectCardOption -> public Boong rest cost + owner-only CardDrawDelta";
         }
 
         switch (metadata.category)
