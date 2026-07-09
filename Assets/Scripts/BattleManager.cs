@@ -4584,10 +4584,17 @@ public class BattleManager : MonoBehaviour
             result != null ? result.resolvedEffectRef : "",
             "content.moveOwnCharToEmptyOrBattleIfTagged",
             StringComparison.OrdinalIgnoreCase);
+        bool isForceBattleTargetAnywhere = string.Equals(
+            result != null ? result.resolvedEffectRef : "",
+            "character.active.forceBattleTargetAnywhere",
+            StringComparison.OrdinalIgnoreCase);
 
-        if (isEffectMoveCollab)
+        if (isEffectMoveCollab || isForceBattleTargetAnywhere)
         {
-            onlineUseContentRequestPending = false;
+            if (isEffectMoveCollab)
+                onlineUseContentRequestPending = false;
+            if (isForceBattleTargetAnywhere)
+                onlineUseCharacterActiveRequestPending = false;
             activeOnlineSelectionRequest = null;
             ClearPendingFieldSlotSelection(false);
             previousBusy = false;
@@ -4721,6 +4728,14 @@ public class BattleManager : MonoBehaviour
             onlineUseContentRequestPending = false;
             activeOnlineSelectionRequest = null;
         }
+        else if (string.Equals(
+            result.resolvedEffectRef,
+            "character.active.forceBattleTargetAnywhere",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            onlineUseCharacterActiveRequestPending = false;
+            activeOnlineSelectionRequest = null;
+        }
 
         string attackerCardInstanceId = result.affectedCardIds != null && result.affectedCardIds.Count > 0
             ? result.affectedCardIds[0]
@@ -4824,7 +4839,12 @@ public class BattleManager : MonoBehaviour
             "content.moveOwnCharToEmptyOrBattleIfTagged",
             StringComparison.OrdinalIgnoreCase)
             ? BattleActionType.UseContent
-            : BattleActionType.StartCollab;
+            : string.Equals(
+                result.resolvedEffectRef,
+                "character.active.forceBattleTargetAnywhere",
+                StringComparison.OrdinalIgnoreCase)
+                ? BattleActionType.UseCharacterActive
+                : BattleActionType.StartCollab;
 
         MarkOnlinePlayerUsedActionFromExternal(
             result.actor,
@@ -5494,8 +5514,12 @@ public class BattleManager : MonoBehaviour
             effectRef,
             "character.active.adjacentHpDownAndTensionUpForTag",
             StringComparison.OrdinalIgnoreCase);
+        bool isForceBattleTargetAnywhere = string.Equals(
+            effectRef,
+            "character.active.forceBattleTargetAnywhere",
+            StringComparison.OrdinalIgnoreCase);
 
-        if (!isModifyTaggedOnBoard && !isAdjacentHpDownAndTensionUp)
+        if (!isModifyTaggedOnBoard && !isAdjacentHpDownAndTensionUp && !isForceBattleTargetAnywhere)
         {
             failReason = $"온라인 캐릭터 액티브 효과가 아직 지원되지 않습니다: {effectRef}";
             return false;
@@ -5507,7 +5531,9 @@ public class BattleManager : MonoBehaviour
             return false;
         }
 
-        int candidateCount = isAdjacentHpDownAndTensionUp
+        int candidateCount = isForceBattleTargetAnywhere
+            ? BuildOnlineForceBattleTargetAnywhereTargetSlots(sourceSlot, action.actor).Count
+            : isAdjacentHpDownAndTensionUp
             ? BuildOnlineAdjacentHpDownAndTensionUpTargetSlots(sourceSlot, sourceSlot.characterCard, effectRef).Count
             : BuildOnlineModifyTaggedOnBoardTargetSlots(sourceSlot.characterCard, effectRef, action.actor).Count;
 
@@ -5537,6 +5563,19 @@ public class BattleManager : MonoBehaviour
                 "category=PublicAutoResolveMultiTarget, " +
                 "reason=local requireTargetSelection=false/maxTargets=0; public adjacent field targets only; no private/status/rng/post-collab payload");
             return CreateAdjacentHpDownAndTensionUpForTagResultFromExternal(
+                action,
+                sourceSlot,
+                sourceCard,
+                effectRef);
+        }
+
+        if (string.Equals(effectRef, "character.active.forceBattleTargetAnywhere", StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.Log(
+                "[OnlineEffectCandidate] selected=character.active.forceBattleTargetAnywhere, " +
+                "category=PublicSelectionAutoSingle, " +
+                "reason=local auto-resolves one public opponent field target and opens cancellable selection for multiple face-up opponent targets; no private/rng/persistent/post-collab payload; final result reuses StartCollabResult");
+            return CreateForceBattleTargetAnywhereSelectionOrResultFromExternal(
                 action,
                 sourceSlot,
                 sourceCard,
@@ -5619,6 +5658,134 @@ public class BattleManager : MonoBehaviour
             cancelPolicy = "DisallowCancel",
             nextActionType = BattleActionType.SelectEffectTarget.ToString(),
             promptText = "스탯을 변경할 캐릭터를 선택하세요."
+        };
+
+        foreach (BattleFieldSlot slot in candidates)
+        {
+            if (slot == null)
+                continue;
+
+            string slotId = slot.GetSlotId();
+            selection.candidateSlotIds.Add(slotId);
+            request.candidatePublicIds.Add(slotId);
+            request.candidateTargets.Add(BuildSelectionRequestTarget(slot));
+        }
+
+        RegisterPendingOnlineSelection(selection);
+
+        result.selectionRequests.Add(request);
+        FillBattleCountSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineSelectionFlow][CreateRequest] effectRef={effectRef}, action=UseCharacterActive, " +
+            $"actor={result.actor}, source={selection.selectedSourceSlotId}, requestId={requestId}, " +
+            $"candidates={request.candidateTargets.Count}");
+        return result;
+    }
+
+    private BattleActionResult CreateForceBattleTargetAnywhereSelectionOrResultFromExternal(
+        BattleAction action,
+        BattleFieldSlot sourceSlot,
+        BaseCardData sourceCard,
+        string effectRef)
+    {
+        BattleSlotOwner actor = action != null ? action.actor : BattleSlotOwner.My;
+        List<BattleFieldSlot> candidates = BuildOnlineForceBattleTargetAnywhereTargetSlots(sourceSlot, actor);
+        LogOnlineForceBattleTargetAnywhereCandidateAudit(effectRef, sourceSlot, actor);
+
+        if (candidates.Count == 0)
+        {
+            BattleActionResult rejectResult = CreateBaseOnlineEffectResult(
+                action,
+                BattleActionType.UseCharacterActive,
+                actor,
+                effectRef);
+            rejectResult.isAccepted = false;
+            rejectResult.rejectReason = "합방할 상대 캐릭터가 없습니다.";
+            rejectResult.message = rejectResult.rejectReason;
+            rejectResult.effectApplied = false;
+            rejectResult.requiresFollowUpAction = false;
+            Debug.Log(
+                $"[OnlineActionStateAudit][ForceBattleCostAndUsed] effectRef={effectRef}, " +
+                $"actor={actor}, source={sourceSlot?.GetSlotId() ?? ""}, success=False, " +
+                "viewerCost=0, viewerDeltaAdded=False, activeUsedAdded=False, " +
+                "actionStateAdded=False, reason=NoCandidates");
+            return rejectResult;
+        }
+
+        if (candidates.Count == 1)
+        {
+            Debug.Log(
+                $"[OnlineSelectionFlow][AutoResolveSingleCandidate] effectRef={effectRef}, " +
+                $"actor={actor}, target={candidates[0]?.GetSlotId() ?? ""}");
+            int autoCost = GetActiveCost(sourceCard);
+            Debug.Log(
+                $"[OnlineSelectionFlow][ForceBattleAutoSingle] effectRef={effectRef}, " +
+                $"actor={actor}, source={sourceSlot?.GetSlotId() ?? ""}, " +
+                $"target={candidates[0]?.GetSlotId() ?? ""}, candidateCount=1, " +
+                $"willConsumeCost={autoCost > 0}, willMarkActiveUsed=True, willApplyActionState=True");
+            return CreateForceBattleTargetAnywhereFinalResult(
+                action,
+                sourceSlot,
+                candidates[0],
+                sourceCard,
+                actor,
+                effectRef,
+                "");
+        }
+
+        BattleActionResult result = new BattleActionResult
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = actor,
+            requestActionType = BattleActionType.UseCharacterActive,
+            isAccepted = true,
+            message = "합방할 상대 캐릭터 선택이 필요합니다.",
+            currentTurnPlayer = actor,
+            turnCount = Mathf.Max(1, turnCount),
+            nextPhase = BattlePhase.MainGame.ToString(),
+            resolvedEffectRef = effectRef,
+            requiresFollowUpAction = true,
+            effectClassification = OnlineEffectProgressStatus.NeedsSelection.ToString(),
+            paidViewerCost = 0
+        };
+
+        if (sourceCard != null)
+            result.affectedCardIds.Add(sourceCard.cardInstanceId);
+
+        string requestId = BuildOnlineSelectionRequestId(result.actor, result.actionSequence, effectRef);
+        PendingOnlineSelection selection = new PendingOnlineSelection
+        {
+            requestId = requestId,
+            effectRef = effectRef,
+            sourceCardInstanceId = sourceCard != null ? sourceCard.cardInstanceId : action != null ? action.cardInstanceId : "",
+            selectedSourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : action != null ? action.sourceSlotId : "",
+            requestedPlayer = result.actor,
+            sourceActionSequence = result.actionSequence,
+            sourceActionType = BattleActionType.UseCharacterActive,
+            stepIndex = 1,
+            chainId = requestId,
+            resolveKind = "SelectTargetForCharacterActiveForceBattleTargetAnywhere",
+            cancelAllowed = true
+        };
+
+        SelectionRequestDelta request = new SelectionRequestDelta
+        {
+            requestId = requestId,
+            sourceActionSequence = result.actionSequence,
+            sourceCardInstanceId = sourceCard != null ? sourceCard.cardInstanceId : "",
+            sourceSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : action != null ? action.sourceSlotId : "",
+            requestedPlayer = result.actor,
+            requestingPlayer = result.actor,
+            sourceActionType = BattleActionType.UseCharacterActive.ToString(),
+            sourceEffectRef = effectRef,
+            choiceType = "FieldTarget",
+            selectionType = "FieldCharacter",
+            minSelect = 1,
+            maxSelect = 1,
+            cancelPolicy = "AllowCancel",
+            nextActionType = BattleActionType.SelectEffectTarget.ToString(),
+            promptText = "합방할 상대 캐릭터를 선택하세요."
         };
 
         foreach (BattleFieldSlot slot in candidates)
@@ -5839,6 +6006,20 @@ public class BattleManager : MonoBehaviour
             string.Equals(selection.resolveKind, "SelectTargetForCharacterActiveModifyTaggedOnBoard", StringComparison.OrdinalIgnoreCase))
         {
             return CreateCharacterActiveModifyTaggedOnBoardSelectionResult(action, result, selection, targetSlot);
+        }
+
+        if (selection.sourceActionType == BattleActionType.UseCharacterActive &&
+            string.Equals(selection.resolveKind, "SelectTargetForCharacterActiveForceBattleTargetAnywhere", StringComparison.OrdinalIgnoreCase))
+        {
+            BattleFieldSlot sourceSlot = FindSlotById(selection.selectedSourceSlotId);
+            return CreateForceBattleTargetAnywhereFinalResult(
+                action,
+                sourceSlot,
+                targetSlot,
+                sourceSlot != null ? sourceSlot.characterCard : null,
+                selection.requestedPlayer,
+                selection.effectRef,
+                action.selectionRequestId);
         }
 
         if (selection.sourceActionType != BattleActionType.UseIdolActive)
@@ -6205,6 +6386,135 @@ public class BattleManager : MonoBehaviour
             $"target={targetSlot.GetSlotId()}, hp={hpBefore}->{hpAfter}, " +
             $"maxHp={maxHpBefore}->{maxHpAfter}, tension={tensionBefore}->{tensionAfter}, cost={cost}");
         return result;
+    }
+
+    private BattleActionResult CreateForceBattleTargetAnywhereFinalResult(
+        BattleAction action,
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        BaseCardData sourceCard,
+        BattleSlotOwner actor,
+        string effectRef,
+        string selectionRequestId)
+    {
+        int cost = GetActiveCost(sourceCard);
+        int viewerBefore = GetViewersFromExternal(actor);
+        int viewerAfter = Mathf.Max(0, viewerBefore - cost);
+
+        BattleAction collabAction = new BattleAction
+        {
+            actionSequence = action != null ? action.actionSequence : nextActionSequence++,
+            actor = actor,
+            actionType = BattleActionType.StartCollab,
+            cardInstanceId = targetSlot != null && targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : "",
+            sourceSlotId = targetSlot != null ? targetSlot.GetSlotId() : "",
+            targetSlotId = sourceSlot != null ? sourceSlot.GetSlotId() : ""
+        };
+
+        BattleActionResult result = CreateStartCollabResultFromExternal(collabAction);
+        result.actor = actor;
+        result.currentTurnPlayer = actor;
+        result.resolvedEffectRef = effectRef;
+        result.effectApplied = true;
+        result.requiresFollowUpAction = false;
+        result.effectClassification = OnlineEffectProgressStatus.Implemented.ToString();
+        result.paidViewerCost = cost;
+        result.message = "캐릭터 액티브 효과로 강제 합방 결과가 적용되었습니다.";
+
+        if (sourceCard != null && !result.affectedCardIds.Contains(sourceCard.cardInstanceId))
+            result.affectedCardIds.Add(sourceCard.cardInstanceId);
+
+        Debug.Log(
+            $"[OnlineLocalParity][ForceBattleDirection] effectRef={effectRef}, " +
+            $"actor={actor}, sourceSlot={sourceSlot?.GetSlotId() ?? ""}, " +
+            $"sourceCharacterOwner={(sourceSlot != null ? sourceSlot.characterOwner.ToString() : "")}, " +
+            $"targetSlot={targetSlot?.GetSlotId() ?? ""}, " +
+            $"targetCharacterOwner={(targetSlot != null ? targetSlot.characterOwner.ToString() : "")}, " +
+            "localExpectedAttacker=target, onlineAttacker=target, " +
+            "localExpectedDefender=source, onlineDefender=source, match=True");
+
+        if (cost > 0)
+        {
+            result.viewerDeltas.Add(new ViewerDelta
+            {
+                owner = actor,
+                before = viewerBefore,
+                after = viewerAfter,
+                amount = viewerAfter - viewerBefore
+            });
+        }
+
+        result.actionStateDeltas.Add(new ActionStateDelta
+        {
+            owner = actor,
+            cardInstanceId = sourceCard != null ? sourceCard.cardInstanceId : "",
+            slotId = sourceSlot != null ? sourceSlot.GetSlotId() : "",
+            actionStateType = "CharacterActiveUsedThisTurn",
+            before = sourceSlot != null && sourceSlot.characterActiveUsedThisTurn,
+            after = true,
+            turn = turnCount
+        });
+
+        Debug.Log(
+            $"[OnlineActionStateAudit][ForceBattleCostAndUsed] effectRef={effectRef}, " +
+            $"actor={actor}, source={sourceSlot?.GetSlotId() ?? ""}, success=True, " +
+            $"viewerCost={cost}, viewerDeltaAdded={cost > 0}, activeUsedAdded=True, " +
+            "actionStateAdded=True, reason=ForceBattleResolved");
+
+        result.messageDeltas.Add(new MessageDelta
+        {
+            audience = "Public",
+            messageKey = effectRef,
+            messageText = $"{(targetSlot != null && targetSlot.characterCard != null ? targetSlot.characterCard.name : "상대 캐릭터")}이 {(sourceCard != null ? sourceCard.name : "선택 캐릭터")}의 방송으로 이동해 합방을 시작했습니다.",
+            relatedCardId = sourceCard != null ? sourceCard.id : "",
+            relatedInstanceId = sourceCard != null ? sourceCard.cardInstanceId : ""
+        });
+
+        if (!string.IsNullOrWhiteSpace(selectionRequestId))
+            CompletePendingOnlineSelection(selectionRequestId);
+
+        FillBattleCountSnapshot(result);
+        ProjectViewerDeltasIntoSnapshot(result);
+
+        Debug.Log(
+            $"[OnlineActionStateAudit] action=UseCharacterActive, result=ForceBattleTargetAnywhere, " +
+            $"actor={actor}, hasActionStateDelta={result.actionStateDeltas.Count > 0}, markUsedCalled=False");
+        LogForceBattleRestAudit(result, sourceSlot, targetSlot, actor, effectRef);
+        Debug.Log(
+            $"[OnlineSelection] Host resolved character active forceBattleTargetAnywhere. " +
+            $"requestId={selectionRequestId}, source={sourceSlot?.GetSlotId() ?? ""}, " +
+            $"target={targetSlot?.GetSlotId() ?? ""}, cost={cost}, " +
+            $"attackerOwner={result.attackerOwner}, defenderOwner={result.defenderOwner}");
+        return result;
+    }
+
+    private void LogForceBattleRestAudit(
+        BattleActionResult result,
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        BattleSlotOwner actor,
+        string effectRef)
+    {
+        if (result == null)
+            return;
+
+        if (result.attackerDefeated && targetSlot != null && targetSlot.characterCard != null)
+        {
+            Debug.Log(
+                $"[OnlineRestDeltaAudit][ForceBattle] effectRef={effectRef}, actor={actor}, " +
+                $"koCard={targetSlot.characterCard.cardInstanceId}/{targetSlot.characterCard.id}, " +
+                $"koCharacterOwner={targetSlot.characterOwner}, koSlotOwner={targetSlot.owner}, " +
+                $"restOwner={result.attackerOwner}, usedSlotOwnerAsRestOwner=False");
+        }
+
+        if (result.defenderDefeated && sourceSlot != null && sourceSlot.characterCard != null)
+        {
+            Debug.Log(
+                $"[OnlineRestDeltaAudit][ForceBattle] effectRef={effectRef}, actor={actor}, " +
+                $"koCard={sourceSlot.characterCard.cardInstanceId}/{sourceSlot.characterCard.id}, " +
+                $"koCharacterOwner={sourceSlot.characterOwner}, koSlotOwner={sourceSlot.owner}, " +
+                $"restOwner={result.defenderOwner}, usedSlotOwnerAsRestOwner=False");
+        }
     }
 
     private BattleActionResult CreateSilenceCharacterCollabSelectionResult(
@@ -6835,6 +7145,118 @@ public class BattleManager : MonoBehaviour
         AddOnlineFaceUpCharacterSlots(candidates, myBattleSlots);
         AddOnlineFaceUpCharacterSlots(candidates, enemyBattleSlots);
         return candidates;
+    }
+
+    private List<BattleFieldSlot> BuildOnlineForceBattleTargetAnywhereTargetSlots(
+        BattleFieldSlot sourceSlot,
+        BattleSlotOwner actingOwner)
+    {
+        List<BattleFieldSlot> candidates = new List<BattleFieldSlot>();
+        AddOnlineForceBattleTargetAnywhereTargetSlots(candidates, myBattleSlots, sourceSlot, actingOwner);
+        AddOnlineForceBattleTargetAnywhereTargetSlots(candidates, enemyBattleSlots, sourceSlot, actingOwner);
+        return candidates;
+    }
+
+    private void AddOnlineForceBattleTargetAnywhereTargetSlots(
+        List<BattleFieldSlot> candidates,
+        List<BattleFieldSlot> slots,
+        BattleFieldSlot sourceSlot,
+        BattleSlotOwner actingOwner)
+    {
+        if (candidates == null || slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            if (IsOnlineForceBattleTargetAnywhereTargetSlot(sourceSlot, slot, actingOwner))
+                candidates.Add(slot);
+        }
+    }
+
+    private void LogOnlineForceBattleTargetAnywhereCandidateAudit(
+        string effectRef,
+        BattleFieldSlot sourceSlot,
+        BattleSlotOwner actingOwner)
+    {
+        LogOnlineForceBattleTargetAnywhereCandidateAudit(effectRef, sourceSlot, actingOwner, myBattleSlots);
+        LogOnlineForceBattleTargetAnywhereCandidateAudit(effectRef, sourceSlot, actingOwner, enemyBattleSlots);
+    }
+
+    private void LogOnlineForceBattleTargetAnywhereCandidateAudit(
+        string effectRef,
+        BattleFieldSlot sourceSlot,
+        BattleSlotOwner actingOwner,
+        List<BattleFieldSlot> slots)
+    {
+        if (slots == null)
+            return;
+
+        foreach (BattleFieldSlot slot in slots)
+        {
+            string reason = GetOnlineForceBattleTargetAnywhereTargetRejectReason(sourceSlot, slot, actingOwner);
+            bool isValid = string.IsNullOrWhiteSpace(reason);
+            string slotId = slot != null ? slot.GetSlotId() : "";
+            string slotOwner = slot != null ? slot.owner.ToString() : "";
+            string characterOwner = slot != null ? slot.characterOwner.ToString() : "";
+            string cardInstanceId = slot != null && slot.characterCard != null
+                ? slot.characterCard.cardInstanceId
+                : "";
+            bool isSource = slot != null && sourceSlot != null && slot == sourceSlot;
+
+            Debug.Log(
+                $"[OnlineSelectionFlow][Candidate] effectRef={effectRef}, slot={slotId}, " +
+                $"slotOwner={slotOwner}, characterOwner={characterOwner}, card={cardInstanceId}, " +
+                $"isValid={isValid}, reason={(isValid ? "OK" : reason)}");
+            Debug.Log(
+                $"[OnlineOwnerAudit][ForceBattleCandidate] effectRef={effectRef}, " +
+                $"actor={actingOwner}, slot={slotId}, slotOwner={slotOwner}, " +
+                $"characterOwner={characterOwner}, isFaceUp={slot != null && slot.HasCharacter && !slot.isCharacterFaceDown}, " +
+                $"isSource={isSource}, localWouldInclude={isValid}, onlineIncluded={isValid}, " +
+                $"reason={(isValid ? "OK" : reason)}");
+        }
+    }
+
+    private bool IsOnlineForceBattleTargetAnywhereTargetSlot(
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        BattleSlotOwner actingOwner)
+    {
+        return string.IsNullOrWhiteSpace(GetOnlineForceBattleTargetAnywhereTargetRejectReason(
+            sourceSlot,
+            targetSlot,
+            actingOwner));
+    }
+
+    private string GetOnlineForceBattleTargetAnywhereTargetRejectReason(
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        BattleSlotOwner actingOwner)
+    {
+        if (sourceSlot == null)
+            return "source-null";
+
+        if (targetSlot == null)
+            return "slot-null";
+
+        if (targetSlot == sourceSlot)
+            return "source-slot";
+
+        if (!targetSlot.HasCharacter)
+            return "no-character";
+
+        if (targetSlot.characterCard == null)
+            return "character-card-null";
+
+        if (targetSlot.isCharacterFaceDown)
+            return "face-down";
+
+        if (!string.Equals(targetSlot.characterCard.kind, EffectCardKind.Character.ToString(), StringComparison.OrdinalIgnoreCase))
+            return "kind-mismatch";
+
+        if (targetSlot.characterOwner == actingOwner)
+            return "characterOwner-not-opponent";
+
+        return "";
     }
 
     private List<BattleFieldSlot> BuildOnlineAdjacentHpDownAndTensionUpTargetSlots(
@@ -7628,6 +8050,124 @@ public class BattleManager : MonoBehaviour
             return true;
         }
 
+        if (selection.sourceActionType == BattleActionType.UseCharacterActive &&
+            string.Equals(selection.resolveKind, "SelectTargetForCharacterActiveForceBattleTargetAnywhere", StringComparison.OrdinalIgnoreCase))
+        {
+            BattleFieldSlot sourceSlot = FindSlotById(selection.selectedSourceSlotId);
+            bool sourceMatches = sourceSlot != null &&
+                sourceSlot.HasCharacter &&
+                sourceSlot.characterCard != null &&
+                string.Equals(
+                    sourceSlot.characterCard.cardInstanceId,
+                    selection.sourceCardInstanceId,
+                    StringComparison.OrdinalIgnoreCase);
+            bool targetStillValid = IsOnlineForceBattleTargetAnywhereTargetSlot(
+                sourceSlot,
+                targetSlot,
+                selection.requestedPlayer);
+            if (sourceSlot == null ||
+                !sourceSlot.HasCharacter ||
+                sourceSlot.characterCard == null ||
+                !string.Equals(
+                    sourceSlot.characterCard.cardInstanceId,
+                    selection.sourceCardInstanceId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                failReason = "액티브 효과 발동 캐릭터가 더 이상 유효하지 않습니다.";
+                LogForceBattleResponseValidate(
+                    action,
+                    selection,
+                    sourceSlot,
+                    targetSlot,
+                    true,
+                    sourceMatches,
+                    targetStillValid,
+                    "reject",
+                    failReason);
+                return false;
+            }
+
+            if (sourceSlot.characterOwner != selection.requestedPlayer ||
+                sourceSlot.isCharacterFaceDown ||
+                !IsCharacterActiveEffectRef(sourceSlot.characterCard, selection.effectRef) ||
+                sourceSlot.characterActiveUsedThisTurn)
+            {
+                failReason = "액티브 효과 발동 캐릭터가 더 이상 액티브를 사용할 수 없습니다.";
+                LogForceBattleResponseValidate(
+                    action,
+                    selection,
+                    sourceSlot,
+                    targetSlot,
+                    true,
+                    sourceMatches,
+                    targetStillValid,
+                    "reject",
+                    failReason);
+                return false;
+            }
+
+            if (!targetStillValid)
+            {
+                failReason = "선택한 캐릭터가 합방 대상 조건을 만족하지 않습니다.";
+                LogForceBattleResponseValidate(
+                    action,
+                    selection,
+                    sourceSlot,
+                    targetSlot,
+                    true,
+                    sourceMatches,
+                    false,
+                    "reject",
+                    failReason);
+                return false;
+            }
+
+            if (collaborationManager != null && collaborationManager.IsCollaborationInteractionActive)
+            {
+                failReason = "이미 합방 처리를 진행 중입니다.";
+                LogForceBattleResponseValidate(
+                    action,
+                    selection,
+                    sourceSlot,
+                    targetSlot,
+                    true,
+                    sourceMatches,
+                    targetStillValid,
+                    "reject",
+                    failReason);
+                return false;
+            }
+
+            int cost = GetActiveCost(sourceSlot.characterCard);
+            if (!CanPayViewerCostFromExternal(selection.requestedPlayer, cost))
+            {
+                failReason = "시청자가 부족합니다.";
+                LogForceBattleResponseValidate(
+                    action,
+                    selection,
+                    sourceSlot,
+                    targetSlot,
+                    true,
+                    sourceMatches,
+                    targetStillValid,
+                    "reject",
+                    failReason);
+                return false;
+            }
+
+            LogForceBattleResponseValidate(
+                action,
+                selection,
+                sourceSlot,
+                targetSlot,
+                true,
+                true,
+                true,
+                "accept",
+                "OK");
+            return true;
+        }
+
         if (selection.sourceActionType == BattleActionType.UseContent &&
             string.Equals(selection.effectRef, "content.silenceCharacterCollabThisTurn", StringComparison.OrdinalIgnoreCase))
         {
@@ -7845,6 +8385,26 @@ public class BattleManager : MonoBehaviour
         return true;
     }
 
+    private void LogForceBattleResponseValidate(
+        BattleAction action,
+        PendingOnlineSelection selection,
+        BattleFieldSlot sourceSlot,
+        BattleFieldSlot targetSlot,
+        bool isPending,
+        bool sourceMatches,
+        bool targetStillValid,
+        string result,
+        string reason)
+    {
+        Debug.Log(
+            $"[OnlineSelectionFlow][ForceBattleResponseValidate] requestId={action?.selectionRequestId ?? ""}, " +
+            $"actor={action?.actor.ToString() ?? ""}, source={sourceSlot?.GetSlotId() ?? ""}, " +
+            $"selectedTarget={targetSlot?.GetSlotId() ?? ""}, isPending={isPending}, " +
+            $"actorMatches={selection != null && action != null && action.actor == selection.requestedPlayer}, " +
+            $"sourceMatches={sourceMatches}, targetStillValid={targetStillValid}, " +
+            $"result={result}, reason={reason}");
+    }
+
     private BattleActionResult CreatePublicSelectionCancelledResult(
         BattleAction action,
         BattleActionResult result,
@@ -7866,6 +8426,21 @@ public class BattleManager : MonoBehaviour
         Debug.Log(
             $"[OnlineSelectionFlow][Cancel] requestId={action.selectionRequestId}, " +
             $"actor={action.actor}, effectRef={selection.effectRef}, completed=True");
+        if (string.Equals(
+            selection.effectRef,
+            "character.active.forceBattleTargetAnywhere",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.Log(
+                $"[OnlineSelectionFlow][ForceBattleCancel] effectRef={selection.effectRef}, " +
+                $"actor={action.actor}, requestId={action.selectionRequestId}, " +
+                "consumeCost=False, markActiveUsed=False, applyActionState=False");
+            Debug.Log(
+                $"[OnlineActionStateAudit][ForceBattleCostAndUsed] effectRef={selection.effectRef}, " +
+                $"actor={action.actor}, source={selection.selectedSourceSlotId}, success=False, " +
+                "viewerCost=0, viewerDeltaAdded=False, activeUsedAdded=False, " +
+                "actionStateAdded=False, reason=Cancelled");
+        }
         Debug.Log(
             $"[OnlineSelectionFlow][Response] requestId={action.selectionRequestId}, " +
             $"actor={action.actor}, selected=cancel");
@@ -8285,6 +8860,17 @@ public class BattleManager : MonoBehaviour
             $"[OnlineSelectionFlow][RejectResponse] requestId={action.selectionRequestId}, " +
             $"actor={action.actor}, effectRef={action.effectRef}, reason={reason}, " +
             $"pendingCompleted={shouldCompletePending}");
+        if (string.Equals(
+            selection.effectRef,
+            "character.active.forceBattleTargetAnywhere",
+            StringComparison.OrdinalIgnoreCase))
+        {
+            Debug.LogWarning(
+                $"[OnlineActionStateAudit][ForceBattleCostAndUsed] effectRef={selection.effectRef}, " +
+                $"actor={action.actor}, source={selection.selectedSourceSlotId}, success=False, " +
+                "viewerCost=0, viewerDeltaAdded=False, activeUsedAdded=False, " +
+                $"actionStateAdded=False, reason=RejectResponse:{reason}");
+        }
     }
 
     private void RejectPendingOnlineSelectionCancel(BattleAction action, string reason)

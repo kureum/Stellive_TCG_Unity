@@ -391,14 +391,15 @@ public class OnlineEffectResolver
             case "character.active.adjacentOppCollabTensionDeltaThisTurn":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPersistentStateDelta, "temporary collab tension modifier for adjacent opponent", "StatusDelta, FieldStatDelta, MessageDelta", "pending persistent state", false, false, false, true, true);
             case "character.onAppear.callFromRestByTagToEmptyPlatforms":
-                return Meta(normalized, OnlineEffectSupportCategory.NeedsUserDecision, "on-appear rest zone candidate selection and empty platform selection, plus possible OnAppear chain", "SelectionRequestDelta, CardZoneMoveDelta, MessageDelta", "pending user decision", true, false, false, false, true);
+                return Meta(normalized, OnlineEffectSupportCategory.NeedsUserDecision, "multi-step owner rest-zone card selection, empty owned platform selection, partial-finish policy, and possible OnAppear chain", "SelectionRequestDelta, CardZoneMoveDelta, MessageDelta", "pending MultiStepRestZoneSelection design", true, false, false, false, true);
             case "content.forceOpponentFlipOrSack":
+                return Meta(normalized, OnlineEffectSupportCategory.NeedsUserDecision, "actor selects public opponent face-down field slot, then target owner chooses pay-and-flip or sack", "SelectionRequestDelta, OpponentDecisionAction, CardRevealDelta, CardZoneMoveDelta, ViewerDelta, ActionStateDelta, MessageDelta", "pending OpponentChoiceSelection design", true, false, false, false, false);
             case "idol.active.callFromRestByTagThenDonateViewers":
-                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "field target selection and zone/stat changes", "SelectionRequestDelta, CardZoneMoveDelta, FieldStatDelta, ViewerDelta, ActionStateDelta, MessageDelta", "pending selection flow", true, false, false, false, false);
+                return Meta(normalized, OnlineEffectSupportCategory.NeedsUserDecision, "multi-step owner rest-zone card selection and empty owned platform selection, plus donation and possible OnAppear chain", "SelectionRequestDelta, CardZoneMoveDelta, ViewerDelta, ActionStateDelta, MessageDelta", "pending MultiStepRestZoneSelection design", true, false, false, false, false);
             case "content.moveOwnCharToEmptyOrBattleIfTagged":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "multi-step selection for own tagged character then empty destination or effect-started collab destination", "SelectionRequestDelta, CardZoneMoveDelta, ViewerDelta, StartCollabResult, MessageDelta", "implemented via multi-step online selection flow", true, false, false, false, false);
             case "content.silenceCharacterCollabThisTurn":
-                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "select a public face-up field character and silence its collab effects until this turn expires", "SelectionRequestDelta, StatusDelta, CardZoneMoveDelta, ViewerDelta, MessageDelta", "implemented via online selection flow", true, false, false, false, false);
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresPersistentStateDelta, "implemented selection for a public face-up field character; result silences collab effects until this turn expires", "SelectionRequestDelta, StatusDelta, CardZoneMoveDelta, ViewerDelta, ActionStateDelta, MessageDelta", "selection implemented; pending PersistentStatus registry/expiry audit", true, false, false, true, false);
             case "idol.active.fullHealOneControlled":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "select one controlled face-up character and heal to max HP", "SelectionRequestDelta, FieldStatDelta, ViewerDelta, ActionStateDelta, MessageDelta", "implemented via online selection flow", true, false, false, false, false);
             case "character.fetchCardsToHandByTags":
@@ -413,7 +414,7 @@ public class OnlineEffectResolver
             case "content.forceOpponentSummonOrSackFromHand":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresPrivateInfoProtocol, "opponent private hand choice then summon or discard", "SelectionRequestDelta, CardZoneMoveDelta, CardRevealDelta, MessageDelta", "pending private protocol", true, false, true, false, false);
             case "content.returnUpToNFromRestToDeck":
-                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "rest zone card selection and rest to deck move", "SelectionRequestDelta, CardZoneMoveDelta, DeckOrderDelta, MessageDelta", "pending selection flow", true, false, false, false, false);
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresPrivateInfoProtocol, "owner rest-zone sequence up to N with authoritative deck insertion/shuffle order", "SelectionRequestDelta, CardZoneMoveDelta, DeckOrderDelta, ViewerDelta, ActionStateDelta, MessageDelta", "pending DeckOrderAuthoritySelection design", true, true, true, false, false);
             case "content.lockBroadcastIdNoMoveNoKOUntilNextEnd":
             case "content.invertNegativeAmountForTagThisTurn":
             case "content.forbidOpponentAttackUntilNextTurn":
@@ -439,7 +440,7 @@ public class OnlineEffectResolver
             case "character.passive.adjacentCollabTensionDeltaForTag":
                 return Meta(normalized, OnlineEffectSupportCategory.IncludedInHostCalculation, "adjacent collab tension passive is read by host collab tension calculation", "StartCollabResult battle stats", "included in host calculation", false, false, false, false, true);
             case "character.active.forceBattleTargetAnywhere":
-                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "battle target selection override", "SelectionRequestDelta, StatusDelta, ActionStateDelta, MessageDelta", "pending selection flow", true, false, false, true, false);
+                return Meta(normalized, OnlineEffectSupportCategory.RequiresSelectionFlow, "select a public face-up opponent field character; one candidate auto-resolves into a forced incoming StartCollabResult", "SelectionRequestDelta, StartCollabResult, ViewerDelta, ActionStateDelta, MessageDelta", "implemented via online character active selection flow", true, false, false, false, false);
             case "content.postCollabTabiBoostAndRebattle":
             case "content.collabClicheSpendBuffRefund":
                 return Meta(normalized, OnlineEffectSupportCategory.RequiresTimingTriggerResult, "post-collab battle/tension/viewer follow-up", "StatusDelta, FieldStatDelta, ViewerDelta, ActionStateDelta, MessageDelta", "pending trigger result", false, false, false, true, true);
