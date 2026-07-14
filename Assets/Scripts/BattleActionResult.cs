@@ -178,18 +178,49 @@ public class DeckOrderDelta
 [Serializable]
 public class StatusDelta
 {
+    public string operation = "";
+    public string statusId = "";
     public BattleSlotOwner owner;
+    public BattleSlotOwner sourceActor;
+    public BattleSlotOwner targetOwner;
+    public string sourceEffectRef = "";
     public string sourceCardInstanceId = "";
     public string sourceCardId = "";
     public string targetSlotId = "";
     public string targetCardInstanceId = "";
     public string statusType = "";
+    public int appliedTurn;
+    public int appliedActionSequence;
+    public string expirationPolicy = "";
     public string value = "";
     public string durationType = "";
     public int expireTurn;
     public string expirePhase = "";
     public string stackPolicy = "";
     public bool addOrRemove;
+    public int intValue;
+    public string stringValue = "";
+}
+
+[Serializable]
+public class OnlinePersistentStatusState
+{
+    public string statusId = "";
+    public string statusType = "";
+    public string sourceEffectRef = "";
+    public string sourceCardInstanceId = "";
+    public BattleSlotOwner sourceActor;
+    public string targetKind = "";
+    public string targetSlotId = "";
+    public string targetCardInstanceId = "";
+    public BattleSlotOwner targetOwner;
+    public int appliedTurn;
+    public int appliedActionSequence;
+    public string expirationPolicy = "";
+    public int expirationTurn;
+    public string stackKey = "";
+    public int intValue;
+    public string stringValue = "";
 }
 
 [Serializable]

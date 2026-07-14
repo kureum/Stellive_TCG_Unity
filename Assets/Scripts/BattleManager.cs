@@ -219,6 +219,19 @@ public class BattleManager : MonoBehaviour
         new Dictionary<string, PendingOnlineSelection>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> resolvedOnlineSelectionRequestIds =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private const string PendingCompleteSuccess = "Success";
+    private const string PendingCompleteCancel = "Cancel";
+    private const string PendingCompleteReject = "Reject";
+    private const string PendingCompleteInvalidResponse = "InvalidResponse";
+    private const string PendingCompleteNextStep = "NextStep";
+    private const string StatusOperationAdd = "Add";
+    private const string StatusOperationRemove = "Remove";
+    private const string StatusTypeSilenceCharacterCollabThisTurn = "SilenceCharacterCollabThisTurn";
+    private const string StatusExpirationEndOfCurrentTurn = "EndOfCurrentTurn";
+    private readonly Dictionary<string, OnlinePersistentStatusState> onlinePersistentStatusesById =
+        new Dictionary<string, OnlinePersistentStatusState>(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> onlinePersistentStatusIdByStackKey =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
     private bool enemyHasSummonedFaceDownThisTurn = false;
     private TestEnemy testEnemyController;
@@ -281,6 +294,11 @@ public class BattleManager : MonoBehaviour
         if (string.IsNullOrWhiteSpace(requestId))
             return;
 
+        pendingOnlineSelectionsByRequestId.TryGetValue(requestId, out PendingOnlineSelection selection);
+        string normalizedReason = string.IsNullOrWhiteSpace(reason)
+            ? PendingCompleteSuccess
+            : reason;
+
         pendingOnlineSelectionsByRequestId.Remove(requestId);
         resolvedOnlineSelectionRequestIds.Add(requestId);
 
@@ -291,8 +309,10 @@ public class BattleManager : MonoBehaviour
         }
 
         Debug.Log(
-            $"[OnlineSelectionFlow][PendingComplete] requestId={requestId}, " +
-            $"reason={(string.IsNullOrWhiteSpace(reason) ? "Complete" : reason)}");
+            $"[PendingComplete] requestId={requestId}, " +
+            $"effectRef={selection?.effectRef ?? ""}, " +
+            $"actor={(selection != null ? selection.requestedPlayer.ToString() : "")}, " +
+            $"reason={normalizedReason}");
     }
 
     private void ClearAllPendingOnlineSelections()
@@ -316,6 +336,330 @@ public class BattleManager : MonoBehaviour
             : $"_{suffix}";
 
         return $"sel_{actor}_{actionSequence}_{normalizedEffectRef}{normalizedSuffix}";
+    }
+
+    private string BuildOnlinePersistentStatusId(
+        BattleSlotOwner actor,
+        int actionSequence,
+        string effectRef,
+        string targetId,
+        string statusType)
+    {
+        string normalizedEffectRef = NormalizeOnlineStatusIdPart(effectRef);
+        string normalizedTarget = NormalizeOnlineStatusIdPart(targetId);
+        string normalizedStatusType = NormalizeOnlineStatusIdPart(statusType);
+        return $"status_{actor}_{actionSequence}_{normalizedEffectRef}_{normalizedTarget}_{normalizedStatusType}";
+    }
+
+    private string NormalizeOnlineStatusIdPart(string value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? "unknown"
+            : value.Replace('.', '_').Replace(' ', '_');
+    }
+
+    private string BuildOnlinePersistentStatusStackKey(
+        string statusType,
+        string targetSlotId,
+        string targetCardInstanceId)
+    {
+        return $"{statusType}|{targetSlotId}|{targetCardInstanceId}";
+    }
+
+    private OnlinePersistentStatusState CreateOnlinePersistentStatusState(StatusDelta delta)
+    {
+        if (delta == null)
+            return null;
+
+        string stackKey = BuildOnlinePersistentStatusStackKey(
+            delta.statusType,
+            delta.targetSlotId,
+            delta.targetCardInstanceId);
+
+        return new OnlinePersistentStatusState
+        {
+            statusId = delta.statusId,
+            statusType = delta.statusType,
+            sourceEffectRef = delta.sourceEffectRef,
+            sourceCardInstanceId = delta.sourceCardInstanceId,
+            sourceActor = delta.sourceActor,
+            targetKind = !string.IsNullOrWhiteSpace(delta.targetSlotId) ? "FieldSlot" : "",
+            targetSlotId = delta.targetSlotId,
+            targetCardInstanceId = delta.targetCardInstanceId,
+            targetOwner = delta.targetOwner,
+            appliedTurn = delta.appliedTurn,
+            appliedActionSequence = delta.appliedActionSequence,
+            expirationPolicy = !string.IsNullOrWhiteSpace(delta.expirationPolicy)
+                ? delta.expirationPolicy
+                : delta.durationType,
+            expirationTurn = delta.expireTurn,
+            stackKey = stackKey,
+            intValue = delta.intValue,
+            stringValue = !string.IsNullOrWhiteSpace(delta.stringValue)
+                ? delta.stringValue
+                : delta.value
+        };
+    }
+
+    private bool RegisterOnlinePersistentStatus(OnlinePersistentStatusState status, string reason)
+    {
+        if (status == null || string.IsNullOrWhiteSpace(status.statusId))
+            return false;
+
+        if (string.IsNullOrWhiteSpace(status.stackKey))
+        {
+            status.stackKey = BuildOnlinePersistentStatusStackKey(
+                status.statusType,
+                status.targetSlotId,
+                status.targetCardInstanceId);
+        }
+
+        if (onlinePersistentStatusesById.ContainsKey(status.statusId))
+        {
+            onlinePersistentStatusesById[status.statusId] = status;
+            onlinePersistentStatusIdByStackKey[status.stackKey] = status.statusId;
+            ApplyOnlinePersistentStatusToLegacySlot(status, true);
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.stackKey) &&
+            onlinePersistentStatusIdByStackKey.TryGetValue(status.stackKey, out string existingStatusId) &&
+            !string.Equals(existingStatusId, status.statusId, StringComparison.OrdinalIgnoreCase))
+        {
+            RemoveOnlinePersistentStatus(existingStatusId, "Replaced");
+        }
+
+        onlinePersistentStatusesById[status.statusId] = status;
+        if (!string.IsNullOrWhiteSpace(status.stackKey))
+            onlinePersistentStatusIdByStackKey[status.stackKey] = status.statusId;
+
+        ApplyOnlinePersistentStatusToLegacySlot(status, true);
+        Debug.Log(
+            $"[OnlinePersistentStatus][Register] statusId={status.statusId}, " +
+            $"type={status.statusType}, sourceEffectRef={status.sourceEffectRef}, " +
+            $"sourceActor={status.sourceActor}, targetSlot={status.targetSlotId}, " +
+            $"targetCard={status.targetCardInstanceId}, appliedTurn={status.appliedTurn}, " +
+            $"expiration={status.expirationPolicy}/{status.expirationTurn}");
+        return true;
+    }
+
+    private bool RegisterOnlinePersistentStatusFromDelta(StatusDelta delta, string reason)
+    {
+        return RegisterOnlinePersistentStatus(CreateOnlinePersistentStatusState(delta), reason);
+    }
+
+    private bool RemoveOnlinePersistentStatus(string statusId, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(statusId) ||
+            !onlinePersistentStatusesById.TryGetValue(statusId, out OnlinePersistentStatusState status) ||
+            status == null)
+        {
+            return false;
+        }
+
+        onlinePersistentStatusesById.Remove(statusId);
+        if (!string.IsNullOrWhiteSpace(status.stackKey) &&
+            onlinePersistentStatusIdByStackKey.TryGetValue(status.stackKey, out string mappedStatusId) &&
+            string.Equals(mappedStatusId, statusId, StringComparison.OrdinalIgnoreCase))
+        {
+            onlinePersistentStatusIdByStackKey.Remove(status.stackKey);
+        }
+
+        ApplyOnlinePersistentStatusToLegacySlot(status, false);
+        Debug.Log(
+            $"[OnlinePersistentStatus][Remove] statusId={status.statusId}, " +
+            $"type={status.statusType}, reason={reason}");
+        return true;
+    }
+
+    private List<OnlinePersistentStatusState> GetOnlinePersistentStatusesForTarget(
+        string statusType,
+        string targetSlotId,
+        string targetCardInstanceId)
+    {
+        List<OnlinePersistentStatusState> result = new List<OnlinePersistentStatusState>();
+
+        foreach (OnlinePersistentStatusState status in onlinePersistentStatusesById.Values)
+        {
+            if (status == null)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(statusType) &&
+                !string.Equals(status.statusType, statusType, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            bool slotMatches = string.IsNullOrWhiteSpace(targetSlotId) ||
+                string.Equals(status.targetSlotId, targetSlotId, StringComparison.OrdinalIgnoreCase);
+            bool cardMatches = string.IsNullOrWhiteSpace(targetCardInstanceId) ||
+                string.Equals(status.targetCardInstanceId, targetCardInstanceId, StringComparison.OrdinalIgnoreCase);
+
+            if (slotMatches && cardMatches)
+                result.Add(status);
+        }
+
+        return result;
+    }
+
+    private bool TryGetOnlinePersistentStatusForTarget(
+        string statusType,
+        string targetSlotId,
+        string targetCardInstanceId,
+        out OnlinePersistentStatusState status)
+    {
+        status = null;
+        List<OnlinePersistentStatusState> statuses = GetOnlinePersistentStatusesForTarget(
+            statusType,
+            targetSlotId,
+            targetCardInstanceId);
+        if (statuses.Count == 0)
+            return false;
+
+        status = statuses[0];
+        return true;
+    }
+
+    private bool HasOnlinePersistentStatus(
+        string statusType,
+        string targetSlotId,
+        string targetCardInstanceId)
+    {
+        return TryGetOnlinePersistentStatusForTarget(
+            statusType,
+            targetSlotId,
+            targetCardInstanceId,
+            out _);
+    }
+
+    private List<OnlinePersistentStatusState> GetOnlinePersistentStatusesForSource(
+        string sourceEffectRef,
+        string sourceCardInstanceId)
+    {
+        List<OnlinePersistentStatusState> result = new List<OnlinePersistentStatusState>();
+
+        foreach (OnlinePersistentStatusState status in onlinePersistentStatusesById.Values)
+        {
+            if (status == null)
+                continue;
+
+            bool effectMatches = string.IsNullOrWhiteSpace(sourceEffectRef) ||
+                string.Equals(status.sourceEffectRef, sourceEffectRef, StringComparison.OrdinalIgnoreCase);
+            bool cardMatches = string.IsNullOrWhiteSpace(sourceCardInstanceId) ||
+                string.Equals(status.sourceCardInstanceId, sourceCardInstanceId, StringComparison.OrdinalIgnoreCase);
+
+            if (effectMatches && cardMatches)
+                result.Add(status);
+        }
+
+        return result;
+    }
+
+    private void AppendExpiredOnlinePersistentStatusDeltas(
+        BattleActionResult result,
+        int newTurn,
+        string reason)
+    {
+        if (result == null || onlinePersistentStatusesById.Count == 0)
+            return;
+
+        List<OnlinePersistentStatusState> expired = new List<OnlinePersistentStatusState>();
+        foreach (OnlinePersistentStatusState status in onlinePersistentStatusesById.Values)
+        {
+            if (IsOnlinePersistentStatusExpired(status, newTurn))
+                expired.Add(status);
+        }
+
+        foreach (OnlinePersistentStatusState status in expired)
+        {
+            result.statusDeltas.Add(CreateRemoveStatusDelta(status, newTurn));
+            Debug.Log(
+                $"[OnlinePersistentStatus][Expire] statusId={status.statusId}, " +
+                $"type={status.statusType}, turn={newTurn}, reason={reason}");
+        }
+    }
+
+    private bool IsOnlinePersistentStatusExpired(OnlinePersistentStatusState status, int currentTurn)
+    {
+        if (status == null)
+            return false;
+
+        if (string.Equals(status.expirationPolicy, StatusExpirationEndOfCurrentTurn, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status.expirationPolicy, "UntilTurnEnd", StringComparison.OrdinalIgnoreCase))
+        {
+            return currentTurn > status.expirationTurn;
+        }
+
+        return false;
+    }
+
+    private StatusDelta CreateRemoveStatusDelta(OnlinePersistentStatusState status, int removeTurn)
+    {
+        return new StatusDelta
+        {
+            operation = StatusOperationRemove,
+            statusId = status.statusId,
+            owner = status.targetOwner,
+            sourceActor = status.sourceActor,
+            targetOwner = status.targetOwner,
+            sourceEffectRef = status.sourceEffectRef,
+            sourceCardInstanceId = status.sourceCardInstanceId,
+            targetSlotId = status.targetSlotId,
+            targetCardInstanceId = status.targetCardInstanceId,
+            statusType = status.statusType,
+            appliedTurn = status.appliedTurn,
+            appliedActionSequence = status.appliedActionSequence,
+            expirationPolicy = status.expirationPolicy,
+            expireTurn = status.expirationTurn,
+            stackPolicy = "Replace",
+            addOrRemove = false,
+            value = "false",
+            stringValue = "false"
+        };
+    }
+
+    private void ClearAllOnlinePersistentStatuses(string reason)
+    {
+        if (onlinePersistentStatusesById.Count > 0)
+        {
+            foreach (OnlinePersistentStatusState status in onlinePersistentStatusesById.Values)
+            {
+                if (status == null)
+                    continue;
+
+                Debug.Log(
+                    $"[OnlinePersistentStatus][Remove] statusId={status.statusId}, " +
+                    $"type={status.statusType}, reason={reason}");
+            }
+        }
+
+        onlinePersistentStatusesById.Clear();
+        onlinePersistentStatusIdByStackKey.Clear();
+    }
+
+    public void ClearOnlinePersistentStatusesFromExternal(string reason)
+    {
+        ClearAllOnlinePersistentStatuses(reason);
+    }
+
+    private void ApplyOnlinePersistentStatusToLegacySlot(
+        OnlinePersistentStatusState status,
+        bool add)
+    {
+        if (status == null ||
+            !string.Equals(status.statusType, StatusTypeSilenceCharacterCollabThisTurn, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        BattleFieldSlot slot = FindSlotById(status.targetSlotId);
+        if (slot == null || !slot.HasCharacter)
+            return;
+
+        if (add)
+            slot.SetCollabEffectsSilencedUntilTurn(status.expirationTurn);
+        else
+            slot.ClearCollabEffectsSilence();
     }
 
     private void Start()
@@ -421,6 +765,7 @@ public class BattleManager : MonoBehaviour
         onlineStartCollabRequestPending = false;
         onlineUseContentRequestPending = false;
         ClearOnlineTurnPassState();
+        ClearAllOnlinePersistentStatuses("EnterOnlineBattleWaitingState");
         onlineBroadcastSetupReady = false;
         hasInitializedOnlineRuntime = false;
         isGameOver = false;
@@ -606,6 +951,7 @@ public class BattleManager : MonoBehaviour
         nextCardInstanceSequence = 1;
         onlineBroadcastRequestPending = false;
         onlineBroadcastSetupReady = !BattleStartSettings.IsOnlineBattle;
+        ClearAllOnlinePersistentStatuses("StartBattleSetup");
 
         if (!LoadCardDatabase())
             return;
@@ -2938,6 +3284,7 @@ public class BattleManager : MonoBehaviour
             result.hostActedInCurrentPassCycle = false;
             result.clientActedInCurrentPassCycle = false;
             result.consecutiveNoActionPassCount = 0;
+            AppendExpiredOnlinePersistentStatusDeltas(result, resultTurnCount, "TurnAdvance");
             ClearOnlineTurnPassState();
         }
         else
@@ -2979,6 +3326,7 @@ public class BattleManager : MonoBehaviour
 
         ClearAllPendingBattleInteractions();
         onlineEndTurnRequestPending = false;
+        ApplyOnlineStatusDeltas(result);
 
         if (result.didAdvanceTurn)
         {
@@ -5322,7 +5670,7 @@ public class BattleManager : MonoBehaviour
         }
 
         if (parentSelection != null)
-            CompletePendingOnlineSelection(parentSelection.requestId);
+            CompletePendingOnlineSelection(parentSelection.requestId, PendingCompleteNextStep);
 
         string chainId = parentSelection != null && !string.IsNullOrWhiteSpace(parentSelection.chainId)
             ? parentSelection.chainId
@@ -6115,7 +6463,7 @@ public class BattleManager : MonoBehaviour
         });
 
         if (completePendingSelection)
-            CompletePendingOnlineSelection(selectionRequestId);
+            CompletePendingOnlineSelection(selectionRequestId, PendingCompleteSuccess);
 
         FillBattleCountSnapshot(result);
         ProjectViewerDeltasIntoSnapshot(result);
@@ -6376,7 +6724,7 @@ public class BattleManager : MonoBehaviour
             relatedInstanceId = targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : ""
         });
 
-        CompletePendingOnlineSelection(action.selectionRequestId, "Cancel");
+        CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteSuccess);
         FillBattleCountSnapshot(result);
         ProjectViewerDeltasIntoSnapshot(result);
 
@@ -6471,7 +6819,7 @@ public class BattleManager : MonoBehaviour
         });
 
         if (!string.IsNullOrWhiteSpace(selectionRequestId))
-            CompletePendingOnlineSelection(selectionRequestId);
+            CompletePendingOnlineSelection(selectionRequestId, PendingCompleteSuccess);
 
         FillBattleCountSnapshot(result);
         ProjectViewerDeltasIntoSnapshot(result);
@@ -6568,21 +6916,43 @@ public class BattleManager : MonoBehaviour
             result.movedCardIds.Add(contentCard.cardInstanceId);
         }
 
-        result.statusDeltas.Add(new StatusDelta
+        string targetSlotId = targetSlot.GetSlotId();
+        string targetCardInstanceId = targetSlot.characterCard != null
+            ? targetSlot.characterCard.cardInstanceId
+            : "";
+        string statusId = BuildOnlinePersistentStatusId(
+            selection.requestedPlayer,
+            selection.sourceActionSequence,
+            selection.effectRef,
+            !string.IsNullOrWhiteSpace(targetSlotId) ? targetSlotId : targetCardInstanceId,
+            StatusTypeSilenceCharacterCollabThisTurn);
+
+        StatusDelta statusDelta = new StatusDelta
         {
+            operation = StatusOperationAdd,
+            statusId = statusId,
             owner = targetSlot.characterOwner,
+            sourceActor = selection.requestedPlayer,
+            targetOwner = targetSlot.characterOwner,
+            sourceEffectRef = selection.effectRef,
             sourceCardInstanceId = contentCard != null ? contentCard.cardInstanceId : "",
             sourceCardId = contentCard != null ? contentCard.id : "",
-            targetSlotId = targetSlot.GetSlotId(),
-            targetCardInstanceId = targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : "",
-            statusType = "SilenceCharacterCollabThisTurn",
+            targetSlotId = targetSlotId,
+            targetCardInstanceId = targetCardInstanceId,
+            statusType = StatusTypeSilenceCharacterCollabThisTurn,
+            appliedTurn = turnCount,
+            appliedActionSequence = selection.sourceActionSequence,
+            expirationPolicy = StatusExpirationEndOfCurrentTurn,
             value = "true",
             durationType = "UntilTurnEnd",
             expireTurn = turnCount,
             expirePhase = BattlePhase.MainGame.ToString(),
             stackPolicy = "Replace",
-            addOrRemove = true
-        });
+            addOrRemove = true,
+            stringValue = "true"
+        };
+        RegisterOnlinePersistentStatusFromDelta(statusDelta, "HostResolve");
+        result.statusDeltas.Add(statusDelta);
 
         result.messageDeltas.Add(new MessageDelta
         {
@@ -6593,7 +6963,7 @@ public class BattleManager : MonoBehaviour
             relatedInstanceId = targetSlot.characterCard != null ? targetSlot.characterCard.cardInstanceId : ""
         });
 
-        CompletePendingOnlineSelection(action.selectionRequestId, "Cancel");
+        CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteSuccess);
         FillBattleCountSnapshot(result);
         ProjectUseContentSelectionSnapshot(result, selection.requestedPlayer, cost);
 
@@ -6620,7 +6990,7 @@ public class BattleManager : MonoBehaviour
             return result;
         }
 
-        CompletePendingOnlineSelection(selection.requestId);
+        CompletePendingOnlineSelection(selection.requestId, PendingCompleteNextStep);
 
         string requestId = $"{selection.chainId}_step2";
         PendingOnlineSelection nextSelection = new PendingOnlineSelection
@@ -6710,7 +7080,7 @@ public class BattleManager : MonoBehaviour
             return result;
         }
 
-        CompletePendingOnlineSelection(selection.requestId);
+        CompletePendingOnlineSelection(selection.requestId, PendingCompleteNextStep);
 
         result.isAccepted = true;
         result.message = "강화 비용을 지불했습니다. 덱에서 #타비 카드를 선택하세요.";
@@ -6917,7 +7287,7 @@ public class BattleManager : MonoBehaviour
             relatedInstanceId = sourceSlot.characterCard != null ? sourceSlot.characterCard.cardInstanceId : ""
         });
 
-        CompletePendingOnlineSelection(action.selectionRequestId);
+        CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteSuccess);
         FillBattleCountSnapshot(result);
         ProjectViewerDeltasIntoSnapshot(result);
 
@@ -6993,7 +7363,7 @@ public class BattleManager : MonoBehaviour
         });
 
         ProjectUseContentCostAndHandIntoSnapshot(collabResult, selection.requestedPlayer, cost);
-        CompletePendingOnlineSelection(action?.selectionRequestId);
+        CompletePendingOnlineSelection(action?.selectionRequestId, PendingCompleteSuccess);
 
         Debug.Log(
             $"[OnlineSelection] Host resolved move effect collab. requestId={action?.selectionRequestId}, " +
@@ -8420,7 +8790,7 @@ public class BattleManager : MonoBehaviour
         result.effectClassification = OnlineEffectProgressStatus.Implemented.ToString();
         result.message = "효과 발동을 취소했습니다.";
 
-        CompletePendingOnlineSelection(action.selectionRequestId);
+        CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteCancel);
         FillBattleCountSnapshot(result);
 
         Debug.Log(
@@ -8588,7 +8958,7 @@ public class BattleManager : MonoBehaviour
             messageText = "상대가 덱에서 카드 1장을 손패에 추가했습니다."
         });
 
-        CompletePendingOnlineSelection(action.selectionRequestId);
+        CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteSuccess);
         FillBattleCountSnapshot(result);
         ProjectPrivateDeckToHandIntoSnapshot(result, selection.requestedPlayer, cost);
 
@@ -8620,11 +8990,11 @@ public class BattleManager : MonoBehaviour
             result.isAccepted = false;
             result.rejectReason = $"덱에 {bunnyTag} 카드가 없습니다.";
             result.message = result.rejectReason;
-            CompletePendingOnlineSelection(action.selectionRequestId);
+            CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteReject);
             return result;
         }
 
-        CompletePendingOnlineSelection(action.selectionRequestId);
+        CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteNextStep);
 
         result.isAccepted = true;
         result.message = "덱에서 #타비 카드를 손패에 추가했습니다. 덱에서 #뿡댕이 카드를 선택하세요.";
@@ -8854,7 +9224,7 @@ public class BattleManager : MonoBehaviour
         bool shouldCompletePending = actorMatches && effectRefMatches;
 
         if (shouldCompletePending)
-            CompletePendingOnlineSelection(action.selectionRequestId, $"Rejected:{reason}");
+            CompletePendingOnlineSelection(action.selectionRequestId, PendingCompleteReject);
 
         Debug.LogWarning(
             $"[OnlineSelectionFlow][RejectResponse] requestId={action.selectionRequestId}, " +
@@ -9872,7 +10242,7 @@ public class BattleManager : MonoBehaviour
             if (delta == null)
                 continue;
 
-            if (string.Equals(delta.statusType, "SilenceCharacterCollabThisTurn", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(delta.statusType, StatusTypeSilenceCharacterCollabThisTurn, StringComparison.OrdinalIgnoreCase))
             {
                 BattleFieldSlot slot = FindSlotById(delta.targetSlotId);
                 if (slot == null || !slot.HasCharacter)
@@ -9882,14 +10252,21 @@ public class BattleManager : MonoBehaviour
                     continue;
                 }
 
-                if (delta.addOrRemove)
-                    slot.SetCollabEffectsSilencedUntilTurn(delta.expireTurn);
+                bool add = delta.addOrRemove ||
+                    string.Equals(delta.operation, StatusOperationAdd, StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(delta.operation);
+                if (add)
+                    RegisterOnlinePersistentStatusFromDelta(delta, "DeltaApply");
                 else
-                    slot.ClearCollabEffectsSilence();
+                {
+                    bool removed = RemoveOnlinePersistentStatus(delta.statusId, "DeltaApply");
+                    if (!removed)
+                        ApplyOnlinePersistentStatusToLegacySlot(CreateOnlinePersistentStatusState(delta), false);
+                }
 
                 Debug.Log(
                     $"[EffectDelta] SilenceCharacterCollabThisTurn applied. " +
-                    $"slot={delta.targetSlotId}, card={delta.targetCardInstanceId}, add={delta.addOrRemove}, expireTurn={delta.expireTurn}");
+                    $"slot={delta.targetSlotId}, card={delta.targetCardInstanceId}, add={add}, expireTurn={delta.expireTurn}");
                 continue;
             }
 
@@ -10588,7 +10965,25 @@ public class BattleManager : MonoBehaviour
 
     public bool IsCharacterCollabEffectSilencedFromExternal(BattleFieldSlot slot)
     {
-        return slot != null && slot.IsCollabEffectsSilenced(turnCount);
+        if (slot == null)
+            return false;
+
+        string slotId = slot.GetSlotId();
+        string cardInstanceId = slot.characterCard != null ? slot.characterCard.cardInstanceId : "";
+        if (TryGetOnlinePersistentStatusForTarget(
+                StatusTypeSilenceCharacterCollabThisTurn,
+                slotId,
+                cardInstanceId,
+                out OnlinePersistentStatusState status))
+        {
+            Debug.Log(
+                $"[OnlinePersistentStatus][Blocked] statusId={status.statusId}, " +
+                $"type={status.statusType}, actionType=CollabEffect, " +
+                $"actor={status.targetOwner}, targetSlot={slotId}");
+            return true;
+        }
+
+        return slot.IsCollabEffectsSilenced(turnCount);
     }
 
     public void ApplyCollabEffectSilenceThisTurnFromExternal(BattleFieldSlot slot)
