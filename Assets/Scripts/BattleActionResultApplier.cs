@@ -267,6 +267,12 @@ public class BattleActionResultApplier
         Debug.Log(
             $"[BattleActionResultApplier] Apply SelectEffectTargetResult. " +
             $"actor={result.actor}, effectRef={result.resolvedEffectRef}, target={GetSlotId(result, 0)}");
+        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
+        {
+            battleManager.ApplyOnlineSelectionRequestFromResult(result);
+            return;
+        }
+
         battleManager.ApplySelectEffectTargetFromResult(result);
     }
 
@@ -278,6 +284,12 @@ public class BattleActionResultApplier
         Debug.Log(
             $"[BattleActionResultApplier] Apply SelectCardOptionResult. " +
             $"actor={result.actor}, effectRef={result.resolvedEffectRef}, draws={result.cardDrawDeltas?.Count ?? 0}");
+        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
+        {
+            battleManager.ApplyOnlineSelectionRequestFromResult(result);
+            return;
+        }
+
         battleManager.ApplySelectCardOptionFromResult(result);
     }
 
@@ -289,6 +301,12 @@ public class BattleActionResultApplier
         Debug.Log(
             $"[BattleActionResultApplier] Apply SelectEffectChoiceResult. " +
             $"actor={result.actor}, effectRef={result.resolvedEffectRef}, applied={result.effectApplied}");
+        if (result.selectionRequests != null && result.selectionRequests.Count > 0)
+        {
+            battleManager.ApplyOnlineSelectionRequestFromResult(result);
+            return;
+        }
+
         battleManager.ApplySelectEffectChoiceFromResult(result);
     }
 

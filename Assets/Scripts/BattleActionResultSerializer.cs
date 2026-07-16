@@ -81,5 +81,14 @@ public static class BattleActionResultSerializer
             if (request.candidatePublicIds == null) request.candidatePublicIds = new System.Collections.Generic.List<string>();
             if (request.candidatePrivateIdsForOwnerOnly == null) request.candidatePrivateIdsForOwnerOnly = new System.Collections.Generic.List<string>();
         }
+
+        foreach (CardDrawDelta delta in result.cardDrawDeltas)
+        {
+            if (delta == null)
+                continue;
+
+            if (string.IsNullOrWhiteSpace(delta.acquisitionVisibility))
+                delta.acquisitionVisibility = CardAcquisitionVisibility.PrivateDraw.ToString();
+        }
     }
 }

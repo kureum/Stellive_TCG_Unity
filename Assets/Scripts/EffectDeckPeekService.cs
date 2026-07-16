@@ -276,6 +276,10 @@ public static class EffectDeckPeekService
         remainingCards.Remove(selectedCard);
         MoveRemainingRevealedCards(request, battleManager, result, remainingCards);
         battleManager.RefreshAllUIFromExternal();
+        battleManager.ShowLocalSearchToHandRevealFromExternal(
+            request.owner,
+            selectedCard,
+            request.reason.ToString());
 
         string selectedMessage = $"{selectedCard.name} 카드를 패에 더했습니다.";
         if (request.selectionCostPerCard > 0)
@@ -371,6 +375,10 @@ public static class EffectDeckPeekService
             battleManager.ShuffleMainDeckFromExternal(request.owner);
 
         battleManager.RefreshAllUIFromExternal();
+        battleManager.ShowLocalSearchToHandRevealFromExternal(
+            request.owner,
+            selectedCard,
+            request.reason.ToString());
 
         string message = $"{selectedCard.name} 카드를 패에 더했습니다.";
         if (request.selectionCostPerCard > 0)

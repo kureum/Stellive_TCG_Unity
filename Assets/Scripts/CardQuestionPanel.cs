@@ -46,6 +46,9 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
     private Action<BaseCardData, BattleFieldSlot> detailPreviewAction;
     private bool isOpen;
     private bool isConfirmOnlyMode;
+    private bool confirmOnlyCancelAllowed = true;
+    private bool isRevealNotificationMode;
+    private string currentRevealId = "";
     private CardQuestionCancelPolicy cancelPolicy = CardQuestionCancelPolicy.AllowCancel;
 
     private void Awake()
@@ -120,6 +123,8 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
         Action<BaseCardData> onSelected,
         Action onCancel)
     {
+        CloseRevealNotificationForHigherPriorityUI("CardSelection");
+
         if (isOpen)
             return false;
 
@@ -181,6 +186,8 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
         Action<CardQuestionOption> onSelected,
         Action onCancel)
     {
+        CloseRevealNotificationForHigherPriorityUI("CardOptionSelection");
+
         if (isOpen)
             return false;
 
@@ -223,8 +230,11 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
     public bool TryShowCardsForConfirmation(
         string message,
         List<BaseCardData> cards,
-        Action onConfirm)
+        Action onConfirm,
+        bool cancelAllowed = true)
     {
+        CloseRevealNotificationForHigherPriorityUI("ConfirmOnly");
+
         if (isOpen)
             return false;
 
@@ -238,6 +248,7 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
         isOpen = true;
         cancelPolicy = CardQuestionCancelPolicy.AllowCancel;
         isConfirmOnlyMode = true;
+        confirmOnlyCancelAllowed = cancelAllowed;
         selectedQuestionCard = null;
         selectedQuestionOption = null;
         selectedQuestionOutline = null;
@@ -266,6 +277,75 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
         return true;
     }
 
+    public bool TryShowRevealNotification(
+        string revealId,
+        string message,
+        List<BaseCardData> cards,
+        Action onConfirm)
+    {
+        if (isOpen && !isRevealNotificationMode)
+            return false;
+
+        if (isOpen && isRevealNotificationMode)
+        {
+            SendSystemMessage($"[CardRevealUI][Replace] previousRevealId={currentRevealId}, nextRevealId={revealId}");
+            Hide();
+        }
+
+        if (cards == null || cards.Count == 0)
+        {
+            SendSystemMessage("공개할 카드가 없습니다.");
+            return false;
+        }
+
+        isOpen = true;
+        cancelPolicy = CardQuestionCancelPolicy.AllowCancel;
+        isConfirmOnlyMode = true;
+        confirmOnlyCancelAllowed = true;
+        isRevealNotificationMode = true;
+        currentRevealId = revealId ?? "";
+        selectedQuestionCard = null;
+        selectedQuestionOption = null;
+        selectedQuestionOutline = null;
+        onSelectedAction = null;
+        onOptionSelectedAction = null;
+        onCancelAction = onConfirm;
+        onConfirmOnlyAction = onConfirm;
+
+        if (panelRoot != null)
+            panelRoot.SetActive(true);
+
+        if (requestText != null)
+            requestText.text = message;
+
+        ClearCardItems();
+        SetupButtons();
+
+        foreach (BaseCardData card in cards)
+        {
+            if (card != null)
+                CreateCardItem(card);
+        }
+
+        SendSystemMessage($"[CardRevealUI][Show] revealId={currentRevealId}, blocking=False");
+        return true;
+    }
+
+    public bool IsRevealNotificationVisible()
+    {
+        return isOpen && isRevealNotificationMode;
+    }
+
+    public void CloseRevealNotificationForHigherPriorityUI(string nextUiKind)
+    {
+        if (!isOpen || !isRevealNotificationMode)
+            return;
+
+        string revealId = currentRevealId;
+        Hide();
+        SendSystemMessage($"[CardRevealUI][CloseForPriority] revealId={revealId}, nextUiKind={nextUiKind}");
+    }
+
     public void Hide()
     {
         isOpen = false;
@@ -278,6 +358,9 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
         onCancelAction = null;
         onConfirmOnlyAction = null;
         isConfirmOnlyMode = false;
+        confirmOnlyCancelAllowed = true;
+        isRevealNotificationMode = false;
+        currentRevealId = "";
 
         ClearLinkedSlotHighlights();
         ClearCardItems();
@@ -507,7 +590,11 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
         if (isConfirmOnlyMode)
         {
             Action confirmAction = onConfirmOnlyAction;
+            string revealId = currentRevealId;
+            bool wasRevealNotification = isRevealNotificationMode;
             Hide();
+            if (wasRevealNotification)
+                SendSystemMessage($"[CardRevealUI][LocalConfirm] revealId={revealId}");
             confirmAction?.Invoke();
             return;
         }
@@ -542,19 +629,24 @@ public class CardQuestionPanel : MonoBehaviour, IPointerClickHandler
         Action cancelAction = isConfirmOnlyMode
             ? onConfirmOnlyAction
             : onCancelAction;
+        string revealId = currentRevealId;
+        bool wasRevealNotification = isRevealNotificationMode;
 
         Hide();
+        if (wasRevealNotification)
+            SendSystemMessage($"[CardRevealUI][LocalConfirm] revealId={revealId}");
         cancelAction?.Invoke();
     }
 
     private bool IsCancelAllowed()
     {
-        return isConfirmOnlyMode || cancelPolicy == CardQuestionCancelPolicy.AllowCancel;
+        return (isConfirmOnlyMode && confirmOnlyCancelAllowed) ||
+            (!isConfirmOnlyMode && cancelPolicy == CardQuestionCancelPolicy.AllowCancel);
     }
 
     private void Update()
     {
-        if (!isOpen || isConfirmOnlyMode)
+        if (!isOpen || (isConfirmOnlyMode && !isRevealNotificationMode))
             return;
 
         Keyboard keyboard = Keyboard.current;

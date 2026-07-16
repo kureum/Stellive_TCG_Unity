@@ -2,6 +2,23 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
+public enum CardAcquisitionVisibility
+{
+    PrivateDraw,
+    RevealSelected,
+    RevealCandidates,
+    PublicZoneMove
+}
+
+public enum CardRevealReason
+{
+    SearchToHand,
+    RevealThenDraw,
+    RevealForConditionCheck,
+    PublicZoneRecovery,
+    EffectResolution
+}
+
 [Serializable]
 public class BattleActionResult
 {
@@ -145,6 +162,21 @@ public class FieldContentDelta
 [Serializable]
 public class CardRevealDelta
 {
+    public string revealId = "";
+    public int actionSequence;
+    public int rootActionSequence;
+    public string chainId = "";
+    public string sourceEffectRef = "";
+    public string sourceCardInstanceId = "";
+    public BattleSlotOwner actor;
+    public string revealedCardId = "";
+    public string revealedCardInstanceId = "";
+    public BattleSlotOwner revealedCardOwner;
+    public string revealReason = "";
+    public string destinationZone = "";
+    public string visibility = "";
+    public string publicMessageKey = "";
+    public string displayName = "";
     public BattleSlotOwner owner;
     public string cardInstanceId = "";
     public string cardId = "";
@@ -164,6 +196,7 @@ public class CardDrawDelta
     public bool toHand = true;
     public bool visibleToOwnerOnly = true;
     public string publicCardIdForOpponent = "";
+    public string acquisitionVisibility = CardAcquisitionVisibility.PrivateDraw.ToString();
 }
 
 [Serializable]
@@ -258,6 +291,11 @@ public class SelectionRequestDelta
     public int maxSelect;
     public string cancelPolicy = "";
     public string nextActionType = "";
+    public bool mandatory;
+    public bool cancelAllowed = true;
+    public string confirmLabel = "";
+    public string sourceCardId = "";
+    public string sourceCardName = "";
 }
 
 [Serializable]

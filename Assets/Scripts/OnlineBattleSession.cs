@@ -259,6 +259,8 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
             $"sourceSlot={originalSourceSlotId}->{action.sourceSlotId}, " +
             $"targetSlot={originalTargetSlotId}->{action.targetSlotId}");
 
+        battleManager?.LogOnlineZoneAuthorityBeforeResultFromExternal(action);
+
         BattleActionResult result = actionResolver.ResolveActionAsHost(action);
         if (!result.isAccepted)
         {
@@ -1430,6 +1432,8 @@ public class OnlineBattleSession : MonoBehaviourPunCallbacks, IOnEventCallback
                     continue;
 
                 delta.owner = InvertOwner(delta.owner);
+                delta.actor = InvertOwner(delta.actor);
+                delta.revealedCardOwner = InvertOwner(delta.revealedCardOwner);
                 delta.slotId = InvertSlotIdOwner(delta.slotId);
                 delta.revealTo = InvertAudience(delta.revealTo);
             }
